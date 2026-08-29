@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.1
+
+- Added a maintenance release for end-to-end update validation.
+- Updated the release workflow to publish one coherent updater asset set.
+
 ## 0.1.0
 
 - Added single-card Level, SP Training, and Bloom planning.
