@@ -1,0 +1,1507 @@
+{
+  "schemaVersion": 1,
+  "metadata": {
+    "sourceRepository": "https://github.com/HolodoriDB/holodori-db-eng-diff",
+    "sourceCommit": "95e08ebe8f5b0bec83af036230f10291726b7130",
+    "masterDataVersion": "fbca8c670e074558b24708bf163fff446a614f709afa9d1784395a15444121b0",
+    "importedAt": "2026-08-29T17:03:36.074Z",
+    "catalogVersion": "fbca8c670e07"
+  },
+  "cumulativeExperience": [
+    0,
+    40,
+    100,
+    190,
+    310,
+    460,
+    650,
+    880,
+    1160,
+    1500,
+    1900,
+    2400,
+    3000,
+    3700,
+    4550,
+    5550,
+    6700,
+    8050,
+    9600,
+    11400,
+    13500,
+    15900,
+    18600,
+    21600,
+    24900,
+    28550,
+    32550,
+    36900,
+    41600,
+    46650,
+    52050,
+    57850,
+    64050,
+    70650,
+    77650,
+    85050,
+    92850,
+    101050,
+    109650,
+    118650,
+    128150,
+    138150,
+    148650,
+    159650,
+    171150,
+    183150,
+    195650,
+    208650,
+    222150,
+    236150,
+    250650,
+    265650,
+    281150,
+    297150,
+    313650,
+    330650,
+    348150,
+    366150,
+    384650,
+    404150,
+    424650,
+    446150,
+    468650,
+    492150,
+    516650,
+    542650,
+    570150,
+    599150,
+    629650,
+    661650,
+    695650,
+    731650,
+    769650,
+    810150,
+    853150,
+    899150,
+    948650,
+    1001650,
+    1059650,
+    1122650
+  ],
+  "rarities": {
+    "3": {
+      "initialLevelCap": 20,
+      "maxLevel": 60,
+      "trainingStages": [
+        {
+          "stage": 1,
+          "levelCap": 30,
+          "cost": {
+            "beads": 100,
+            "crystals": 0,
+            "hologold": 20000,
+            "hololium": 0
+          }
+        },
+        {
+          "stage": 2,
+          "levelCap": 40,
+          "cost": {
+            "beads": 200,
+            "crystals": 0,
+            "hologold": 60000,
+            "hololium": 0
+          }
+        },
+        {
+          "stage": 3,
+          "levelCap": 50,
+          "cost": {
+            "beads": 400,
+            "crystals": 100,
+            "hologold": 120000,
+            "hololium": 0
+          }
+        },
+        {
+          "stage": 4,
+          "levelCap": 60,
+          "cost": {
+            "beads": 600,
+            "crystals": 200,
+            "hologold": 200000,
+            "hololium": 0
+          }
+        }
+      ]
+    },
+    "4": {
+      "initialLevelCap": 30,
+      "maxLevel": 70,
+      "trainingStages": [
+        {
+          "stage": 1,
+          "levelCap": 40,
+          "cost": {
+            "beads": 200,
+            "crystals": 0,
+            "hologold": 35000,
+            "hololium": 0
+          }
+        },
+        {
+          "stage": 2,
+          "levelCap": 50,
+          "cost": {
+            "beads": 400,
+            "crystals": 100,
+            "hologold": 105000,
+            "hololium": 0
+          }
+        },
+        {
+          "stage": 3,
+          "levelCap": 60,
+          "cost": {
+            "beads": 600,
+            "crystals": 200,
+            "hologold": 210000,
+            "hololium": 0
+          }
+        },
+        {
+          "stage": 4,
+          "levelCap": 70,
+          "cost": {
+            "beads": 800,
+            "crystals": 400,
+            "hologold": 350000,
+            "hololium": 1
+          }
+        }
+      ]
+    },
+    "5": {
+      "initialLevelCap": 40,
+      "maxLevel": 80,
+      "trainingStages": [
+        {
+          "stage": 1,
+          "levelCap": 50,
+          "cost": {
+            "beads": 300,
+            "crystals": 0,
+            "hologold": 75000,
+            "hololium": 0
+          }
+        },
+        {
+          "stage": 2,
+          "levelCap": 60,
+          "cost": {
+            "beads": 600,
+            "crystals": 150,
+            "hologold": 225000,
+            "hololium": 0
+          }
+        },
+        {
+          "stage": 3,
+          "levelCap": 70,
+          "cost": {
+            "beads": 0,
+            "crystals": 600,
+            "hologold": 450000,
+            "hololium": 1
+          }
+        },
+        {
+          "stage": 4,
+          "levelCap": 80,
+          "cost": {
+            "beads": 0,
+            "crystals": 1200,
+            "hologold": 750000,
+            "hololium": 3
+          }
+        }
+      ]
+    }
+  },
+  "bloom": {
+    "maxStage": 5,
+    "fiveStarStoneItemId": "item-card-potential-upgrade-cmn",
+    "effects": {
+      "3": [
+        "Active Skill Lv.2",
+        "All parameters +5%",
+        "Special Skill Lv.2",
+        "Passive Skill Lv.2",
+        "All parameters +10% (total +15%)"
+      ],
+      "4": [
+        "Active Skill Lv.2",
+        "All parameters +10%",
+        "Special Skill Lv.2",
+        "Passive Skill Lv.2",
+        "Connect Effect Lv.2"
+      ],
+      "5": [
+        "Active Skill Lv.2",
+        "All parameters +10%",
+        "Special Skill Lv.2",
+        "Passive Skill Lv.2",
+        "Connect Effect Lv.2"
+      ]
+    }
+  },
+  "cards": [
+    {
+      "id": "card-03003-5-uniq-0035-00",
+      "memberName": "Airani Iofifteen",
+      "cardName": "Sunlit Cosmos Palette",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-03003-4-cmmn-0000-00",
+      "memberName": "Airani Iofifteen",
+      "cardName": "Serene Stage Vista",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-03003-3-nrml-0035-00",
+      "memberName": "Airani Iofifteen",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00005-5-uniq-0006-00",
+      "memberName": "Akai Haato",
+      "cardName": "Snack-Time Rebel",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00005-4-cmmn-0000-00",
+      "memberName": "Akai Haato",
+      "cardName": "Wild Heartbeat Gig",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00005-3-nrml-0006-00",
+      "memberName": "Akai Haato",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00004-5-uniq-0005-00",
+      "memberName": "Aki Rosenthal",
+      "cardName": "Ethereal Half-Elf",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00004-4-cmmn-0000-00",
+      "memberName": "Aki Rosenthal",
+      "cardName": "Curious Elf Melody",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00004-3-nrml-0005-00",
+      "memberName": "Aki Rosenthal",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-03005-5-uniq-0037-00",
+      "memberName": "Anya Melfissa",
+      "cardName": "Couch Potato Gamer",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-03005-4-cmmn-0000-00",
+      "memberName": "Anya Melfissa",
+      "cardName": "Backstage Freebird",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-03005-3-nrml-0037-00",
+      "memberName": "Anya Melfissa",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-03001-5-uniq-0033-00",
+      "memberName": "Ayunda Risu",
+      "cardName": "Sylvan Mischief",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-03001-4-cmmn-0000-00",
+      "memberName": "Ayunda Risu",
+      "cardName": "Roundtail Rhythm",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-03001-3-nrml-0033-00",
+      "memberName": "Ayunda Risu",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00013-5-uniq-0002-00",
+      "memberName": "AZKi",
+      "cardName": "A Flower in Full Bloom",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00013-4-cmmn-0000-00",
+      "memberName": "AZKi",
+      "cardName": "Upon a Tender Melody",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00013-3-nrml-0002-00",
+      "memberName": "AZKi",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-04016-5-uniq-0055-00",
+      "memberName": "Fuwawa Abyssgard",
+      "cardName": "Fluffy Donut Feast",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-04016-4-cmmn-0000-00",
+      "memberName": "Fuwawa Abyssgard",
+      "cardName": "Velvet Cloud Calm",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-04016-3-nrml-0055-00",
+      "memberName": "Fuwawa Abyssgard",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-04012-5-uniq-0051-00",
+      "memberName": "Hakos Baelz",
+      "cardName": "Chaotic Powerful Rat",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-04012-4-cmmn-0000-00",
+      "memberName": "Hakos Baelz",
+      "cardName": "Infinite Groove",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-04012-3-nrml-0051-00",
+      "memberName": "Hakos Baelz",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00037-5-uniq-0030-00",
+      "memberName": "Hakui Koyori",
+      "cardName": "Assistant’s Muse",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00037-4-cmmn-0000-00",
+      "memberName": "Hakui Koyori",
+      "cardName": "Howling Echo",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00037-3-nrml-0030-00",
+      "memberName": "Hakui Koyori",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00028-5-uniq-0023-00",
+      "memberName": "Himemori Luna",
+      "cardName": "Royal Loyal Noon",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00028-5-uniq-0070-00",
+      "memberName": "Himemori Luna",
+      "cardName": "Spoiled Beach Princess",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00028-4-cmmn-0000-00",
+      "memberName": "Himemori Luna",
+      "cardName": "Ethereal Princess",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00028-3-nrml-0023-00",
+      "memberName": "Himemori Luna",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00018-5-uniq-0004-00",
+      "memberName": "Hoshimachi Suisei",
+      "cardName": "Comet Heart Stealer",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00018-5-uniq-0068-00",
+      "memberName": "Hoshimachi Suisei",
+      "cardName": "Water Gun Arpeggio",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00018-4-cmmn-0000-00",
+      "memberName": "Hoshimachi Suisei",
+      "cardName": "Radiant Floor Star",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00018-3-nrml-0004-00",
+      "memberName": "Hoshimachi Suisei",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00023-5-uniq-0019-00",
+      "memberName": "Houshou Marine",
+      "cardName": "Siren Marine Blue",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00023-4-cmmn-0000-00",
+      "memberName": "Houshou Marine",
+      "cardName": "Corsair’s Conquest",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00023-3-nrml-0019-00",
+      "memberName": "Houshou Marine",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-06003-5-uniq-0059-00",
+      "memberName": "Ichijou Ririka",
+      "cardName": "The CEO's Struggling Meal",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-06003-4-cmmn-0000-00",
+      "memberName": "Ichijou Ririka",
+      "cardName": "Heart-Shot Pulse",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-06003-3-nrml-0059-00",
+      "memberName": "Ichijou Ririka",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00017-5-uniq-0077-00",
+      "memberName": "Inugami Korone",
+      "cardName": "Jungle Fever Dance",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00017-5-uniq-0015-00",
+      "memberName": "Inugami Korone",
+      "cardName": "Vibrant Skater",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00017-4-cmmn-0000-00",
+      "memberName": "Inugami Korone",
+      "cardName": "Outlaw Puppy Rhyme",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00017-3-nrml-0015-00",
+      "memberName": "Inugami Korone",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-04007-5-uniq-0047-00",
+      "memberName": "IRyS",
+      "cardName": "Nephilim Sonority",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-04007-4-cmmn-0000-00",
+      "memberName": "IRyS",
+      "cardName": "Resonant Hope",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-04007-3-nrml-0047-00",
+      "memberName": "IRyS",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-06004-5-uniq-0060-00",
+      "memberName": "Juufuutei Raden",
+      "cardName": "Luminary of Arts",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-06004-4-cmmn-0000-00",
+      "memberName": "Juufuutei Raden",
+      "cardName": "Cultural Performer",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-06004-3-nrml-0060-00",
+      "memberName": "Juufuutei Raden",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-03008-5-uniq-0040-00",
+      "memberName": "Kaela Kovalskia",
+      "cardName": "Tempered Soul Forge",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-03008-4-cmmn-0000-00",
+      "memberName": "Kaela Kovalskia",
+      "cardName": "Forge-Fire Fever",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-03008-3-nrml-0040-00",
+      "memberName": "Kaela Kovalskia",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00039-5-uniq-0032-00",
+      "memberName": "Kazama Iroha",
+      "cardName": "Blade Flash",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00039-4-cmmn-0000-00",
+      "memberName": "Kazama Iroha",
+      "cardName": "Mastered Essence",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00039-3-nrml-0032-00",
+      "memberName": "Kazama Iroha",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-03009-5-uniq-0041-00",
+      "memberName": "Kobo Kanaeru",
+      "cardName": "Rain-Dance Oracle",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-03009-4-cmmn-0000-00",
+      "memberName": "Kobo Kanaeru",
+      "cardName": "Total Overdrive",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-03009-3-nrml-0041-00",
+      "memberName": "Kobo Kanaeru",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-04014-5-uniq-0053-00",
+      "memberName": "Koseki Bijou",
+      "cardName": "Prism Crystal Realm",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-04014-4-cmmn-0000-00",
+      "memberName": "Koseki Bijou",
+      "cardName": "Radiant Innocence",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-04014-3-nrml-0053-00",
+      "memberName": "Koseki Bijou",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-03004-5-uniq-0073-00",
+      "memberName": "Kureiji Ollie",
+      "cardName": "Crazy Summer Dive",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-03004-5-uniq-0036-00",
+      "memberName": "Kureiji Ollie",
+      "cardName": "Eternal Z-Talker",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-03004-4-cmmn-0000-00",
+      "memberName": "Kureiji Ollie",
+      "cardName": "Deadly Encore",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-03004-3-nrml-0036-00",
+      "memberName": "Kureiji Ollie",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00035-5-uniq-0028-00",
+      "memberName": "La+ Darknesss",
+      "cardName": "Commanding Genius",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00035-4-cmmn-0000-00",
+      "memberName": "La+ Darknesss",
+      "cardName": "Behold My Night",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00035-3-nrml-0028-00",
+      "memberName": "La+ Darknesss",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-04017-5-uniq-0056-00",
+      "memberName": "Mococo Abyssgard",
+      "cardName": "Leisurely Donut Feast",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-04017-4-cmmn-0000-00",
+      "memberName": "Mococo Abyssgard",
+      "cardName": "Fuzzy Beam Joy",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-04017-3-nrml-0056-00",
+      "memberName": "Mococo Abyssgard",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00031-5-uniq-0025-00",
+      "memberName": "Momosuzu Nene",
+      "cardName": "Pureheart Song",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00031-4-cmmn-0000-00",
+      "memberName": "Momosuzu Nene",
+      "cardName": "Adrenaline Surge",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00031-3-nrml-0025-00",
+      "memberName": "Momosuzu Nene",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-03002-5-uniq-0034-00",
+      "memberName": "Moona Hoshinova",
+      "cardName": "Lunar Songstress",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-03002-4-cmmn-0000-00",
+      "memberName": "Moona Hoshinova",
+      "cardName": "Moonlight Vocal Fusion",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-03002-3-nrml-0034-00",
+      "memberName": "Moona Hoshinova",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-04001-5-uniq-0071-00",
+      "memberName": "Mori Calliope",
+      "cardName": "Beach Reaper's Spike",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-04001-5-uniq-0042-00",
+      "memberName": "Mori Calliope",
+      "cardName": "Reaper’s Death Flow",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-04001-4-cmmn-0000-00",
+      "memberName": "Mori Calliope",
+      "cardName": "Rep the Underworld",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-04001-3-nrml-0042-00",
+      "memberName": "Mori Calliope",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00010-5-uniq-0069-00",
+      "memberName": "Nakiri Ayame",
+      "cardName": "Oni Way: Breezy Resort",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00010-5-uniq-0010-00",
+      "memberName": "Nakiri Ayame",
+      "cardName": "Spirit Realm Lantern",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00010-4-cmmn-0000-00",
+      "memberName": "Nakiri Ayame",
+      "cardName": "Demonic Encore",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00010-3-nrml-0010-00",
+      "memberName": "Nakiri Ayame",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00007-5-uniq-0008-00",
+      "memberName": "Natsuiro Matsuri",
+      "cardName": "Vivid Cheer Spirit",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00007-4-cmmn-0000-00",
+      "memberName": "Natsuiro Matsuri",
+      "cardName": "Sweet Cheeky Stage",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00007-3-nrml-0008-00",
+      "memberName": "Natsuiro Matsuri",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00016-5-uniq-0076-00",
+      "memberName": "Nekomata Okayu",
+      "cardName": "Parasol Stray Cat",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00016-5-uniq-0014-00",
+      "memberName": "Nekomata Okayu",
+      "cardName": "Secret Post-Feast",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00016-4-cmmn-0000-00",
+      "memberName": "Nekomata Okayu",
+      "cardName": "Mesmerizing Cat Jam",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00016-3-nrml-0014-00",
+      "memberName": "Nekomata Okayu",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-04015-5-uniq-0054-00",
+      "memberName": "Nerissa Ravencroft",
+      "cardName": "Echoes of Nocturne",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-04015-4-cmmn-0000-00",
+      "memberName": "Nerissa Ravencroft",
+      "cardName": "Dusk Nightingale",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-04015-3-nrml-0054-00",
+      "memberName": "Nerissa Ravencroft",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-04003-5-uniq-0072-00",
+      "memberName": "Ninomae Ina'nis",
+      "cardName": "Tracing Tide Memories",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-04003-5-uniq-0044-00",
+      "memberName": "Ninomae Ina'nis",
+      "cardName": "Warm Up and Recharge",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-04003-4-cmmn-0000-00",
+      "memberName": "Ninomae Ina'nis",
+      "cardName": "Gentle Stage Beam",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-04003-3-nrml-0044-00",
+      "memberName": "Ninomae Ina'nis",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00034-5-uniq-0027-00",
+      "memberName": "Omaru Polka",
+      "cardName": "Polka’s Phantasm",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00034-4-cmmn-0000-00",
+      "memberName": "Omaru Polka",
+      "cardName": "Neon Party Riot",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00034-3-nrml-0027-00",
+      "memberName": "Omaru Polka",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00014-5-uniq-0013-00",
+      "memberName": "Ookami Mio",
+      "cardName": "Calming Nightscape",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00014-5-uniq-0075-00",
+      "memberName": "Ookami Mio",
+      "cardName": "Drowsy Wolf Heart",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00014-4-cmmn-0000-00",
+      "memberName": "Ookami Mio",
+      "cardName": "Sunlit Wolf Song",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00014-3-nrml-0013-00",
+      "memberName": "Ookami Mio",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00012-5-uniq-0012-00",
+      "memberName": "Oozora Subaru",
+      "cardName": "Duckling Noon Jam",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00012-5-uniq-0062-00",
+      "memberName": "Oozora Subaru",
+      "cardName": "Vibrant Sun Splash!",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00012-4-cmmn-0000-00",
+      "memberName": "Oozora Subaru",
+      "cardName": "Radiant Soul Jam",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00012-3-nrml-0012-00",
+      "memberName": "Oozora Subaru",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-06002-5-uniq-0066-00",
+      "memberName": "Otonose Kanade",
+      "cardName": "Breezy Smile Chords",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-06002-5-uniq-0058-00",
+      "memberName": "Otonose Kanade",
+      "cardName": "Parade of Smiles",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-06002-4-cmmn-0000-00",
+      "memberName": "Otonose Kanade",
+      "cardName": "Apex Harmony",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-06002-3-nrml-0058-00",
+      "memberName": "Otonose Kanade",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-04010-5-uniq-0049-00",
+      "memberName": "Ouro Kronii",
+      "cardName": "Clock Tower Warden",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-04010-4-cmmn-0000-00",
+      "memberName": "Ouro Kronii",
+      "cardName": "Eternal Starlight",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-04010-3-nrml-0049-00",
+      "memberName": "Ouro Kronii",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-03006-5-uniq-0038-00",
+      "memberName": "Pavolia Reine",
+      "cardName": "Royal Peafowl Brew",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-03006-4-cmmn-0000-00",
+      "memberName": "Pavolia Reine",
+      "cardName": "Blessed Luxe Night",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-03006-3-nrml-0038-00",
+      "memberName": "Pavolia Reine",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00002-5-uniq-0001-00",
+      "memberName": "Robocosan",
+      "cardName": "High-Tech Victory V",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00002-4-cmmn-0000-00",
+      "memberName": "Robocosan",
+      "cardName": "Dreamy Wink Concert",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00002-3-nrml-0001-00",
+      "memberName": "Robocosan",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00015-5-uniq-0067-00",
+      "memberName": "Sakura Miko",
+      "cardName": "Radiant Beach Shot",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00015-5-uniq-0003-00",
+      "memberName": "Sakura Miko",
+      "cardName": "Sakura Bloom",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00015-4-cmmn-0000-00",
+      "memberName": "Sakura Miko",
+      "cardName": "Embrace the Glow",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00015-3-nrml-0003-00",
+      "memberName": "Sakura Miko",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-04013-5-uniq-0052-00",
+      "memberName": "Shiori Novella",
+      "cardName": "Library Inquisitor",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-04013-4-cmmn-0000-00",
+      "memberName": "Shiori Novella",
+      "cardName": "Unmasked Performance",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-04013-3-nrml-0052-00",
+      "memberName": "Shiori Novella",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00006-5-uniq-0007-00",
+      "memberName": "Shirakami Fubuki",
+      "cardName": "Kitsune’s Rite",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00006-5-uniq-0074-00",
+      "memberName": "Shirakami Fubuki",
+      "cardName": "Twinkle on the Shore",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00006-4-cmmn-0000-00",
+      "memberName": "Shirakami Fubuki",
+      "cardName": "Max-Gear Fox Show",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00006-3-nrml-0007-00",
+      "memberName": "Shirakami Fubuki",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00021-5-uniq-0017-00",
+      "memberName": "Shiranui Flare",
+      "cardName": "Elven Gale Gondola",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00021-5-uniq-0064-00",
+      "memberName": "Shiranui Flare",
+      "cardName": "Sparks at Sunset",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00021-4-cmmn-0000-00",
+      "memberName": "Shiranui Flare",
+      "cardName": "Graceful Empathy",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00021-3-nrml-0017-00",
+      "memberName": "Shiranui Flare",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00022-5-uniq-0018-00",
+      "memberName": "Shirogane Noel",
+      "cardName": "Gentle Breeze Knight",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00022-5-uniq-0063-00",
+      "memberName": "Shirogane Noel",
+      "cardName": "Serene Wave Knight",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00022-4-cmmn-0000-00",
+      "memberName": "Shirogane Noel",
+      "cardName": "Vocal Juggernaut",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00022-3-nrml-0018-00",
+      "memberName": "Shirogane Noel",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00032-5-uniq-0026-00",
+      "memberName": "Shishiro Botan",
+      "cardName": "Lion’s Deadeye",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00032-4-cmmn-0000-00",
+      "memberName": "Shishiro Botan",
+      "cardName": "Majestic Roar",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00032-3-nrml-0026-00",
+      "memberName": "Shishiro Botan",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-04002-5-uniq-0043-00",
+      "memberName": "Takanashi Kiara",
+      "cardName": "Lovely Phoenix Diner",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-04002-4-cmmn-0000-00",
+      "memberName": "Takanashi Kiara",
+      "cardName": "Utopian Happiness",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-04002-3-nrml-0043-00",
+      "memberName": "Takanashi Kiara",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00036-5-uniq-0029-00",
+      "memberName": "Takane Lui",
+      "cardName": "Iron Executive",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00036-4-cmmn-0000-00",
+      "memberName": "Takane Lui",
+      "cardName": "Strategic Prodigy",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00036-3-nrml-0029-00",
+      "memberName": "Takane Lui",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-06005-5-uniq-0061-00",
+      "memberName": "Todoroki Hajime",
+      "cardName": "Bancho’s Soft Grace",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-06005-4-cmmn-0000-00",
+      "memberName": "Todoroki Hajime",
+      "cardName": "She's the Boss",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-06005-3-nrml-0061-00",
+      "memberName": "Todoroki Hajime",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00001-5-uniq-0000-00",
+      "memberName": "Tokino Sora",
+      "cardName": "Rainbow’s Devotion",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00001-4-cmmn-0000-00",
+      "memberName": "Tokino Sora",
+      "cardName": "Let My Voice Reach the Sky",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00001-3-nrml-0000-00",
+      "memberName": "Tokino Sora",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00027-5-uniq-0022-00",
+      "memberName": "Tokoyami Towa",
+      "cardName": "Eternal Night Out",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00027-4-cmmn-0000-00",
+      "memberName": "Tokoyami Towa",
+      "cardName": "Midnight Serenity",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00027-3-nrml-0022-00",
+      "memberName": "Tokoyami Towa",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00026-5-uniq-0065-00",
+      "memberName": "Tsunomaki Watame",
+      "cardName": "Floatie Float Time",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00026-5-uniq-0021-00",
+      "memberName": "Tsunomaki Watame",
+      "cardName": "Woolly Smile Festival",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00026-4-cmmn-0000-00",
+      "memberName": "Tsunomaki Watame",
+      "cardName": "Zenith Resonance",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00026-3-nrml-0021-00",
+      "memberName": "Tsunomaki Watame",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00019-5-uniq-0016-00",
+      "memberName": "Usada Pekora",
+      "cardName": "Playful Rabbit Field",
+      "rarity": 5,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00019-4-cmmn-0000-00",
+      "memberName": "Usada Pekora",
+      "cardName": "Vogue Hop Bunny",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00019-3-nrml-0016-00",
+      "memberName": "Usada Pekora",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-03007-5-uniq-0039-00",
+      "memberName": "Vestia Zeta",
+      "cardName": "Sunny Cat Syndicate",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-03007-4-cmmn-0000-00",
+      "memberName": "Vestia Zeta",
+      "cardName": "Whimsical Glee",
+      "rarity": 4,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-03007-3-nrml-0039-00",
+      "memberName": "Vestia Zeta",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00030-5-uniq-0024-00",
+      "memberName": "Yukihana Lamy",
+      "cardName": "Lonely Snow Heiress",
+      "rarity": 5,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00030-4-cmmn-0000-00",
+      "memberName": "Yukihana Lamy",
+      "cardName": "Glacial Radiance",
+      "rarity": 4,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00030-3-nrml-0024-00",
+      "memberName": "Yukihana Lamy",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    },
+    {
+      "id": "card-00011-5-uniq-0011-00",
+      "memberName": "Yuzuki Choco",
+      "cardName": "Fatal Temptation",
+      "rarity": 5,
+      "attribute": "happy"
+    },
+    {
+      "id": "card-00011-4-cmmn-0000-00",
+      "memberName": "Yuzuki Choco",
+      "cardName": "Dr. Allure's Live",
+      "rarity": 4,
+      "attribute": "pure"
+    },
+    {
+      "id": "card-00011-3-nrml-0011-00",
+      "memberName": "Yuzuki Choco",
+      "cardName": "We are hololive!",
+      "rarity": 3,
+      "attribute": "cute"
+    }
+  ]
+}
