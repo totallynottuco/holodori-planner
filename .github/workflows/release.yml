@@ -11,8 +11,8 @@ jobs:
   publish:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-node@v4
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
         with:
           node-version: 24
           cache: npm
@@ -21,6 +21,14 @@ jobs:
       - run: npm test
       - run: npm run build
       - run: npx electron-builder --win nsis --x64 --publish always
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - name: Upload update blockmap
+        shell: pwsh
+        run: |
+          $blockmap = Get-ChildItem release -Filter '*.blockmap' | Select-Object -First 1
+          if (-not $blockmap) { throw 'electron-builder did not produce an update blockmap' }
+          gh release upload $env:GITHUB_REF_NAME $blockmap.FullName --clobber
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
       - run: npm run smoke
