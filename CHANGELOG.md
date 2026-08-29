@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.2.2
+
+- Fixed dialogs overlapping or centering beneath the sidebar at smaller window sizes.
+- Added a narrower collapsible sidebar, workspace-only modal treatment, and concise page headers.
+- Added the shared Add Cards flow directly to Planner.
+
 ## 0.2.1
 
 - Added the verification release used to confirm in-place updates and profile preservation from 0.2.0.

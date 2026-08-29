@@ -1,5 +1,6 @@
 import { X } from 'lucide-react'
-import { useEffect, useRef, useState, type ReactNode } from 'react'
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { progressionManifest } from '@shared/manifest'
 import type { Attribute, CardCatalogEntry, ResourceKey } from '@shared/types'
 
@@ -49,6 +50,7 @@ export function EmptyState({ title, action }: { title: string; action?: ReactNod
 export function Modal({ title, children, onClose, footer, wide = false }: { title: string; children: ReactNode; onClose(): void; footer: ReactNode; wide?: boolean }): React.JSX.Element {
   const previousFocus = useRef(document.activeElement instanceof HTMLElement ? document.activeElement : null)
   const closeRef = useRef(onClose)
+  const titleId = useId()
   closeRef.current = onClose
   useEffect(() => {
     const closeOnEscape = (event: KeyboardEvent): void => {
@@ -60,15 +62,16 @@ export function Modal({ title, children, onClose, footer, wide = false }: { titl
       previousFocus.current?.focus()
     }
   }, [])
-  return (
+  const dialog = (
     <div className="modal-backdrop" role="presentation" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      <section className={`modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby="modal-title">
-        <header><h2 id="modal-title">{title}</h2><button className="icon-button" onClick={onClose} aria-label="Close"><X size={20} /></button></header>
+      <section className={`modal ${wide ? 'wide' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId}>
+        <header><h2 id={titleId}>{title}</h2><button className="icon-button" onClick={onClose} aria-label="Close"><X size={20} /></button></header>
         <div className="modal-body">{children}</div>
         <footer>{footer}</footer>
       </section>
     </div>
   )
+  return createPortal(dialog, document.getElementById('modal-root') ?? document.body)
 }
 
 export function NumberField({ label, value, min = 0, max, onChange, disabled = false }: {

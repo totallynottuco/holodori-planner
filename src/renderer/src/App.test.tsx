@@ -43,7 +43,7 @@ function installApi(initial: AppProfileV2): { api: HolodoriApi; current(): AppPr
       onStatus: vi.fn((_callback: (status: UpdateStatus) => void) => () => undefined)
     },
     app: {
-      getInfo: vi.fn(async () => ({ version: '0.2.0', catalogVersion: progressionManifest.metadata.catalogVersion, profilePath: 'C:\\AppData\\holodori Planner\\profile.json', isPackaged: false, projectUrl: 'https://github.com/totallynottuco/holodori-planner', gpu: { mode: 'hardware-required' as const, device: '0x10de:0x2684', features: { gpu_compositing: 'enabled', rasterization: 'enabled', webgl: 'enabled', webgl2: 'enabled' } } })),
+      getInfo: vi.fn(async () => ({ version: '0.2.2', catalogVersion: progressionManifest.metadata.catalogVersion, profilePath: 'C:\\AppData\\holodori Planner\\profile.json', isPackaged: false, projectUrl: 'https://github.com/totallynottuco/holodori-planner', gpu: { mode: 'hardware-required' as const, device: '0x10de:0x2684', features: { gpu_compositing: 'enabled', rasterization: 'enabled', webgl: 'enabled', webgl2: 'enabled' } } })),
       openProjectPage: vi.fn(async () => undefined)
     }
   }
@@ -64,9 +64,10 @@ describe('renderer flows', () => {
     const harness = installApi(createDefaultProfile(progressionManifest.metadata.catalogVersion))
     render(<App />)
     expect(await screen.findByText('Add a card to start planning')).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Characters' }))
-    await user.click(screen.getAllByRole('button', { name: 'Add cards' })[0])
+    expect(screen.queryByText(/hololive dreams/i)).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Add cards' }))
     const dialog = screen.getByRole('dialog')
+    expect(document.getElementById('modal-root')).toContainElement(dialog)
     expect(within(dialog).getByText(/178 available/)).toBeInTheDocument()
     const last = progressionManifest.cards.at(-1)!
     await user.type(within(dialog).getByLabelText('Search card catalog'), `${last.memberName} ${last.cardName}`)
@@ -74,6 +75,26 @@ describe('renderer flows', () => {
     await user.click(screen.getByRole('button', { name: 'Save card' }))
     await waitFor(() => expect(harness.current().cards[last.id]).toBeDefined())
     expect(harness.current().cards[last.id].goal).toEqual({ targetLevel: 1, targetBloomStage: 0, useBloomStones: false })
+  })
+
+  it('uses a compact sidebar that collapses to icon navigation', async () => {
+    const user = userEvent.setup()
+    installApi(createDefaultProfile(progressionManifest.metadata.catalogVersion))
+    render(<App />)
+    await screen.findByText('Add a card to start planning')
+    const shell = document.querySelector('.app-shell')
+    const sidebar = document.querySelector('.sidebar')
+    const navigation = within(sidebar as HTMLElement).getByRole('navigation', { name: 'Main navigation' })
+    const collapseButton = within(sidebar as HTMLElement).getByRole('button', { name: 'Collapse sidebar' })
+    expect(shell).not.toHaveClass('sidebar-collapsed')
+    expect(document.querySelector('.sidebar .brand')).not.toBeInTheDocument()
+    expect(navigation.compareDocumentPosition(collapseButton) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy()
+    await user.click(collapseButton)
+    expect(shell).toHaveClass('sidebar-collapsed')
+    await user.click(screen.getByRole('button', { name: 'Characters' }))
+    expect(screen.getByRole('heading', { name: 'Characters' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Expand sidebar' }))
+    expect(shell).not.toHaveClass('sidebar-collapsed')
   })
 
   it('filters inventory groups and saves direct numeric edits', async () => {

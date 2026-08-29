@@ -1,4 +1,4 @@
-import { ChevronRight, Gem, PackageOpen, Settings, Sparkles, UsersRound } from 'lucide-react'
+import { ChevronRight, PackageOpen, PanelLeftClose, PanelLeftOpen, Settings, Sparkles, UsersRound } from 'lucide-react'
 import { useState } from 'react'
 import { t } from '@shared/i18n'
 import { ProfileProvider, useProfile } from './profile-context'
@@ -18,6 +18,7 @@ const nav = [
 
 function Shell(): React.JSX.Element {
   const [screen, setScreen] = useState<Screen>('planner')
+  const [sidebarCollapsed, setSidebarCollapsed] = useState(false)
   const { profile } = useProfile()
   const owned = Object.keys(profile.cards).length
   const activeGoals = Object.values(profile.cards).filter((state) =>
@@ -26,12 +27,8 @@ function Shell(): React.JSX.Element {
   const title = nav.find((item) => item.id === screen)?.label ?? ''
 
   return (
-    <div className="app-shell">
+    <div className={`app-shell ${sidebarCollapsed ? 'sidebar-collapsed' : ''}`}>
       <aside className="sidebar">
-        <div className="brand">
-          <div className="brand-mark">H</div>
-          <div><strong>holodori</strong><span>Planner</span></div>
-        </div>
         <nav aria-label="Main navigation">
           {nav.map((item) => {
             const Icon = item.icon
@@ -42,6 +39,8 @@ function Shell(): React.JSX.Element {
                 className={screen === item.id ? 'active' : ''}
                 onClick={() => setScreen(item.id)}
                 aria-current={screen === item.id ? 'page' : undefined}
+                aria-label={sidebarCollapsed ? item.label : undefined}
+                title={sidebarCollapsed ? item.label : undefined}
               >
                 <Icon size={20} />
                 <span>{item.label}</span>
@@ -50,11 +49,18 @@ function Shell(): React.JSX.Element {
             )
           })}
         </nav>
-        <div className="sidebar-foot"><Gem size={17} /><span>Fan-made tool</span></div>
+        <button
+          className="sidebar-toggle"
+          onClick={() => setSidebarCollapsed((value) => !value)}
+          aria-label={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+          title={sidebarCollapsed ? 'Expand sidebar' : 'Collapse sidebar'}
+        >
+          {sidebarCollapsed ? <PanelLeftOpen size={19} /> : <PanelLeftClose size={19} />}
+        </button>
       </aside>
       <main className="workspace">
         <header className="topbar">
-          <div><span className="eyebrow">hololive Dreams</span><h1>{title}</h1></div>
+          <h1>{title}</h1>
           {screen !== 'inventory' && (
             <button className="ghost-button compact" onClick={() => setScreen('inventory')}>
               Inventory <ChevronRight size={16} />
@@ -66,6 +72,7 @@ function Shell(): React.JSX.Element {
         {screen === 'inventory' && <InventoryScreen />}
         {screen === 'settings' && <SettingsScreen />}
       </main>
+      <div id="modal-root" className="modal-root" />
     </div>
   )
 }

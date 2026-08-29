@@ -1,9 +1,10 @@
-import { AlertTriangle, ArrowRight, Check, Edit3, LockKeyhole, RotateCcw, Sparkles } from 'lucide-react'
+import { AlertTriangle, ArrowRight, Check, Edit3, LockKeyhole, Plus, RotateCcw, Sparkles } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { progressionManifest } from '@shared/manifest'
 import { t, type TranslationKey } from '@shared/i18n'
 import type { AggregatePlanResult, PlanResult, SavedCardState } from '@shared/types'
 import type { Screen } from '../App'
+import { AddCardsDialog } from '../card-dialogs'
 import { AttributeChip, CardThumbnail, EmptyState, MaterialIcon, Modal, NumberField, Rarity } from '../components'
 import { useProfile } from '../profile-context'
 
@@ -40,6 +41,7 @@ export function PlannerScreen({ onNavigate }: { onNavigate(screen: Screen): void
   const [aggregate, setAggregate] = useState<AggregatePlanResult | null>(null)
   const [planError, setPlanError] = useState<string | null>(null)
   const [editing, setEditing] = useState<PlanResult | null>(null)
+  const [adding, setAdding] = useState(false)
   const [confirming, setConfirming] = useState<{ kind: 'card'; plan: PlanResult } | { kind: 'all' } | null>(null)
 
   useEffect(() => {
@@ -84,11 +86,11 @@ export function PlannerScreen({ onNavigate }: { onNavigate(screen: Screen): void
   }
 
   if (Object.keys(profile.cards).length === 0) {
-    return <section className="screen"><EmptyState title="Add a card to start planning" action={<button className="primary-button" onClick={() => onNavigate('characters')}>Add cards</button>} /></section>
+    return <><section className="screen"><EmptyState title="Add a card to start planning" action={<button className="primary-button" onClick={() => setAdding(true)}><Plus size={17} />Add cards</button>} /></section><AddCardsDialog open={adding} onClose={() => setAdding(false)} /></>
   }
   if (!aggregate) return <section className="screen"><div className="planner-loading">Calculating plans…</div></section>
   if (aggregate.plans.length === 0) {
-    return <section className="screen"><EmptyState title="No active goals" action={<button className="primary-button" onClick={() => onNavigate('characters')}>Set a goal</button>} /></section>
+    return <><section className="screen"><EmptyState title="No active goals" action={<div className="empty-actions"><button className="primary-button" onClick={() => onNavigate('characters')}>Set a goal</button><button className="ghost-button" onClick={() => setAdding(true)}><Plus size={17} />Add cards</button></div>} /></section><AddCardsDialog open={adding} onClose={() => setAdding(false)} /></>
   }
 
   const confirmationPlans = confirming?.kind === 'card' ? [confirming.plan] : aggregate.plans
@@ -100,7 +102,7 @@ export function PlannerScreen({ onNavigate }: { onNavigate(screen: Screen): void
       <div className="planner-summary panel">
         <div className="summary-heading"><div><span className="section-kicker">Active goals</span><strong>{aggregate.plans.length} {aggregate.plans.length === 1 ? 'card' : 'cards'}</strong></div><span className={`status-chip ${aggregate.canApplyAll ? 'ready' : 'short'}`}>{aggregate.canApplyAll ? 'All ready' : 'Resources short'}</span></div>
         <div className="aggregate-requirements">{aggregate.requirements.map((item) => <RequirementCard item={item} key={item.key} />)}</div>
-        <div className="summary-actions"><button className="ghost-button" onClick={() => onNavigate('inventory')}>Edit inventory</button><button className="primary-button" disabled={!aggregate.canApplyAll || busy} onClick={() => setConfirming({ kind: 'all' })}><Sparkles size={17} />Apply all</button></div>
+        <div className="summary-actions"><button className="ghost-button" onClick={() => setAdding(true)}><Plus size={16} />Add cards</button><button className="ghost-button" onClick={() => onNavigate('inventory')}>Edit inventory</button><button className="primary-button" disabled={!aggregate.canApplyAll || busy} onClick={() => setConfirming({ kind: 'all' })}><Sparkles size={17} />Apply all</button></div>
       </div>
 
       <div className="planned-card-list">
@@ -118,6 +120,7 @@ export function PlannerScreen({ onNavigate }: { onNavigate(screen: Screen): void
       </div>
 
       {editing && <GoalEditor plan={editing} onClose={() => setEditing(null)} onSave={(goal) => void saveGoal(editing, goal)} />}
+      <AddCardsDialog open={adding} onClose={() => setAdding(false)} />
       {confirming && (
         <Modal title={confirming.kind === 'all' ? `Apply ${confirmationPlans.length} plans?` : 'Apply this plan?'} onClose={() => setConfirming(null)} footer={<><button className="ghost-button" onClick={() => setConfirming(null)}>Cancel</button><button className="primary-button" disabled={busy} onClick={() => void (confirming.kind === 'all' ? applyAll() : applyCard(confirming.plan))}>Confirm & apply</button></>}>
           <div className="confirmation-cards">{confirmationPlans.map((plan) => <div key={plan.card.id}><CardThumbnail card={plan.card} alt="" /><span><strong>{plan.card.memberName}</strong><small>Lv.{plan.target.level} · SP {plan.target.trainingStage || 'Base'} · Bloom {plan.target.bloomStage}</small></span></div>)}</div>
