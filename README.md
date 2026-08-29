@@ -32,6 +32,7 @@ npm test
 npm run build
 npm run package
 npm run smoke
+npm run shortcut:create
 ```
 
 To refresh the bundled catalog from a checked-out HolodoriDB data repository:
@@ -46,7 +47,9 @@ The importer rejects duplicate IDs, broken references, EXP-curve mismatches, inv
 
 Account data is never stored in renderer `localStorage`. The Electron main process validates and atomically writes `profile.json`, maintaining `profile.json.bak` for recovery. Import/export uses complete profile backups; v0.1 does not merge profiles.
 
-Stable builds use the repository's GitHub Releases feed. Update checks run shortly after packaged startup and every six hours when enabled. Downloads and restarts always require user action. Builds are unsigned in v0.1, so publisher verification is intentionally disabled while electron-updater still verifies release-file hashes from `latest.yml`. Signature verification must be enabled before signed releases begin.
+Stable builds use the repository's GitHub Releases feed. Every release publishes the same `holodori-Planner-Setup.exe` asset name, and local packaging removes superseded installer artifacts before building. NSIS upgrades the fixed per-user installation in place rather than creating version-specific installations. Update checks run shortly after packaged startup and every six hours when enabled. Downloads and restarts always require user action. Builds are unsigned in v0.1, so publisher verification is intentionally disabled while electron-updater still verifies release-file hashes from `latest.yml`. Signature verification must be enabled before signed releases begin.
+
+`npm run shortcut:create` creates `F:\coding\holodori\Holodori Planner.lnk`, targeting the stable installed executable under `%LOCALAPPDATA%\Programs\holodori Planner`.
 
 ## Fan-project notice
 

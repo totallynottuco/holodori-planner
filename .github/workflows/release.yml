@@ -24,8 +24,8 @@ jobs:
       - name: Publish release assets
         shell: pwsh
         run: |
-          $installer = Get-ChildItem release -Filter '*.exe' | Select-Object -First 1
-          $blockmap = Get-ChildItem release -Filter '*.blockmap' | Select-Object -First 1
+          $installer = Get-Item release/holodori-Planner-Setup.exe
+          $blockmap = Get-Item release/holodori-Planner-Setup.exe.blockmap
           $metadata = Get-Item release/latest.yml
           if (-not $installer -or -not $blockmap -or -not $metadata) { throw 'electron-builder did not produce every update asset' }
           gh release create $env:GITHUB_REF_NAME $installer.FullName $blockmap.FullName $metadata.FullName --verify-tag --title "holodori Planner $env:GITHUB_REF_NAME" --generate-notes

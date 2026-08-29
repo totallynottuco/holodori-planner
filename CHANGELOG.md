@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Changed local and GitHub builds to reuse the stable `holodori-Planner-Setup.exe` filename.
+- Locked upgrades to the existing per-user installation and added a project-folder shortcut helper.
+
 ## 0.1.2
 
 - Added fail-closed hardware-GPU startup verification for compositing, rasterization, WebGL, and WebGL2.

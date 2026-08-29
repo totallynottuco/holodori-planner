@@ -1,6 +1,7 @@
 # Manual release checklist
 
 - [ ] Run `npm run release:verify` on Windows x64.
+- [ ] Confirm `release` contains one installer named `holodori-Planner-Setup.exe`, its blockmap, and `latest.yml`.
 - [ ] Confirm keyboard-only navigation and visible focus at 100%, 125%, and 150% scaling.
 - [ ] Confirm the 1080×700 minimum window and offline startup.
 - [ ] Corrupt a disposable profile and verify visible backup recovery.

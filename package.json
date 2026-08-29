@@ -17,8 +17,9 @@
     "test:watch": "vitest",
     "build": "electron-vite build",
     "assets:generate": "node scripts/create-icon.mjs",
-    "package": "npm run assets:generate && npm run build && electron-builder --win nsis --x64",
+    "package": "node scripts/prepare-release.mjs && npm run assets:generate && npm run build && electron-builder --win nsis --x64",
     "smoke": "node scripts/smoke.mjs",
+    "shortcut:create": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/create-shortcut.ps1",
     "data:import": "tsx scripts/import-holodoridb.ts",
     "release:verify": "npm run typecheck && npm test && npm run package && npm run smoke"
   },
@@ -61,7 +62,7 @@
       "out/**/*",
       "package.json"
     ],
-    "artifactName": "holodori-Planner-Setup-${version}.${ext}",
+    "artifactName": "holodori-Planner-Setup.${ext}",
     "publish": [
       {
         "provider": "github",
@@ -84,7 +85,7 @@
       "oneClick": false,
       "perMachine": false,
       "allowElevation": false,
-      "allowToChangeInstallationDirectory": true,
+      "allowToChangeInstallationDirectory": false,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "holodori Planner",
