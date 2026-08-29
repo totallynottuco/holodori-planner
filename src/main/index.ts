@@ -140,7 +140,7 @@ if (singleInstance) {
     const store = new ProfileStore(app.getPath('userData'), progressionManifest)
     const loaded = await store.load()
     if (smokeMode) {
-      if (progressionManifest.cards.length === 0 || loaded.profile.schemaVersion !== 1) app.exit(1)
+      if (progressionManifest.cards.length === 0 || loaded.profile.schemaVersion !== 2) app.exit(1)
       else app.exit(0)
       return
     }

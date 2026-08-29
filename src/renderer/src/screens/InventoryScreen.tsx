@@ -1,22 +1,27 @@
-import { Check, CircleDollarSign, FlaskConical, Gem, Save } from 'lucide-react'
+import { Save } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import { t, type TranslationKey } from '@shared/i18n'
-import type { Inventory, ResourceKey } from '@shared/types'
-import { NumberField } from '../components'
+import { resourceKeys, type Inventory, type ResourceKey } from '@shared/types'
+import { MaterialIcon } from '../components'
 import { useProfile } from '../profile-context'
 
-const groups: Array<{ title: string; icon: typeof Gem; keys: ResourceKey[] }> = [
-  { title: 'General', icon: CircleDollarSign, keys: ['lessonPoints', 'hologold', 'hololium', 'bloomStones'] },
-  { title: 'Cute', icon: Gem, keys: ['cuteBeads', 'cuteCrystals'] },
-  { title: 'Pure', icon: FlaskConical, keys: ['pureBeads', 'pureCrystals'] },
-  { title: 'Happy', icon: Check, keys: ['happyBeads', 'happyCrystals'] }
-]
+type InventoryTab = 'all' | 'general' | 'cute' | 'pure' | 'happy' | 'bloom'
+
+const tabKeys: Record<InventoryTab, ResourceKey[]> = {
+  all: [...resourceKeys],
+  general: ['lessonPoints', 'hologold', 'hololium'],
+  cute: ['cuteBeads', 'cuteCrystals'],
+  pure: ['pureBeads', 'pureCrystals'],
+  happy: ['happyBeads', 'happyCrystals'],
+  bloom: ['bloomStones']
+}
 
 export function InventoryScreen(): React.JSX.Element {
   const { profile, save, busy, notify } = useProfile()
   const [draft, setDraft] = useState<Inventory>({ ...profile.inventory })
+  const [tab, setTab] = useState<InventoryTab>('all')
   useEffect(() => setDraft({ ...profile.inventory }), [profile.inventory])
-  const changed = Object.keys(draft).some((key) => draft[key as ResourceKey] !== profile.inventory[key as ResourceKey])
+  const changed = resourceKeys.some((key) => draft[key] !== profile.inventory[key])
 
   const commit = async (): Promise<void> => {
     await save({ ...profile, inventory: draft })
@@ -24,11 +29,19 @@ export function InventoryScreen(): React.JSX.Element {
   }
 
   return (
-    <section className="screen inventory-grid">
-      {groups.map((group) => {
-        const Icon = group.icon
-        return <div className={`panel inventory-group ${group.title.toLowerCase()}`} key={group.title}><div className="panel-title"><h2>{group.title}</h2><div className="group-icon"><Icon size={19} /></div></div><div className="field-grid">{group.keys.map((key) => <NumberField key={key} label={t(`resource.${key}` as TranslationKey)} value={draft[key]} onChange={(value) => setDraft((current) => ({ ...current, [key]: value }))} />)}</div></div>
-      })}
+    <section className="screen inventory-screen">
+      <div className="tab-bar panel" role="tablist" aria-label="Inventory groups">
+        {(['all', 'general', 'cute', 'pure', 'happy', 'bloom'] as const).map((value) => <button role="tab" aria-selected={tab === value} className={tab === value ? 'active' : ''} key={value} onClick={() => setTab(value)}>{value[0].toUpperCase() + value.slice(1)}</button>)}
+      </div>
+      <div className="material-grid">
+        {tabKeys[tab].map((key) => (
+          <label className={`material-card panel ${key.startsWith('cute') ? 'cute' : key.startsWith('pure') ? 'pure' : key.startsWith('happy') ? 'happy' : ''}`} key={key}>
+            <div className="material-image"><MaterialIcon resource={key} /></div>
+            <span>{t(`resource.${key}` as TranslationKey)}</span>
+            <input aria-label={t(`resource.${key}` as TranslationKey)} type="number" min="0" step="1" value={draft[key]} onChange={(event) => setDraft((current) => ({ ...current, [key]: Math.max(0, Math.trunc(Number(event.target.value) || 0)) }))} />
+          </label>
+        ))}
+      </div>
       <div className="sticky-action"><span>{changed ? 'Unsaved inventory changes' : 'Inventory is up to date'}</span><button className="primary-button" disabled={!changed || busy} onClick={() => void commit()}><Save size={17} />Save inventory</button></div>
     </section>
   )

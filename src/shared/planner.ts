@@ -1,5 +1,7 @@
+import { hasActiveGoal } from './profile'
 import type {
-  AppProfileV1,
+  AggregatePlanResult,
+  AppProfileV2,
   CardCatalogEntry,
   PlanResult,
   PlannerRequest,
@@ -38,29 +40,46 @@ export function normalizeCardState(
 ): SavedCardState {
   const rules = manifest.rarities[rarityKey(card.rarity)]
   const level = Math.min(Math.max(1, state.level), rules.maxLevel)
-  const trainingStage = Math.max(state.trainingStage, minimumTrainingStage(card, level, manifest)) as SavedCardState['trainingStage']
-  const maxPartial =
-    level === rules.maxLevel
-      ? 0
-      : manifest.cumulativeExperience[level] - manifest.cumulativeExperience[level - 1] - 1
+  const trainingStage = Math.max(
+    state.trainingStage,
+    minimumTrainingStage(card, level, manifest)
+  ) as SavedCardState['trainingStage']
+  const maxPartial = level === rules.maxLevel
+    ? 0
+    : manifest.cumulativeExperience[level] - manifest.cumulativeExperience[level - 1] - 1
+  const bloomStage = Math.min(5, Math.max(0, state.bloomStage)) as SavedCardState['bloomStage']
   return {
     ...state,
     level,
     trainingStage,
     expIntoLevel: Math.min(Math.max(0, state.expIntoLevel), maxPartial),
-    bloomStage: Math.min(5, Math.max(0, state.bloomStage)) as SavedCardState['bloomStage']
+    bloomStage,
+    goal: {
+      targetLevel: Math.min(rules.maxLevel, Math.max(level, state.goal.targetLevel)),
+      targetBloomStage: Math.min(5, Math.max(bloomStage, state.goal.targetBloomStage)) as SavedCardState['goal']['targetBloomStage'],
+      useBloomStones: card.rarity === 5 && state.goal.useBloomStones
+    }
+  }
+}
+
+export function requestForGoal(state: SavedCardState): PlannerRequest {
+  return {
+    cardId: state.cardId,
+    targetLevel: state.goal.targetLevel,
+    targetBloomStage: state.goal.targetBloomStage,
+    useBloomStones: state.goal.useBloomStones
   }
 }
 
 export function calculatePlan(
-  profile: AppProfileV1,
+  profile: AppProfileV2,
   request: PlannerRequest,
   manifest: ProgressionManifest
 ): PlanResult {
   const catalogCard = manifest.cards.find((card) => card.id === request.cardId)
   if (!catalogCard) throw new Error(`Unknown card ID: ${request.cardId}`)
   const rawState = profile.cards[request.cardId]
-  if (!rawState) throw new Error('Add this card to Cards before planning it')
+  if (!rawState) throw new Error('Add this card to Characters before planning it')
   const state = normalizeCardState(rawState, catalogCard, manifest)
   const rules = manifest.rarities[rarityKey(catalogCard.rarity)]
 
@@ -117,7 +136,11 @@ export function calculatePlan(
   return {
     card: catalogCard,
     current: state,
-    target: { level: request.targetLevel, trainingStage: targetTrainingStage, bloomStage: request.targetBloomStage },
+    target: {
+      level: request.targetLevel,
+      trainingStage: targetTrainingStage,
+      bloomStage: request.targetBloomStage
+    },
     experienceRequired,
     bloomPointsSpent,
     bloomStonesSpent,
@@ -126,8 +149,57 @@ export function calculatePlan(
   }
 }
 
-export function applyPlan(profile: AppProfileV1, plan: PlanResult): AppProfileV1 {
-  if (!plan.canApply) throw new Error('The plan has resource shortages')
+export function calculateGoalPlan(
+  profile: AppProfileV2,
+  cardId: string,
+  manifest: ProgressionManifest
+): PlanResult {
+  const state = profile.cards[cardId]
+  if (!state) throw new Error('Unknown saved card')
+  return calculatePlan(profile, requestForGoal(state), manifest)
+}
+
+export function calculateAggregatePlan(
+  profile: AppProfileV2,
+  manifest: ProgressionManifest
+): AggregatePlanResult {
+  const catalogOrder = new Map(manifest.cards.map((card, index) => [card.id, index]))
+  const plans = Object.values(profile.cards)
+    .filter(hasActiveGoal)
+    .filter((state) => catalogOrder.has(state.cardId))
+    .sort((a, b) => (catalogOrder.get(a.cardId) ?? 0) - (catalogOrder.get(b.cardId) ?? 0))
+    .map((state) => calculatePlan(profile, requestForGoal(state), manifest))
+
+  const required = new Map<ResourceKey | 'bloomPoints', number>()
+  const bloomAvailable = new Map<ResourceKey | 'bloomPoints', number>()
+  const bloomShortage = new Map<ResourceKey | 'bloomPoints', number>()
+  for (const plan of plans) {
+    for (const item of plan.requirements) {
+      required.set(item.key, (required.get(item.key) ?? 0) + item.required)
+      if (item.key === 'bloomPoints') {
+        bloomAvailable.set(item.key, (bloomAvailable.get(item.key) ?? 0) + item.available)
+        bloomShortage.set(item.key, (bloomShortage.get(item.key) ?? 0) + item.shortage)
+      }
+    }
+  }
+
+  const requirements = [...required.entries()].map(([key, amount]) => {
+    const available = key === 'bloomPoints'
+      ? bloomAvailable.get(key) ?? 0
+      : profile.inventory[key]
+    const shortage = key === 'bloomPoints'
+      ? bloomShortage.get(key) ?? 0
+      : Math.max(0, amount - available)
+    return { key, required: amount, available, shortage }
+  })
+  return {
+    plans,
+    requirements,
+    canApplyAll: plans.length > 0 && requirements.every((item) => item.shortage === 0)
+  }
+}
+
+function applyPlanWithoutRevision(profile: AppProfileV2, plan: PlanResult): AppProfileV2 {
   const inventory = { ...profile.inventory }
   for (const item of plan.requirements) {
     if (item.key !== 'bloomPoints') inventory[item.key] -= item.required
@@ -139,7 +211,28 @@ export function applyPlan(profile: AppProfileV1, plan: PlanResult): AppProfileV1
     expIntoLevel: 0,
     trainingStage: plan.target.trainingStage as SavedCardState['trainingStage'],
     bloomStage: plan.target.bloomStage as SavedCardState['bloomStage'],
-    bloomPoints: plan.current.bloomPoints - plan.bloomPointsSpent
+    bloomPoints: plan.current.bloomPoints - plan.bloomPointsSpent,
+    goal: {
+      targetLevel: plan.target.level,
+      targetBloomStage: plan.target.bloomStage as SavedCardState['bloomStage'],
+      useBloomStones: false
+    }
   }
-  return { ...profile, revision: profile.revision + 1, inventory, cards }
+  return { ...profile, inventory, cards, plannerSelection: { cardId: plan.card.id } }
+}
+
+export function applyPlan(profile: AppProfileV2, plan: PlanResult): AppProfileV2 {
+  if (!plan.canApply) throw new Error('The plan has resource shortages')
+  const next = applyPlanWithoutRevision(profile, plan)
+  return { ...next, revision: profile.revision + 1 }
+}
+
+export function applyAggregatePlan(
+  profile: AppProfileV2,
+  aggregate: AggregatePlanResult
+): AppProfileV2 {
+  if (!aggregate.canApplyAll) throw new Error('The aggregate plan has resource shortages')
+  let next = profile
+  for (const plan of aggregate.plans) next = applyPlanWithoutRevision(next, plan)
+  return { ...next, revision: profile.revision + 1 }
 }

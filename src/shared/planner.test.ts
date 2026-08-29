@@ -1,7 +1,14 @@
 import { progressionManifest } from './manifest'
-import { applyPlan, calculatePlan, minimumTrainingStage, normalizeCardState } from './planner'
-import { createDefaultProfile } from './profile'
-import type { CardCatalogEntry, SavedCardState } from './types'
+import {
+  applyAggregatePlan,
+  applyPlan,
+  calculateAggregatePlan,
+  calculatePlan,
+  minimumTrainingStage,
+  normalizeCardState
+} from './planner'
+import { createDefaultCardState, createDefaultProfile } from './profile'
+import type { AppProfileV2, CardCatalogEntry, SavedCardState } from './types'
 
 const manifest = progressionManifest
 
@@ -11,18 +18,10 @@ function card(rarity: 3 | 4 | 5, attribute: 'cute' | 'pure' | 'happy' = 'cute'):
   return result
 }
 
-function profileWith(target: CardCatalogEntry, state?: Partial<SavedCardState>) {
+function profileWith(target: CardCatalogEntry, state?: Partial<SavedCardState>): AppProfileV2 {
   const profile = createDefaultProfile(manifest.metadata.catalogVersion)
-  profile.cards[target.id] = {
-    cardId: target.id,
-    nameSnapshot: `${target.memberName} — ${target.cardName}`,
-    level: 1,
-    expIntoLevel: 0,
-    trainingStage: 0,
-    bloomStage: 0,
-    bloomPoints: 0,
-    ...state
-  }
+  const base = createDefaultCardState(target.id, `${target.memberName} — ${target.cardName}`)
+  profile.cards[target.id] = { ...base, ...state, goal: { ...base.goal, ...state?.goal } }
   return profile
 }
 
@@ -71,11 +70,13 @@ describe('progression calculator', () => {
     expect(plan.experienceRequired).toBe(1_350)
   })
 
-  it('automatically raises an impossible SP stage and clears EXP at max level', () => {
+  it('raises impossible state and goal values during normalization', () => {
     const target = card(3)
-    const normalized = normalizeCardState(profileWith(target).cards[target.id] = { ...profileWith(target).cards[target.id], level: 60, expIntoLevel: 99 }, target, manifest)
+    const state = profileWith(target).cards[target.id]
+    const normalized = normalizeCardState({ ...state, level: 60, expIntoLevel: 99 }, target, manifest)
     expect(normalized.trainingStage).toBe(4)
     expect(normalized.expIntoLevel).toBe(0)
+    expect(normalized.goal.targetLevel).toBe(60)
   })
 
   it('spends 5★ card points before optional Bloom Stones', () => {
@@ -89,6 +90,7 @@ describe('progression calculator', () => {
     const applied = applyPlan(profile, plan)
     expect(applied.cards[target.id].bloomStage).toBe(5)
     expect(applied.cards[target.id].bloomPoints).toBe(0)
+    expect(applied.cards[target.id].goal.targetBloomStage).toBe(5)
     expect(applied.inventory.bloomStones).toBe(0)
   })
 
@@ -103,5 +105,50 @@ describe('progression calculator', () => {
     expect(plan.canApply).toBe(false)
     expect(plan.requirements.find((item) => item.key === 'lessonPoints')?.shortage).toBe(1_122_650)
     expect(() => applyPlan(profileWith(target), plan)).toThrow(/shortages/)
+  })
+
+  it('detects shared-resource contention across individually affordable plans', () => {
+    const first = card(3, 'cute')
+    const second = manifest.cards.find((item) => item.rarity === 3 && item.attribute === 'cute' && item.id !== first.id)!
+    const profile = profileWith(first, { goal: { targetLevel: 20, targetBloomStage: 0, useBloomStones: false } })
+    profile.cards[second.id] = createDefaultCardState(second.id, `${second.memberName} — ${second.cardName}`)
+    profile.cards[second.id].goal.targetLevel = 20
+    const oneRequired = manifest.cumulativeExperience[19]
+    profile.inventory.lessonPoints = oneRequired
+    const aggregate = calculateAggregatePlan(profile, manifest)
+    expect(aggregate.plans).toHaveLength(2)
+    expect(aggregate.plans.every((plan) => plan.canApply)).toBe(true)
+    expect(aggregate.requirements.find((item) => item.key === 'lessonPoints')?.shortage).toBe(oneRequired)
+    expect(aggregate.canApplyAll).toBe(false)
+  })
+
+  it('applies all goals atomically with one revision increment', () => {
+    const first = card(3, 'cute')
+    const second = card(4, 'pure')
+    const profile = profileWith(first, { goal: { targetLevel: 20, targetBloomStage: 0, useBloomStones: false } })
+    profile.cards[second.id] = createDefaultCardState(second.id, `${second.memberName} — ${second.cardName}`)
+    profile.cards[second.id].goal.targetLevel = 30
+    Object.keys(profile.inventory).forEach((key) => { profile.inventory[key as keyof typeof profile.inventory] = 10_000_000 })
+    const aggregate = calculateAggregatePlan(profile, manifest)
+    const before = profile.inventory.lessonPoints
+    const required = aggregate.requirements.find((item) => item.key === 'lessonPoints')!.required
+    const applied = applyAggregatePlan(profile, aggregate)
+    expect(applied.revision).toBe(profile.revision + 1)
+    expect(applied.inventory.lessonPoints).toBe(before - required)
+    expect(applied.cards[first.id].level).toBe(20)
+    expect(applied.cards[second.id].level).toBe(30)
+    expect(calculateAggregatePlan(applied, manifest).plans).toHaveLength(0)
+  })
+
+  it('does not pool card-specific Bloom Points between cards', () => {
+    const first = card(3, 'cute')
+    const second = manifest.cards.find((item) => item.rarity === 3 && item.id !== first.id)!
+    const profile = profileWith(first, { bloomPoints: 2, goal: { targetLevel: 1, targetBloomStage: 1, useBloomStones: false } })
+    profile.cards[second.id] = createDefaultCardState(second.id, `${second.memberName} — ${second.cardName}`)
+    profile.cards[second.id].goal.targetBloomStage = 1
+    const aggregate = calculateAggregatePlan(profile, manifest)
+    const bloom = aggregate.requirements.find((item) => item.key === 'bloomPoints')
+    expect(bloom).toMatchObject({ required: 2, available: 2, shortage: 1 })
+    expect(aggregate.canApplyAll).toBe(false)
   })
 })

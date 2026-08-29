@@ -1,9 +1,8 @@
 import type {
   AppInfo,
-  AppProfileV1,
+  AggregatePlanResult,
+  AppProfileV2,
   ImportPreview,
-  PlanResult,
-  PlannerRequest,
   ProfileLoadResult,
   UpdateStatus
 } from './types'
@@ -11,14 +10,15 @@ import type {
 export interface HolodoriApi {
   profile: {
     load(): Promise<ProfileLoadResult>
-    save(expectedRevision: number, profile: AppProfileV1): Promise<AppProfileV1>
+    save(expectedRevision: number, profile: AppProfileV2): Promise<AppProfileV2>
     export(): Promise<{ canceled: boolean; path?: string }>
     importPreview(): Promise<ImportPreview | null>
-    importCommit(token: string, expectedRevision: number): Promise<AppProfileV1>
+    importCommit(token: string, expectedRevision: number): Promise<AppProfileV2>
   }
   planner: {
-    preview(plan: PlannerRequest): Promise<PlanResult>
-    apply(expectedRevision: number, plan: PlannerRequest): Promise<AppProfileV1>
+    preview(): Promise<AggregatePlanResult>
+    applyCard(expectedRevision: number, cardId: string): Promise<AppProfileV2>
+    applyAll(expectedRevision: number): Promise<AppProfileV2>
   }
   updates: {
     check(): Promise<void>

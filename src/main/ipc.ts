@@ -1,11 +1,16 @@
 import { app, BrowserWindow, dialog, ipcMain, shell, type IpcMainInvokeEvent } from 'electron'
-import { applyPlan, calculatePlan } from '@shared/planner'
+import {
+  applyAggregatePlan,
+  applyPlan,
+  calculateAggregatePlan,
+  calculateGoalPlan
+} from '@shared/planner'
 import { progressionManifest } from '@shared/manifest'
 import {
-  applyPlannerRequestSchema,
+  applyAllRequestSchema,
+  applyCardRequestSchema,
   channels,
   importCommitSchema,
-  plannerRequestSchema,
   saveProfileRequestSchema
 } from '@shared/ipc'
 import type { AppInfo } from '@shared/types'
@@ -73,22 +78,23 @@ export function registerIpc(
       return profile
     })
   })
-  handle(channels.plannerPreview, async (_event, payload: unknown) => {
-    const request = plannerRequestSchema.parse(payload)
-    return calculatePlan(await store.getCurrent(), request, progressionManifest)
+  handle(channels.plannerPreview, async () => {
+    return calculateAggregatePlan(await store.getCurrent(), progressionManifest)
   })
-  handle(channels.plannerApply, async (_event, payload: unknown) => {
-    const request = applyPlannerRequestSchema.parse(payload)
+  handle(channels.plannerApplyCard, async (_event, payload: unknown) => {
+    const request = applyCardRequestSchema.parse(payload)
     const current = await store.getCurrent()
     if (current.revision !== request.expectedRevision) throw new Error('This profile changed. Reload and try again.')
-    const plan = calculatePlan(current, request.plan, progressionManifest)
+    const plan = calculateGoalPlan(current, request.cardId, progressionManifest)
     const next = applyPlan(current, plan)
-    next.plannerSelection = {
-      cardId: request.plan.cardId,
-      targetLevel: request.plan.targetLevel,
-      targetBloomStage: request.plan.targetBloomStage,
-      useBloomStones: request.plan.useBloomStones
-    }
+    return store.commitCalculated(request.expectedRevision, next)
+  })
+  handle(channels.plannerApplyAll, async (_event, payload: unknown) => {
+    const request = applyAllRequestSchema.parse(payload)
+    const current = await store.getCurrent()
+    if (current.revision !== request.expectedRevision) throw new Error('This profile changed. Reload and try again.')
+    const aggregate = calculateAggregatePlan(current, progressionManifest)
+    const next = applyAggregatePlan(current, aggregate)
     return store.commitCalculated(request.expectedRevision, next)
   })
   handle(channels.updatesCheck, () => updater.check(false))

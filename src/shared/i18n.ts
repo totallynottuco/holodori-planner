@@ -1,6 +1,6 @@
 const en = {
   'nav.planner': 'Planner',
-  'nav.cards': 'Cards',
+  'nav.characters': 'Characters',
   'nav.inventory': 'Inventory',
   'nav.settings': 'Settings',
   'app.name': 'holodori Planner',

@@ -19,6 +19,7 @@ jobs:
       - run: npm ci
       - run: npm run typecheck
       - run: npm test
+      - run: npm run assets:verify
       - run: npm run build
       - run: npx electron-builder --win nsis --x64 --publish never
       - name: Publish release assets

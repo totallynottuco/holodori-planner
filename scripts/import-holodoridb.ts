@@ -160,6 +160,7 @@ function buildCards(): CardCatalogEntry[] {
   const characters = uniqueById(rows('Character.json'), 'Character.json')
   const localizedNames = uniqueById(rows('LangCard_Eng.json'), 'LangCard_Eng.json')
   const output: CardCatalogEntry[] = []
+  const assetIds = new Set<string>()
   for (const [id, row] of cards) {
     const characterId = String(row.data.characterId)
     const character = characters.get(characterId)
@@ -169,10 +170,37 @@ function buildCards(): CardCatalogEntry[] {
     if (!localizedName) throw new Error(`Card ${id} references missing English name ${nameLangId}`)
     const memberName = String(character.data.nameEng ?? '').trim()
     const cardName = String(localizedName.data.text ?? '').trim()
-    if (!memberName || !cardName) throw new Error(`Card ${id} has an empty English label`)
-    output.push({ id, memberName, cardName, rarity: parseRarity(row.data.rarity), attribute: parseAttribute(row.data.attributeType) })
+    const assetId = String(row.data.assetId ?? '').trim()
+    if (!memberName || !cardName || !assetId) throw new Error(`Card ${id} has incomplete catalog metadata`)
+    if (assetIds.has(assetId)) throw new Error(`Card.json contains duplicate asset ID ${assetId}`)
+    assetIds.add(assetId)
+    output.push({ id, assetId, memberName, cardName, rarity: parseRarity(row.data.rarity), attribute: parseAttribute(row.data.attributeType) })
+  }
+  const memberCount = new Set(output.map((card) => card.memberName)).size
+  if (output.length !== 178 || memberCount !== 54) {
+    throw new Error(`Catalog coverage changed: expected 178 cards across 54 members, received ${output.length} across ${memberCount}`)
+  }
+  for (const rarity of [3, 4, 5] as const) {
+    if (!output.some((card) => card.rarity === rarity)) throw new Error(`Catalog has no ${rarity}★ cards`)
+  }
+  for (const attribute of ['cute', 'pure', 'happy'] as const) {
+    if (!output.some((card) => card.attribute === attribute)) throw new Error(`Catalog has no ${attribute} cards`)
   }
   return output.sort((a, b) => a.memberName.localeCompare(b.memberName) || b.rarity - a.rarity || a.cardName.localeCompare(b.cardName))
+}
+
+const resourceAssets: ProgressionManifest['resourceAssets'] = {
+  lessonPoints: { sourceAssetName: 'img_item_thumb_card-level-up', fileName: 'lessonPoints.webp' },
+  hologold: { sourceAssetName: 'img_item_thumb_gold', fileName: 'hologold.webp' },
+  hololium: { sourceAssetName: 'img_item_thumb_card-limit-break-cmn-sr', fileName: 'hololium.webp' },
+  bloomStones: { sourceAssetName: 'img_item_thumb_card-potential-upgrade-cmn', fileName: 'bloomStones.webp' },
+  bloomPoints: { sourceAssetName: 'img_resource_thumb_card-potential-upgrade-point-cmn', fileName: 'bloomPoints.webp' },
+  cuteBeads: { sourceAssetName: 'img_item_thumb_card-limit-break-attribute-1-1', fileName: 'cuteBeads.webp' },
+  cuteCrystals: { sourceAssetName: 'img_item_thumb_card-limit-break-attribute-1-2', fileName: 'cuteCrystals.webp' },
+  pureBeads: { sourceAssetName: 'img_item_thumb_card-limit-break-attribute-2-1', fileName: 'pureBeads.webp' },
+  pureCrystals: { sourceAssetName: 'img_item_thumb_card-limit-break-attribute-2-2', fileName: 'pureCrystals.webp' },
+  happyBeads: { sourceAssetName: 'img_item_thumb_card-limit-break-attribute-3-1', fileName: 'happyBeads.webp' },
+  happyCrystals: { sourceAssetName: 'img_item_thumb_card-limit-break-attribute-3-2', fileName: 'happyCrystals.webp' }
 }
 
 const sourceCommit = execFileSync('git', ['-C', checkout, 'rev-parse', 'HEAD'], { encoding: 'utf8' }).trim()
@@ -182,17 +210,21 @@ if (!/^[a-f0-9]{40}$/.test(sourceCommit) || !/^[a-f0-9]{64}$/.test(masterDataVer
 }
 
 const manifest: ProgressionManifest = {
-  schemaVersion: 1,
+  schemaVersion: 2,
   metadata: {
     sourceRepository: 'https://github.com/HolodoriDB/holodori-db-eng-diff',
     sourceCommit,
     masterDataVersion,
     importedAt: new Date().toISOString(),
-    catalogVersion: masterDataVersion.slice(0, 12)
+    catalogVersion: masterDataVersion.slice(0, 12),
+    assetSourceRepository: 'https://github.com/HolodoriDB/holodori-asset-tools',
+    assetSourceCommit: '13f150fe9dfbd367be53e5ea1c0a4ceb258b74f2',
+    assetCatalogRevision: 69
   },
   cumulativeExperience: buildExperience(),
   rarities: buildRarities(),
   bloom: buildBloom(),
+  resourceAssets,
   cards: buildCards()
 }
 

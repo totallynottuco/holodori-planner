@@ -22,7 +22,7 @@ describe('ProfileStore', () => {
     const directory = await temporaryDirectory()
     const store = new ProfileStore(directory, progressionManifest)
     const loaded = await store.load()
-    expect(loaded.profile.schemaVersion).toBe(1)
+    expect(loaded.profile.schemaVersion).toBe(2)
     expect(loaded.profile.revision).toBe(0)
     expect(JSON.parse(await readFile(store.profilePath, 'utf8'))).toEqual(loaded.profile)
   })
@@ -98,12 +98,51 @@ describe('ProfileStore', () => {
       expIntoLevel: 0,
       trainingStage: 0,
       bloomStage: 0,
-      bloomPoints: 0
+      bloomPoints: 0,
+      goal: { targetLevel: 1, targetBloomStage: 0, useBloomStones: false }
     }
     await writeFile(join(directory, 'profile.json'), JSON.stringify(oldProfile), 'utf8')
     const newerManifest = structuredClone(progressionManifest)
     newerManifest.cards = newerManifest.cards.filter((card) => card.id !== removed.id)
     const loaded = await new ProfileStore(directory, newerManifest).load()
     expect(loaded.profile.cards[removed.id].nameSnapshot).toContain(removed.memberName)
+  })
+
+  it('migrates v1 cards and preserves the selected planner target', async () => {
+    const directory = await temporaryDirectory()
+    const selected = progressionManifest.cards.find((card) => card.rarity === 5)!
+    const legacy = {
+      schemaVersion: 1,
+      revision: 7,
+      catalogVersionLastSeen: 'legacy',
+      inventory: createDefaultProfile('legacy').inventory,
+      cards: {
+        [selected.id]: {
+          cardId: selected.id,
+          nameSnapshot: `${selected.memberName} — ${selected.cardName}`,
+          level: 12,
+          expIntoLevel: 0,
+          trainingStage: 0,
+          bloomStage: 1,
+          bloomPoints: 2
+        }
+      },
+      plannerSelection: {
+        cardId: selected.id,
+        targetLevel: 40,
+        targetBloomStage: 4,
+        useBloomStones: true
+      },
+      preferences: { language: 'en', autoCheckUpdates: true }
+    }
+    await writeFile(join(directory, 'profile.json'), JSON.stringify(legacy), 'utf8')
+    const loaded = await new ProfileStore(directory, progressionManifest).load()
+    expect(loaded.profile.schemaVersion).toBe(2)
+    expect(loaded.profile.revision).toBe(7)
+    expect(loaded.profile.cards[selected.id].goal).toEqual({
+      targetLevel: 40,
+      targetBloomStage: 4,
+      useBloomStones: true
+    })
   })
 })

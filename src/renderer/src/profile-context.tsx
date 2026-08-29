@@ -1,13 +1,13 @@
 import { createContext, useCallback, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import type { AppInfo, AppProfileV1 } from '@shared/types'
+import type { AppInfo, AppProfileV2 } from '@shared/types'
 
 interface ProfileContextValue {
-  profile: AppProfileV1
+  profile: AppProfileV2
   info: AppInfo
   recoveryNotice: string | null
   busy: boolean
-  save(candidate: AppProfileV1): Promise<AppProfileV1>
-  replace(profile: AppProfileV1): void
+  save(candidate: AppProfileV2): Promise<AppProfileV2>
+  replace(profile: AppProfileV2): void
   setBusy(value: boolean): void
   notify(message: string): void
 }
@@ -15,7 +15,7 @@ interface ProfileContextValue {
 const ProfileContext = createContext<ProfileContextValue | null>(null)
 
 export function ProfileProvider({ children }: { children: ReactNode }): React.JSX.Element {
-  const [profile, setProfile] = useState<AppProfileV1 | null>(null)
+  const [profile, setProfile] = useState<AppProfileV2 | null>(null)
   const [info, setInfo] = useState<AppInfo | null>(null)
   const [recoveryNotice, setRecoveryNotice] = useState<string | null>(null)
   const [busy, setBusy] = useState(false)
@@ -38,7 +38,7 @@ export function ProfileProvider({ children }: { children: ReactNode }): React.JS
   }, [])
 
   const save = useCallback(
-    async (candidate: AppProfileV1): Promise<AppProfileV1> => {
+    async (candidate: AppProfileV2): Promise<AppProfileV2> => {
       if (!profile) throw new Error('Profile is still loading')
       setBusy(true)
       setError(null)

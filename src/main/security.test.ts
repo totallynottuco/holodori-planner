@@ -1,5 +1,5 @@
 import { isTrustedRendererFrame, mayOpenExternalUrl, shouldBlockNavigation } from './security'
-import { applyPlannerRequestSchema, saveProfileRequestSchema } from '@shared/ipc'
+import { applyAllRequestSchema, applyCardRequestSchema, saveProfileRequestSchema } from '@shared/ipc'
 
 describe('renderer security', () => {
   it('accepts only the app top frame', () => {
@@ -21,7 +21,8 @@ describe('renderer security', () => {
   })
 
   it('rejects malformed IPC payloads', () => {
-    expect(() => applyPlannerRequestSchema.parse({ expectedRevision: -1, plan: { cardId: '', targetLevel: 999 } })).toThrow()
+    expect(() => applyCardRequestSchema.parse({ expectedRevision: -1, cardId: '' })).toThrow()
+    expect(() => applyAllRequestSchema.parse({ expectedRevision: -1 })).toThrow()
     expect(() => saveProfileRequestSchema.parse({ expectedRevision: 0, profile: {} })).toThrow()
   })
 })

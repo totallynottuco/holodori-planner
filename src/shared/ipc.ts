@@ -10,5 +10,9 @@ export const plannerRequestSchema = z.object({
   useBloomStones: z.boolean()
 })
 export const saveProfileRequestSchema = z.object({ expectedRevision: revisionSchema, profile: appProfileSchema })
-export const applyPlannerRequestSchema = z.object({ expectedRevision: revisionSchema, plan: plannerRequestSchema })
+export const applyCardRequestSchema = z.object({
+  expectedRevision: revisionSchema,
+  cardId: z.string().min(1)
+})
+export const applyAllRequestSchema = z.object({ expectedRevision: revisionSchema })
 export const importCommitSchema = z.object({ token: z.string().uuid(), expectedRevision: revisionSchema })

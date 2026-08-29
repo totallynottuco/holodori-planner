@@ -1,11 +1,11 @@
 import { copyFile, mkdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { basename, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { createDefaultProfile, migrateProfile, validateProfileForManifest } from '@shared/profile'
-import type { AppProfileV1, ImportPreview, ProfileLoadResult, ProgressionManifest } from '@shared/types'
+import { createDefaultProfile, hasActiveGoal, migrateProfile, validateProfileForManifest } from '@shared/profile'
+import type { AppProfileV2, ImportPreview, ProfileLoadResult, ProgressionManifest } from '@shared/types'
 
 interface PendingImport {
-  profile: AppProfileV1
+  profile: AppProfileV2
   fileName: string
   expiresAt: number
 }
@@ -13,7 +13,7 @@ interface PendingImport {
 export class ProfileStore {
   readonly profilePath: string
   readonly backupPath: string
-  private currentProfile: AppProfileV1 | null = null
+  private currentProfile: AppProfileV2 | null = null
   private recoveryNotice: string | null = null
   private readonly imports = new Map<string, PendingImport>()
 
@@ -61,11 +61,11 @@ export class ProfileStore {
     }
   }
 
-  async getCurrent(): Promise<AppProfileV1> {
+  async getCurrent(): Promise<AppProfileV2> {
     return (await this.load()).profile
   }
 
-  async save(expectedRevision: number, candidate: AppProfileV1): Promise<AppProfileV1> {
+  async save(expectedRevision: number, candidate: AppProfileV2): Promise<AppProfileV2> {
     const current = await this.getCurrent()
     this.assertRevision(expectedRevision, current)
     if (candidate.revision !== expectedRevision) throw new Error('Candidate profile revision is stale')
@@ -75,7 +75,7 @@ export class ProfileStore {
       const knownBefore = Boolean(current.cards[cardId])
       if (!knownNow && !knownBefore) throw new Error(`Unknown card ID: ${cardId}`)
     }
-    const next: AppProfileV1 = {
+    const next: AppProfileV2 = {
       ...validated,
       revision: current.revision + 1,
       catalogVersionLastSeen: this.manifest.metadata.catalogVersion
@@ -85,11 +85,11 @@ export class ProfileStore {
     return structuredClone(next)
   }
 
-  async replace(expectedRevision: number, candidate: AppProfileV1): Promise<AppProfileV1> {
+  async replace(expectedRevision: number, candidate: AppProfileV2): Promise<AppProfileV2> {
     const current = await this.getCurrent()
     this.assertRevision(expectedRevision, current)
     const validated = validateProfileForManifest(candidate, this.manifest)
-    const next: AppProfileV1 = {
+    const next: AppProfileV2 = {
       ...validated,
       revision: current.revision + 1,
       catalogVersionLastSeen: this.manifest.metadata.catalogVersion
@@ -119,19 +119,20 @@ export class ProfileStore {
       summary: {
         cards: Object.keys(profile.cards).length,
         inventoryUnits: Object.values(profile.inventory).reduce((sum, value) => sum + value, 0),
-        revision: profile.revision
+        revision: profile.revision,
+        activeGoals: Object.values(profile.cards).filter(hasActiveGoal).length
       }
     }
   }
 
-  async commitImport(token: string, expectedRevision: number): Promise<AppProfileV1> {
+  async commitImport(token: string, expectedRevision: number): Promise<AppProfileV2> {
     const pending = this.imports.get(token)
     this.imports.delete(token)
     if (!pending || pending.expiresAt < Date.now()) throw new Error('The import preview expired. Choose the file again.')
     return this.replace(expectedRevision, pending.profile)
   }
 
-  async commitCalculated(expectedRevision: number, next: AppProfileV1): Promise<AppProfileV1> {
+  async commitCalculated(expectedRevision: number, next: AppProfileV2): Promise<AppProfileV2> {
     const current = await this.getCurrent()
     this.assertRevision(expectedRevision, current)
     if (next.revision !== current.revision + 1) throw new Error('Invalid calculated profile revision')
@@ -141,15 +142,15 @@ export class ProfileStore {
     return structuredClone(validated)
   }
 
-  private assertRevision(expected: number, current: AppProfileV1): void {
+  private assertRevision(expected: number, current: AppProfileV2): void {
     if (expected !== current.revision) throw new Error('This profile changed in another window. Reload and try again.')
   }
 
-  private async readValidated(path: string): Promise<AppProfileV1> {
+  private async readValidated(path: string): Promise<AppProfileV2> {
     return migrateProfile(JSON.parse(await readFile(path, 'utf8')) as unknown, this.manifest)
   }
 
-  private async writeAtomic(profile: AppProfileV1, createBackup: boolean): Promise<void> {
+  private async writeAtomic(profile: AppProfileV2, createBackup: boolean): Promise<void> {
     await mkdir(this.directory, { recursive: true })
     const temporary = join(this.directory, `profile.json.tmp-${process.pid}-${randomUUID()}`)
     await writeFile(temporary, `${JSON.stringify(profile, null, 2)}\n`, 'utf8')

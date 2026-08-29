@@ -36,6 +36,7 @@ export interface RarityProgression {
 
 export interface CardCatalogEntry {
   id: string
+  assetId: string
   memberName: string
   cardName: string
   rarity: Rarity
@@ -43,13 +44,16 @@ export interface CardCatalogEntry {
 }
 
 export interface ProgressionManifest {
-  schemaVersion: 1
+  schemaVersion: 2
   metadata: {
     sourceRepository: string
     sourceCommit: string
     masterDataVersion: string
     importedAt: string
     catalogVersion: string
+    assetSourceRepository: string
+    assetSourceCommit: string
+    assetCatalogRevision: number
   }
   cumulativeExperience: number[]
   rarities: Record<'3' | '4' | '5', RarityProgression>
@@ -58,6 +62,10 @@ export interface ProgressionManifest {
     fiveStarStoneItemId: string
     effects: Record<'3' | '4' | '5', string[]>
   }
+  resourceAssets: Record<ResourceKey | 'bloomPoints', {
+    sourceAssetName: string
+    fileName: string
+  }>
   cards: CardCatalogEntry[]
 }
 
@@ -71,19 +79,23 @@ export interface SavedCardState {
   trainingStage: 0 | 1 | 2 | 3 | 4
   bloomStage: 0 | 1 | 2 | 3 | 4 | 5
   bloomPoints: number
+  goal: CardGoal
 }
 
-export interface AppProfileV1 {
-  schemaVersion: 1
+export interface CardGoal {
+  targetLevel: number
+  targetBloomStage: 0 | 1 | 2 | 3 | 4 | 5
+  useBloomStones: boolean
+}
+
+export interface AppProfileV2 {
+  schemaVersion: 2
   revision: number
   catalogVersionLastSeen: string
   inventory: Inventory
   cards: Record<string, SavedCardState>
   plannerSelection: {
     cardId: string | null
-    targetLevel: number | null
-    targetBloomStage: number | null
-    useBloomStones: boolean
   }
   preferences: {
     language: 'en'
@@ -120,19 +132,26 @@ export interface PlanResult {
   canApply: boolean
 }
 
+export interface AggregatePlanResult {
+  plans: PlanResult[]
+  requirements: RequirementLine[]
+  canApplyAll: boolean
+}
+
 export interface ProfileLoadResult {
-  profile: AppProfileV1
+  profile: AppProfileV2
   recoveryNotice: string | null
 }
 
 export interface ImportPreview {
   token: string
   fileName: string
-  profile: AppProfileV1
+  profile: AppProfileV2
   summary: {
     cards: number
     inventoryUnits: number
     revision: number
+    activeGoals: number
   }
 }
 

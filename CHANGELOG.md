@@ -2,8 +2,12 @@
 
 ## Unreleased
 
-- Changed local and GitHub builds to reuse the stable `holodori-Planner-Setup.exe` filename.
-- Locked upgrades to the existing per-user installation and added a project-folder shortcut helper.
+## 0.2.0
+
+- Added the complete searchable 178-card catalog with offline official thumbnails and material icons.
+- Added per-card goals, aggregate requirements, individual apply, and atomic Apply All.
+- Added automatic profile-v1 migration and the Seelie-style Characters, Planner, Inventory, and Settings layout.
+- Kept the stable `holodori-Planner-Setup.exe`, in-place per-user upgrades, project-folder shortcut, and strict hardware-GPU policy.
 
 ## 0.1.2
 
