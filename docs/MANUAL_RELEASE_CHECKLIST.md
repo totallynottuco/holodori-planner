@@ -10,4 +10,5 @@
 - [ ] Uninstall/reinstall and confirm AppData is retained.
 - [ ] Publish v0.1.0 and install normally.
 - [ ] Publish a tested v0.1.1 release and verify notification, approved download, explicit restart/install, and profile preservation.
+- [ ] For a controlled local update check, run `node scripts/live-update-e2e.mjs <installed-exe> <profile-json> <from> <to>` against disposable profile data.
 - [ ] When signing begins, remove `verifyUpdateCodeSignature: false` and lock the publisher identity.
