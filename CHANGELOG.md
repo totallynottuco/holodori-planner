@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.1
+
+- Added the verification release used to confirm in-place updates and profile preservation from 0.2.0.
+
 ## 0.2.0
 
 - Added the complete searchable 178-card catalog with offline official thumbnails and material icons.
