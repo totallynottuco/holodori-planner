@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+## 0.2.3
+
+- Changed the application, installer, and shortcut icon to card asset `00006-5-uniq-0074-00`.
+
 ## 0.2.2
 
 - Fixed dialogs overlapping or centering beneath the sidebar at smaller window sizes.
