@@ -38,7 +38,7 @@ function installApi(initial: AppProfileV1): { api: HolodoriApi; current(): AppPr
       onStatus: vi.fn((_callback: (status: UpdateStatus) => void) => () => undefined)
     },
     app: {
-      getInfo: vi.fn(async () => ({ version: '0.1.0', catalogVersion: progressionManifest.metadata.catalogVersion, profilePath: 'C:\\AppData\\holodori Planner\\profile.json', isPackaged: false, projectUrl: 'https://github.com/totallynottuco/holodori-planner' })),
+      getInfo: vi.fn(async () => ({ version: '0.1.0', catalogVersion: progressionManifest.metadata.catalogVersion, profilePath: 'C:\\AppData\\holodori Planner\\profile.json', isPackaged: false, projectUrl: 'https://github.com/totallynottuco/holodori-planner', gpu: { mode: 'hardware-required' as const, device: '0x10de:0x2684', features: { gpu_compositing: 'enabled', rasterization: 'enabled', webgl: 'enabled', webgl2: 'enabled' } } })),
       openProjectPage: vi.fn(async () => undefined)
     }
   }

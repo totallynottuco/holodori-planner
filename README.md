@@ -11,10 +11,13 @@ A Windows desktop planner for card progression in *hololive Dreams*. Version 0.1
 - Validated JSON backup export/import with replacement preview
 - GitHub Releases update checks with user-approved download and restart
 - Original, keyboard-accessible interface with no extracted game assets
+- Fail-closed hardware-GPU rendering: the UI will not start or continue if Chromium cannot provide hardware compositing, rasterization, WebGL, and WebGL2
 
 ## Development
 
 Requires Node.js 24 and npm.
+
+The desktop UI requires a working hardware GPU and driver. Software-rendering fallback is intentionally disabled; if GPU initialization fails or the GPU process exits, the app closes with a diagnostic message.
 
 ```powershell
 npm ci

@@ -1,5 +1,12 @@
 # Changelog
 
+## 0.1.2
+
+- Added fail-closed hardware-GPU startup verification for compositing, rasterization, WebGL, and WebGL2.
+- Forced the high-performance GPU on multi-adapter systems and rejected software renderers.
+- Added immediate shutdown when Electron's GPU process exits unexpectedly.
+- Added the active GPU and graphics policy to Settings.
+
 ## 0.1.1
 
 - Added a maintenance release for end-to-end update validation.

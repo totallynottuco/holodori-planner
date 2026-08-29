@@ -149,4 +149,9 @@ export interface AppInfo {
   profilePath: string
   isPackaged: boolean
   projectUrl: string
+  gpu: {
+    mode: 'hardware-required'
+    device: string
+    features: Record<'gpu_compositing' | 'rasterization' | 'webgl' | 'webgl2', string>
+  }
 }

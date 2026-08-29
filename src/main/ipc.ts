@@ -12,13 +12,15 @@ import type { AppInfo } from '@shared/types'
 import { ProfileStore } from './profile-store'
 import { UpdaterService } from './updater'
 import { isTrustedRendererFrame } from './security'
+import type { GpuRuntimeInfo } from './gpu-policy'
 
 const projectUrl = 'https://github.com/totallynottuco/holodori-planner'
 
 export function registerIpc(
   window: BrowserWindow,
   store: ProfileStore,
-  updater: UpdaterService
+  updater: UpdaterService,
+  gpu: GpuRuntimeInfo
 ): void {
   const trusted = (event: IpcMainInvokeEvent): void => {
     const senderFrame = event.senderFrame
@@ -97,7 +99,8 @@ export function registerIpc(
     catalogVersion: progressionManifest.metadata.catalogVersion,
     profilePath: store.profilePath,
     isPackaged: app.isPackaged,
-    projectUrl
+    projectUrl,
+    gpu
   }))
   handle(channels.appOpenProjectPage, () => shell.openExternal(projectUrl))
 }

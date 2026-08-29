@@ -171,6 +171,7 @@ input[type="range"] { width: 100%; accent-color: #53bed3; }
 .settings-rows > div, .license-line { display: flex; min-height: 42px; align-items: center; justify-content: space-between; gap: 16px; padding: 0 12px; background: white; }
 .settings-rows span, .license-line span { color: #7c8da0; font-size: 11px; }
 .settings-rows strong, .license-line strong { color: #374f65; font-size: 12px; }
+.gpu-state { display: inline-flex; align-items: center; gap: 6px; }
 .path-text { max-width: 310px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .update-status { display: flex; align-items: center; gap: 13px; margin-bottom: 14px; }
 .update-orb { display: grid; width: 48px; height: 48px; flex: 0 0 auto; place-items: center; color: #6f7fe2; border-radius: 15px; background: #eff0ff; }
