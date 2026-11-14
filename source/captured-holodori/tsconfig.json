@@ -1,0 +1,4 @@
+{
+  "extends": "../../tsconfig.hololive.json",
+  "files": ["game.ts", "material-plan.ts"]
+}

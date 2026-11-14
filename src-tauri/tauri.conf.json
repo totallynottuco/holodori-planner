@@ -1,0 +1,79 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Hololive Dreams Planner",
+  "version": "1.0.0",
+  "identifier": "me.holodori.planner.desktop",
+  "build": {
+    "beforeBuildCommand": "powershell -NoProfile -ExecutionPolicy Bypass -File scripts/build-desktop.ps1",
+    "frontendDist": "../.desktop-shell"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "label": "main",
+        "title": "Hololive Dreams Planner",
+        "url": "/characters",
+        "width": 1280,
+        "height": 900,
+        "minWidth": 760,
+        "minHeight": 560,
+        "visible": false,
+        "backgroundColor": "#0D132B",
+        "dragDropEnabled": false
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; script-src 'self' 'unsafe-eval'; connect-src 'self' ipc: http://ipc.localhost blob: data:; img-src 'self' data: blob: asset: http://asset.localhost; style-src 'self' 'unsafe-inline'; font-src 'self' data:; worker-src 'self' blob:; media-src 'self' blob: data: asset: http://asset.localhost; frame-src 'none'; object-src 'none'; base-uri 'self'; form-action 'self'",
+      "capabilities": [
+        {
+          "identifier": "main-local",
+          "windows": [
+            "main"
+          ],
+          "permissions": [
+            "core:default"
+          ]
+        }
+      ],
+      "assetProtocol": {
+        "enable": true,
+        "scope": [
+          "$RESOURCE/animations/**"
+        ]
+      }
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": [
+      "nsis"
+    ],
+    "icon": [
+      "icons/icon.ico"
+    ],
+    "shortDescription": "Offline hololive Dreams planner",
+    "copyright": "Game assets © COVER / © QualiArts, Inc. Fan-made planner.",
+    "windows": {
+      "webviewInstallMode": {
+        "type": "offlineInstaller",
+        "silent": true
+      },
+      "nsis": {
+        "installMode": "currentUser",
+        "displayLanguageSelector": false,
+        "compression": "zlib"
+      }
+    },
+    "resources": {
+      "../hololive-dist/assets/outfits/": "outfits/",
+      "../hololive-dist/assets/chart-artwork/": "chart-artwork/",
+      "../hololive-dist/assets/team-optimizer/soundtracks/": "soundtracks/",
+      "../hololive-assets/animations/": "animations/",
+      "../licenses/": "licenses/",
+      "../README.md": "README.md",
+      "../THIRD_PARTY.md": "THIRD_PARTY.md",
+      "resources/capture/holodori-account-reader.dll": "capture/holodori-account-reader.dll"
+    }
+  }
+}

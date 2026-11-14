@@ -1,0 +1,71 @@
+#settings-profile .desktop-profile-actions,
+#settings-profile .desktop-profile-action-group {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .375rem;
+}
+#settings-profile .desktop-profile-actions :is(button, select) { margin-inline-end: 0; min-height: 2.5rem; }
+#settings-profile select { max-width: min(100%, 14rem); }
+#settings-profile button { white-space: nowrap; }
+
+.desktop-settings-sections { margin-top: .75rem; }
+.desktop-settings-section { border-bottom: 1px solid #35405b; }
+.desktop-settings-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: .75rem;
+  padding: .625rem .75rem;
+  border-radius: .25rem;
+  list-style: none;
+  cursor: pointer;
+}
+.desktop-settings-summary::-webkit-details-marker { display: none; }
+.desktop-settings-summary:hover, .desktop-settings-section[open] > .desktop-settings-summary { background: #192037; }
+.desktop-settings-summary strong { display: block; font-size: .875rem; }
+.desktop-settings-summary small { display: block; font-size: .75rem; }
+.desktop-settings-chevron { width: 1rem; height: 1rem; flex: none; color: #aebed9; }
+.desktop-settings-section[open] > .desktop-settings-summary .desktop-settings-chevron { transform: rotate(90deg); }
+.desktop-settings-body { display: grid; gap: .5rem; padding: .625rem .75rem .75rem; min-width: 0; }
+.desktop-settings-body .desktop-data-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; }
+.desktop-settings-body .desktop-data-row > :first-child { flex: 1 1 17rem; min-width: 0; }
+.desktop-settings-body .desktop-data-row > button { flex: none; max-width: 100%; }
+.desktop-settings-storage-row, .desktop-settings-rule, .desktop-settings-switches + .desktop-settings-switches {
+  border-top: 1px solid #35405b;
+  padding-top: .5rem;
+}
+.desktop-settings-actions { display: flex; flex-wrap: wrap; gap: .375rem; margin-top: .5rem; }
+.desktop-settings-notes { display: grid; gap: .25rem; min-width: 0; }
+.desktop-settings-details { min-width: 0; font-size: .75rem; color: #c2cde3; }
+.desktop-settings-details > summary { cursor: pointer; width: fit-content; }
+.desktop-settings-details[open] > :nth-child(2) { margin-top: .375rem; }
+.desktop-catalog-changes {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: .5rem;
+  max-block-size: min(16rem, 35vh);
+  overflow: auto;
+}
+.desktop-catalog-group + .desktop-catalog-group { border-top: 1px solid #35405b; padding-top: .375rem; }
+.desktop-catalog-group li { padding-top: .25rem; }
+.desktop-catalog-group li > p { overflow-wrap: anywhere; }
+.desktop-settings-switches, .desktop-format-controls { display: grid; gap: .5rem; }
+.desktop-format-row {
+  display: grid;
+  grid-template-columns: 7rem minmax(0, 13rem) minmax(0, 1fr);
+  align-items: center;
+  gap: .25rem .625rem;
+  font-size: .875rem;
+}
+.desktop-format-row select { width: 100%; min-width: 0; }
+.desktop-settings-sidebar-options { display: flex; align-items: start; flex-wrap: wrap; gap: .5rem .75rem; }
+.desktop-settings-sidebar-options > div { max-width: 100%; }
+@media (max-width: 720px) {
+  .desktop-format-row { grid-template-columns: 7rem minmax(0, 13rem); }
+  .desktop-format-row > :nth-child(3) { grid-column: 2; }
+}
+@media (max-width: 420px) {
+  .desktop-format-row { grid-template-columns: minmax(0, 1fr); }
+  .desktop-format-row > :nth-child(3) { grid-column: 1; }
+}

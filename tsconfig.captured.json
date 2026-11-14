@@ -1,0 +1,9 @@
+{
+  "compilerOptions": {
+    "module": "ESNext", "moduleResolution": "Bundler", "target": "ES2022",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"], "strict": true,
+    "skipLibCheck": true, "resolveJsonModule": true, "esModuleInterop": true,
+    "noEmit": true, "paths": {"@shared/*": ["./source/hololive/vendor/shared/*"]}
+  },
+  "files": ["source/captured-holodori/game.ts", "source/captured-holodori/card-filters.ts", "source/captured-holodori/card-stats.ts", "source/captured-holodori/achievements.ts", "source/captured-holodori/account-progress.ts", "source/captured-holodori/holomem-board.ts", "source/captured-holodori/conversions.ts", "source/captured-holodori/material-plan.ts", "source/captured-holodori/assets.ts", "source/captured-holodori/profile-codec.ts", "source/captured-holodori/native-smoke.ts", "source/captured-holodori/catalog-update.ts", "source/captured-holodori/account-import.ts", "source/captured-holodori/reviewed-optimizer.ts"]
+}

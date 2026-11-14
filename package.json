@@ -1,0 +1,45 @@
+{
+  "name": "holodori-desktop",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Offline hololive Dreams card and material planner",
+  "scripts": {
+    "start": "node scripts/preview-hololive.mjs",
+    "build": "node scripts/build-hololive.mjs",
+    "test": "vitest run",
+    "assets": "node scripts/import-hololive.mjs",
+    "test:loading": "node scripts/verify-captured-base.mjs",
+    "test:optimizations": "node scripts/verify-hololive-assets.mjs",
+    "desktop:prepare": "node scripts/build-hololive.mjs",
+    "desktop:build": "tauri build",
+    "desktop:test": "cargo test --manifest-path src-tauri/Cargo.toml",
+    "typecheck": "tsc -p tsconfig.captured.json",
+    "test:ui": "node scripts/verify-captured-base.mjs && node scripts/verify-captured-settings.mjs && node scripts/verify-captured-characters.mjs && node scripts/verify-captured-game.mjs && node scripts/verify-captured-inventory.mjs && node scripts/verify-captured-planner.mjs && node scripts/verify-material-planner.mjs && node scripts/verify-captured-persistence.mjs && node scripts/verify-captured-artwork.mjs && node scripts/verify-captured-motion.mjs",
+    "test:comparison": "node scripts/compare-captured-replica.mjs",
+    "test:settings": "node scripts/verify-settings-persistence.mjs && node scripts/verify-captured-settings.mjs && node scripts/compare-captured-settings.mjs",
+    "test:audit": "node scripts/audit-final-mechanics.mjs && node scripts/audit-max-target.mjs && node scripts/audit-final-persistence.mjs && node scripts/audit-final-ui.mjs",
+    "test:performance": "node scripts/verify-persistence-cache.mjs && node scripts/verify-performance.mjs",
+    "test:cards": "node scripts/inspect-card-assets.mjs && node scripts/audit-card-format.mjs",
+    "test:card-layouts": "node scripts/audit-card-layouts.mjs",
+    "test:filters": "node scripts/verify-card-filters.mjs"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.12.4",
+    "@types/react": "^19.2.18",
+    "@types/react-dom": "^19.2.5",
+    "acorn": "^8.15.0",
+    "acorn-walk": "^8.3.4",
+    "esbuild": "0.28.2",
+    "playwright": "^1.58.0",
+    "prettier": "3.9.10",
+    "typescript": "^5.9.3",
+    "vitest": "^4.1.12"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "2.12.4",
+    "react": "19.2.8",
+    "react-dom": "19.2.8",
+    "zod": "^4.6.7"
+  }
+}

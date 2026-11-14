@@ -1,0 +1,37 @@
+const en = {
+  'nav.planner': 'Planner',
+  'nav.calculator': 'Calculator',
+  'nav.characters': 'Characters',
+  'nav.import': 'Import',
+  'nav.inventory': 'Inventory',
+  'nav.account': 'Account',
+  'nav.settings': 'Settings',
+  'app.name': 'holodori Planner',
+  'attribute.cute': 'Cute',
+  'attribute.pure': 'Pure',
+  'attribute.happy': 'Happy',
+  'resource.lessonPoints': 'Lesson Pt',
+  'resource.hologold': 'Hologold',
+  'resource.hololium': 'Hololium',
+  'resource.bloomStones': 'Bloom Stones',
+  'resource.bloomPoints': 'Card Bloom Points',
+  'resource.cuteBeads': 'Cute Beads',
+  'resource.cuteCrystals': 'Cute Crystals',
+  'resource.pureBeads': 'Pure Beads',
+  'resource.pureCrystals': 'Pure Crystals',
+  'resource.happyBeads': 'Happy Beads',
+  'resource.happyCrystals': 'Happy Crystals',
+  'resource.redCube': 'Red Cube',
+  'resource.redHexa': 'Red Hexa',
+  'resource.blueCube': 'Blue Cube',
+  'resource.blueHexa': 'Blue Hexa',
+  'resource.yellowCube': 'Yellow Cube',
+  'resource.yellowHexa': 'Yellow Hexa',
+  'resource.greenCube': 'Green Cube',
+  'resource.greenHexa': 'Green Hexa',
+  'resource.harmonyGardenCoin': 'Harmony Garden Coin',
+  'resource.megaSphereCoin': 'Mega Sphere Coin'
+} as const
+
+export type TranslationKey = keyof typeof en
+export const t = (key: TranslationKey): string => en[key]

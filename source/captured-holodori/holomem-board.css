@@ -1,0 +1,239 @@
+.holo-progress-tabs {
+  display: flex;
+  gap: .25rem;
+  margin: .75rem 0;
+}
+.holo-progress-tab {
+  padding-inline: .625rem;
+  gap: .375rem;
+}
+.holo-progress-tab[aria-pressed=true] { box-shadow: inset 0 -2px #8b5cf6; }
+.holo-progress-tab img { width: .9375rem; height: .9375rem; object-fit: contain; }
+
+.holo-board-toolbar, .holo-board-costs {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .375rem;
+}
+.holo-board {
+  --board-size: max(18rem, calc(100dvh - 15rem));
+  --board-inspector-width: 16.5rem;
+  width: 100%;
+  max-width: calc(var(--board-size) + var(--board-inspector-width) + 2px);
+}
+.holo-board-frame { overflow: hidden; }
+.holo-board-toolbar { padding: .5rem; gap: .75rem; border-bottom: 1px solid rgb(68 81 111 / .65); }
+.holo-board-summary { font-size: .75rem; white-space: nowrap; }
+.holo-board-action { min-height: 1.75rem; padding: .25rem .5rem; font-size: .75rem; }
+.holo-board-member { display: flex; align-items: center; gap: .375rem; text-align: left; }
+.holo-board-portrait, .holo-board-member-option img { width: 1.625rem; height: 1.625rem; object-fit: contain; }
+.holo-board-switch { width: .8125rem; height: .8125rem; opacity: .8; }
+.holo-board-points, .holo-board-cost { display: inline-flex; align-items: center; gap: .25rem; }
+.holo-board-points { color: #c3edff; font-weight: 600; }
+.holo-board-points img, .holo-board-cost img { width: .875rem; height: .875rem; object-fit: contain; }
+.holo-board-cost { padding: .125rem .375rem; }
+
+.holo-board-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) var(--board-inspector-width);
+  align-items: stretch;
+  width: 100%;
+}
+.holo-board-map { position: relative; isolation: isolate; overflow: hidden; align-self: start; width: 100%; aspect-ratio: 1; min-width: 0; touch-action: none; cursor: grab; user-select: none; }
+.holo-board-map.is-panning, .holo-board-map.is-panning * { cursor: grabbing; }
+.holo-board-world { position: absolute; transform-origin: 0 0; }
+.holo-board-world::before {
+  --grid-step: calc(var(--board-cell) / 2);
+  position: absolute;
+  inset: calc(-1 * var(--board-cell));
+  content: "";
+  background: url(/assets/boards/ui_700_pattern_graph.webp) repeat;
+  background-size: var(--grid-step) var(--grid-step);
+  background-position: calc(var(--board-inset) - var(--grid-step) * .556) calc(var(--board-inset) - var(--grid-step) * .444);
+  opacity: .07;
+  pointer-events: none;
+}
+.holo-board-links { position: absolute; inset: 0; pointer-events: none; }
+.holo-board-links use { opacity: .65; }
+.holo-board-links use.is-rank-locked { opacity: .25; }
+.holo-board-links use.is-on-path { opacity: 1; filter: drop-shadow(0 0 1px #b29afb); }
+.holo-board-links use.is-plan-inactive { opacity: .23; }
+.holo-board-links .is-plan-active {
+  stroke: #8fa4cb; opacity: .52; stroke-width: calc(1px * var(--board-inverse-scale, 1));
+}
+.holo-board-links .is-plan-add {
+  stroke: #86efac; opacity: .84; stroke-width: calc(1.6px * var(--board-inverse-scale, 1)); stroke-linecap: round;
+}
+.holo-board-controls { position: absolute; top: .375rem; right: .375rem; display: flex; gap: .1875rem; }
+.holo-board-controls button { min-width: 1.75rem; }
+.holo-board-controls button, .holo-board-navigation button { cursor: pointer; }
+.holo-board-controls button:disabled { opacity: .35; cursor: default; }
+.holo-board-navigation { position: absolute; left: .375rem; bottom: .375rem; display: grid; grid-template-columns: repeat(3, 1.75rem); gap: .1875rem; }
+.holo-board-navigation button { padding: .25rem; height: 1.75rem; display: grid; place-items: center; }
+.holo-board-navigation button:first-child { grid-column: 2; }
+.holo-board-navigation button:nth-child(2) { grid-column: 1; }
+.holo-board-navigation button:last-child { grid-column: 2; }
+.holo-board-navigation img { width: .9375rem; height: .9375rem; }
+
+.holo-board-node {
+  position: absolute;
+  display: grid;
+  place-items: center;
+  width: var(--board-cell);
+  height: var(--board-cell);
+  padding: 0;
+  transform: translate(-50%, -50%);
+  border: 0;
+  border-radius: 50%;
+  cursor: pointer;
+  --shell: 64%;
+  --inner: 53%;
+  --glyph: 44%;
+  --stars: 8%;
+}
+.holo-board-node.grade-two { --shell: 92%; --inner: 79%; --glyph: 60%; --stars: 0%; }
+[data-plan-change="add"] { --plan-change: #86efac; }
+[data-plan-change="reset"] { --plan-change: #ff8298; }
+[data-plan-change="connect"] { --plan-change: #c4b5fd; }
+.holo-board-in-plan .holo-board-node.is-locked:not([data-plan-change]) {
+  opacity: .29; filter: grayscale(.9) brightness(.72);
+}
+.holo-board-in-plan .holo-board-node:not(.is-locked, [data-plan-change]) {
+  opacity: .66; filter: saturate(.52);
+}
+.holo-board-in-plan .holo-board-node[data-plan-change="connect"] {
+  box-shadow: inset 0 0 0 2px var(--plan-change);
+}
+.holo-board-node[data-plan-change="reset"] { z-index: 1; }
+.holo-board-badges { position: absolute; inset: 0; pointer-events: none; }
+.holo-board-change-mark {
+  --badge-fill: #86efac;
+  color: #123625;
+}
+.holo-board-badges > .holo-board-change-mark { position: absolute; width: 0; height: 0; }
+.holo-board-badges > [data-plan-selected=false] { opacity: .55; }
+.holo-board-change-mark.is-reset { color: #46172a; --badge-fill: #ff8298; }
+.holo-board-in-plan .holo-board-node[data-plan-change="add"] { z-index: 1; }
+.holo-board-in-plan .holo-board-node[data-plan-selected=false] { opacity: .55; box-shadow: none; }
+.holo-board-node.is-connect { --shell: 80%; --socket-slice: calc(var(--board-cell) * .28); }
+.holo-board-node:hover { filter: brightness(1.12); }
+.holo-board-node.is-on-path::before,
+.holo-board-node[data-inspected=true]:not([data-plan-change])::before {
+  content: "";
+  position: absolute;
+  inset: calc((100% - var(--shell)) / 2 - 1px);
+  border-radius: 50%;
+  outline: 1px solid #b29afb;
+  pointer-events: none;
+}
+.holo-board-node[data-inspected=true] { z-index: 1; }
+.holo-board-node[data-inspected=true]:not([data-plan-change])::before { outline-color: #75e4ff; }
+.holo-board-node.is-connect::before { border-radius: var(--socket-slice); }
+.holo-board-node.has-connect-card[data-inspected=true]::before { content: none; }
+.holo-board-node.has-connect-card[data-inspected=true]:not([data-plan-change]) .socket-card-frame { filter: drop-shadow(0 0 .7px #75e4ff); }
+.holo-board-node:focus-visible { outline: 2px solid #b29afb; outline-offset: 1px; z-index: 2; }
+.holo-board-layer { position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); width: var(--shell); height: var(--shell); pointer-events: none; }
+.holo-board-mask { mask: var(--art) center / 100% 100% no-repeat; }
+.holo-board-texture { background: var(--art) center / contain no-repeat; }
+.holo-board-layer.node-shadow { width: calc(var(--shell) + 14%); height: calc(var(--shell) + 14%); }
+.holo-board-layer.node-base { background: #edf8ff; opacity: .9; }
+.holo-board-layer.node-tint { background: #5fdcf0; opacity: .35; }
+.holo-board-layer.node-inset { background-size: 100% 100%; clip-path: circle(50%); }
+.holo-board-layer.node-fill, .holo-board-layer.node-ring, .holo-board-layer.node-outline { background: linear-gradient(135deg, var(--node-from), var(--node-to)); }
+.holo-board-layer.node-fill { width: var(--inner); height: var(--inner); }
+.holo-board-layer.node-ring { width: calc(var(--inner) + 2%); height: calc(var(--inner) + 2%); }
+.is-locked .holo-board-layer.node-outline { background: #e5faff; opacity: .65; }
+.holo-board-layer.node-symbol { width: var(--glyph); height: var(--glyph); }
+.holo-board-layer.node-symbol-shadow { width: calc(var(--glyph) + 8%); height: calc(var(--glyph) + 8%); }
+.holo-board-grade { position: absolute; display: flex; bottom: var(--stars); justify-content: center; pointer-events: none; }
+.holo-board-grade img { width: calc(var(--board-cell) * .18); height: calc(var(--board-cell) * .18); }
+.holo-board-range {
+  position: absolute;
+  top: calc(50% + var(--shell) * .36);
+  left: calc(50% + var(--shell) * .36);
+  width: 20%;
+  height: 18%;
+  transform: translate(-50%, -50%);
+  pointer-events: none;
+}
+.holo-board-layer.range-arrow-outline, .holo-board-layer.range-arrow-fill { width: 100%; top: 25%; }
+.holo-board-layer.range-arrow-outline { height: 79.17%; }
+.holo-board-layer.range-arrow-fill { height: 88.89%; background: #5fdcf0; }
+.holo-board-layer.range-arrow-next { top: 74.17%; }
+.holo-board-layer.range-arrow-fill.range-arrow-next { opacity: .55; }
+.holo-board-layer.socket-base { background: #62628e; opacity: .35; }
+.holo-board-layer.socket-inset {
+  mask: url(/assets/boards/ui_999_thm_base_wh_9s.webp) center / 100% 100% no-repeat;
+  opacity: .65;
+}
+.holo-board-layer.socket-circle { width: 58%; height: 58%; opacity: .7; }
+.holo-board-layer.socket-mark { width: 40%; height: 40%; opacity: .85; }
+/* The lock's solid body is heavier than the shackle. Center its visible weight on the dotted ring. */
+.holo-board-layer.socket-lock { top: 46.2%; }
+.holo-board-layer.socket-card {
+  width: 79%;
+  height: 79%;
+  border-radius: var(--socket-slice);
+  /* Clip the thumbnail once. A sliced mask can expose seams at fractional zoom. */
+  overflow: hidden;
+}
+.socket-card-art { width: 100%; height: 100%; object-fit: cover; }
+.socket-ribbon { position: absolute; inset: auto 0 0; width: 100%; height: 21.25%; }
+.holo-board-layer.socket-card-frame {
+  border-image: url(/assets/boards/ui_999_outline_w6_r56_9s.webp) 112 / var(--socket-slice) stretch;
+}
+.holo-board-layer.socket-rim { opacity: .65; }
+.holo-board-layer.socket-card-shadow, .holo-board-layer.socket-empty-shadow {
+  width: 88%;
+  height: 88%;
+  border-image: url(/assets/boards/ui_999_shadow_b8_a35_r56_9s.webp) 128 fill / calc(var(--board-cell) * .32) stretch;
+}
+.holo-board-layer.socket-empty-shadow { border-image-source: url(/assets/boards/ui_999_shadow_b8_a15_r56_9s.webp); }
+.holo-board-rank-lock {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  align-items: center;
+  gap: calc(var(--board-cell) * .06);
+  pointer-events: none;
+}
+.rank-lock-icon { width: 45%; height: 46%; object-fit: contain; opacity: .65; }
+.rank-condition {
+  display: flex;
+  align-items: center;
+  gap: calc(var(--board-cell) * .05);
+  font-size: calc(var(--board-cell) * .23);
+  font-weight: 700;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+.rank-condition img { width: calc(var(--board-cell) * .12); height: calc(var(--board-cell) * .12); object-fit: contain; }
+.holo-board-map[data-compact-cells] .rank-condition { display: none; }
+.holo-board-map[data-compact-cells] .rank-lock-icon { width: 58%; height: 58%; }
+
+.holo-board-inspector { display: flex; flex-direction: column; align-items: stretch; gap: .625rem; padding: .875rem; border-left: 1px solid rgb(68 81 111 / .65); font-size: .75rem; min-width: 0; overflow-wrap: anywhere; }
+.holo-board-inspector-heading { padding-bottom: .5rem; border-bottom: 1px solid rgb(68 81 111 / .65); }
+.holo-board-inspector .holo-board-action { align-self: start; }
+.holo-board-card { display: grid; grid-template-columns: 4.5rem minmax(0, 1fr); align-items: center; gap: .5rem; }
+.holo-board-card-art { width: 4.5rem; aspect-ratio: 16 / 9; object-fit: contain; border-radius: 4px; }
+.holo-board-member-groups { display: grid; gap: .75rem; margin-top: .75rem; }
+.holo-board-member-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(9rem, 100%), 1fr)); gap: .375rem; }
+.holo-board-member-option { display: flex; align-items: center; gap: .375rem; text-align: left; min-height: 2.25rem; }
+.holo-board-member-option[aria-pressed=true] { box-shadow: inset 0 0 0 1px #a78bfa; }
+.holo-board-card-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(8.5rem, 100%), 1fr)); gap: .5rem; margin-top: .75rem; }
+.holo-board-card-option { display: grid; align-content: start; min-width: 0; overflow: hidden; text-align: left; padding: 0; }
+.holo-board-card-option[aria-pressed=true] { outline: 2px solid #a78bfa; outline-offset: -2px; }
+.holo-board-connect-toolbar { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem; }
+.holo-board-connect-toolbar > :first-child { flex: 1 1 12rem; min-width: 0; }
+.holo-board-picker-art { width: 100%; aspect-ratio: 16 / 9; object-fit: contain; }
+.holo-board-picker-name, .holo-board-picker-meta { padding: .125rem .375rem; overflow-wrap: anywhere; }
+.holo-board-picker-meta { font-size: .6875rem; }
+
+@media (max-width: 700px) {
+  .holo-board-layout { grid-template-columns: minmax(0, 1fr); }
+  .holo-board-map { max-width: var(--board-size); }
+  .holo-board-inspector { border-left: 0; border-top: 1px solid rgb(68 81 111 / .65); }
+}

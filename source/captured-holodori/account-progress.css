@@ -1,0 +1,77 @@
+.holo-progress-account {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .375rem;
+  margin: .75rem 0;
+}
+.holo-progress-chip {
+  min-height: 1.625rem;
+  padding: .1875rem .625rem;
+  font-size: .75rem;
+  white-space: nowrap;
+}
+.holo-progress-bonus {
+  padding: .125rem .4375rem;
+  font-size: .75rem;
+  font-weight: 600;
+  white-space: nowrap;
+  background: rgb(139 92 246 / .2);
+  color: #ddd0fc;
+}
+.holo-progress-roster {
+  display: grid;
+  gap: 1rem;
+  margin-top: .875rem;
+}
+.holo-progress-branch { min-width: 0; }
+.holo-progress-branch-title {
+  margin-bottom: .5rem;
+  padding-bottom: .25rem;
+  border-bottom: 1px solid rgb(148 163 184 / .25);
+}
+.holo-progress-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill,minmax(min(9.75rem,100%),1fr));
+  gap: .5rem;
+}
+.holo-progress-tile {
+  display: grid;
+  justify-items: center;
+  align-content: center;
+  grid-template-rows: minmax(1.125rem,auto) 2.5rem auto 1.5rem;
+  gap: .25rem;
+  min-width: 0;
+  padding: .5rem .625rem;
+  border: 1px solid rgb(148 163 184 / .2);
+}
+.holo-progress-tile:focus-within { border-color: #8b70cb; }
+.holo-progress-locked { border-style: dashed; }
+.holo-progress-locked .holo-progress-name,
+.holo-progress-locked .holo-progress-portrait { opacity: .55; }
+.holo-progress-name {
+  margin: 0;
+  font-size: .75rem;
+  line-height: 1.125rem;
+  text-align: center;
+}
+.holo-progress-portrait { width: 2.5rem; height: 2.5rem; object-fit: contain; }
+.holo-progress-slider {
+  display: grid;
+  grid-template-columns: 1.375rem minmax(0,1fr) 1.375rem;
+  align-items: center;
+  gap: .375rem;
+  width: 100%;
+}
+.holo-progress-step {
+  width: 1.375rem;
+  height: 1.375rem;
+  line-height: 1;
+  font-size: .875rem;
+}
+.holo-progress-step:disabled { opacity: .35; }
+.holo-progress-popover .p-overlaypanel-content { padding: .625rem; }
+.holo-progress-edit-fields { display: flex; gap: .375rem; align-items: end; }
+.holo-progress-field { display: grid; gap: .25rem; }
+.holo-progress-field input { width: 5rem; padding: .375rem .5rem; }
+.holo-progress-confirm { display: grid; place-items: center; width: 2rem; height: 2rem; }

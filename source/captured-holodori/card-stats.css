@@ -1,0 +1,158 @@
+/* Scoped game presentation inside the unchanged captured theme. */
+@font-face {
+  font-family: HolodoriStats;
+  src: url('/assets/fonts/LINESeedSans_A_XBd.otf') format('opentype');
+  font-weight: 800;
+  font-display: swap;
+}
+.holo-card-stats-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
+  gap: .75rem;
+  align-items: stretch;
+}
+.holo-card-stats-art {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 0;
+  aspect-ratio: 455 / 256;
+}
+.holo-card-stats-art > img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.holo-card-stats-panel {
+  display: grid;
+  grid-template-rows: 1.25fr repeat(3, 1fr);
+  min-width: 0;
+  padding: .5rem .75rem;
+}
+.holo-stat-row { display: flex; align-items: center; gap: .5rem; min-width: 0; }
+.holo-stat-label { flex: 1; min-width: 0; }
+.holo-stat-number {
+  font-family: HolodoriStats, ui-sans-serif, system-ui, sans-serif;
+  font-size: 1.125rem;
+  font-weight: 800;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+  font-kerning: none;
+  font-feature-settings: 'kern' 0, 'tnum' 1;
+  display: inline-flex;
+  flex: none;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+.holo-stat-separator { inline-size: .33ch; text-align: center; }
+.holo-stat-digit { flex: none; inline-size: 1ch; display: block; font: inherit; text-align: center; }
+.holo-stat-zero { opacity: .349; }
+.holo-stat-total { padding-bottom: .25rem; margin-bottom: .25rem; }
+.holo-stat-total .holo-stat-label { font-size: .875rem; }
+.holo-stat-total .holo-stat-number { font-size: 1.6875rem; }
+.holo-stat-note { width: 1.375rem; flex-shrink: 0; font-size: 1.25rem; line-height: 1; text-align: center; }
+.holo-stat-badge { display: flex; align-items: center; justify-content: center; width: 1.375rem; height: 1.375rem; flex-shrink: 0; border-radius: 50%; }
+.holo-stat-badge img { width: 1rem; height: 1rem; object-fit: contain; }
+.holo-stat-performance { background: #ff31c2; }
+.holo-stat-technique { background: #3985ff; }
+.holo-stat-sense { background: #ffae06; }
+.holo-card-stats-breakdown { margin-top: .75rem; }
+.p-dialog-content:has(> .holo-card-stats) { padding-bottom: .75rem; }
+.holo-card-stats-table { padding: .375rem .25rem; }
+.holo-card-stats-table th:not(:first-child), .holo-card-stats-table td { text-align: right; }
+.holo-card-video { position: absolute; inset: 0; display: block; width: 100%; height: 100%; object-fit: contain; pointer-events: none; }
+.holo-card-signature-toggle { --signature-scale: .375; position: absolute; right: .375rem; bottom: .375rem; display: flex; padding: .125rem; border-radius: 9999px; background: rgb(13 19 43 / .75); }
+.holo-signature-track { position: relative; width: calc(120px * var(--signature-scale)); height: calc(64px * var(--signature-scale)); box-shadow: inset 0 0 0 1px #299cff; border-radius: 9999px; background: #596787; }
+.holo-signature-track.is-on { background: #299cff; }
+.holo-signature-icon { position: absolute; top: calc(18px * var(--signature-scale)); left: calc(18px * var(--signature-scale)); width: calc(28px * var(--signature-scale)); height: calc(28px * var(--signature-scale)); object-fit: contain; }
+.holo-signature-knob { position: absolute; top: calc(8px * var(--signature-scale)); left: calc(8px * var(--signature-scale)); width: calc(48px * var(--signature-scale)); height: calc(48px * var(--signature-scale)); border-radius: 50%; background: #fff; transition: transform .15s ease; }
+.holo-signature-track.is-on .holo-signature-knob { transform: translateX(calc(56px * var(--signature-scale))); }
+@media (prefers-reduced-motion: reduce) { .holo-signature-knob { transition: none; } }
+@media (max-width: 600px) {
+  .holo-card-stats-grid { grid-template-columns: minmax(0, 1fr); }
+  .holo-card-stats-panel { min-height: 10rem; }
+}
+.card-picker-sort-menu {
+  min-width: 8rem;
+  max-height: min(10rem, calc(100dvh - 8rem));
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  justify-content: flex-start;
+}
+.card-picker-toolbar {
+  position: relative;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .375rem;
+}
+.card-picker-query {
+  position: relative;
+  display: flex;
+  flex: 1 1 12rem;
+  min-width: 0;
+  align-items: center;
+}
+.card-picker-query input {
+  min-width: 0;
+  height: 2.125rem;
+  padding-inline-start: 2rem;
+}
+.card-picker-query input::-webkit-search-cancel-button { display: none; }
+.card-picker-search-icon {
+  position: absolute;
+  left: .625rem;
+  width: 1rem;
+  height: 1rem;
+  color: #a4b0cf;
+  pointer-events: none;
+}
+.card-picker-refine-button, .card-picker-sort > button, .card-picker-chips button {
+  border-radius: .25rem;
+  background: #2e3853;
+}
+.card-picker-refine-button, .card-picker-sort > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 2.125rem;
+  padding-inline: .625rem;
+  font-size: .75rem;
+  font-weight: 600;
+}
+.card-picker-refine-button[aria-expanded="true"], .card-picker-sort > button[aria-expanded="true"] { background: #403461; }
+.card-picker-refinements, .card-picker-chips {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: .25rem .5rem;
+  margin-top: .375rem;
+}
+.card-picker-refinements[hidden], .card-picker-chips[hidden] { display: none; }
+.card-picker-refinements { border-bottom: 1px solid #36425e; }
+.card-picker-chips button {
+  display: inline-flex;
+  align-items: center;
+  gap: .375rem;
+  padding: .1875rem .5rem;
+  font-size: .75rem;
+}
+.card-picker-chips button > span { color: #bdaddf; }
+.card-picker-grid {
+  display: grid;
+  grid-template-columns: repeat(4,minmax(0,1fr));
+  align-items: start;
+  gap: .625rem .5rem;
+  margin-top: .75rem;
+}
+.card-picker-grid > button {
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  overflow-wrap: anywhere;
+}
+.card-picker-grid > button > div { width: 100%; }
+@media(max-width: 520px) {
+  .card-picker-grid { grid-template-columns: repeat(3,minmax(0,1fr)); }
+}
+@media(max-width: 380px) {
+  .card-picker-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
+}
