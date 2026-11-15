@@ -1,71 +1,133 @@
+#settings-profile,
 #settings-profile .desktop-profile-actions,
 #settings-profile .desktop-profile-action-group {
   display: flex;
   flex-wrap: wrap;
   align-items: center;
+  min-width: 0;
   gap: .375rem;
 }
-#settings-profile .desktop-profile-actions :is(button, select) { margin-inline-end: 0; min-height: 2.5rem; }
-#settings-profile select { max-width: min(100%, 14rem); }
+#settings-profile { column-gap: .75rem; row-gap: .5rem; }
+#settings-profile h2 { flex: none; }
+#settings-profile > :is(.text-red-400, .text-green-500) { flex-basis: 100%; margin: 0; font-size: .8125rem; }
+#settings-profile .desktop-profile-actions { max-width: 100%; }
+#settings-profile .desktop-profile-actions :is(button, select) {
+  margin-inline-end: 0;
+  height: 2.375rem;
+  padding-block: .375rem;
+  font-size: .8125rem;
+}
+#settings-profile select { max-width: min(100%, 14rem); text-overflow: ellipsis; }
 #settings-profile button { white-space: nowrap; }
+.desktop-profile-rename { display: flex; flex-wrap: wrap; gap: .375rem; align-items: center; }
+.desktop-profile-rename input { flex: 1 1 9rem; min-width: 0; }
+.desktop-profile-rename button { margin: 0; }
 
-.desktop-settings-sections { margin-top: .75rem; }
-.desktop-settings-section { border-bottom: 1px solid #35405b; }
+.desktop-settings-sections {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(min(100%, 25rem), 1fr));
+  gap: .875rem;
+  margin-top: .875rem;
+}
+.desktop-settings-column { min-width: 0; display: grid; align-content: start; gap: .875rem; }
+.desktop-settings-group > h2 {
+  margin: 0 0 .325rem .125rem;
+  font-size: .8125rem;
+  font-weight: 600;
+  color: #b0bed8;
+}
+.desktop-settings-list { background: #192037; border: 1px solid #303a54; border-radius: .375rem; }
+.desktop-settings-section { min-width: 0; scroll-margin-top: .75rem; }
+.desktop-settings-section + .desktop-settings-section { border-top: 1px solid #303a54; }
 .desktop-settings-summary {
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: .75rem;
-  padding: .625rem .75rem;
-  border-radius: .25rem;
+  gap: .5rem;
+  padding: .5rem .625rem;
+  border-radius: .3125rem;
   list-style: none;
   cursor: pointer;
 }
 .desktop-settings-summary::-webkit-details-marker { display: none; }
-.desktop-settings-summary:hover, .desktop-settings-section[open] > .desktop-settings-summary { background: #192037; }
+.desktop-settings-summary:hover, .desktop-settings-section[open] > .desktop-settings-summary { background: #252e47; }
+.desktop-settings-summary:focus-visible { outline: 2px solid #a78bfa; outline-offset: -2px; }
 .desktop-settings-summary strong { display: block; font-size: .875rem; }
-.desktop-settings-summary small { display: block; font-size: .75rem; }
-.desktop-settings-chevron { width: 1rem; height: 1rem; flex: none; color: #aebed9; }
+.desktop-settings-summary small { display: block; font-size: .75rem; line-height: 1.35; }
+.desktop-settings-chevron { width: .9375rem; height: .9375rem; flex: none; color: #aebed9; }
 .desktop-settings-section[open] > .desktop-settings-summary .desktop-settings-chevron { transform: rotate(90deg); }
-.desktop-settings-body { display: grid; gap: .5rem; padding: .625rem .75rem .75rem; min-width: 0; }
-.desktop-settings-body .desktop-data-row { display: flex; flex-wrap: wrap; align-items: center; gap: .5rem .75rem; }
-.desktop-settings-body .desktop-data-row > :first-child { flex: 1 1 17rem; min-width: 0; }
-.desktop-settings-body .desktop-data-row > button { flex: none; max-width: 100%; }
-.desktop-settings-storage-row, .desktop-settings-rule, .desktop-settings-switches + .desktop-settings-switches {
-  border-top: 1px solid #35405b;
-  padding-top: .5rem;
+.desktop-settings-body {
+  display: grid;
+  gap: .625rem;
+  padding: .625rem;
+  min-width: 0;
+  font-size: .875rem;
 }
-.desktop-settings-actions { display: flex; flex-wrap: wrap; gap: .375rem; margin-top: .5rem; }
+.desktop-settings-body .desktop-data-row { display: flex; flex-wrap: wrap; align-items: center; gap: .375rem .625rem; min-width: 0; }
+.desktop-settings-body .desktop-data-row > :first-child { flex: 1 1 11rem; min-width: 0; }
+.desktop-settings-copy { min-width: 0; overflow-wrap: anywhere; }
+.desktop-settings-copy > :first-child { line-height: 1.4; }
+.desktop-settings-actions { display: flex; flex-wrap: wrap; gap: .375rem; }
+.desktop-settings-body :is(.desktop-settings-actions, .desktop-data-row) > button {
+  padding: .3125rem .625rem;
+  min-height: 2rem;
+  max-width: 100%;
+  font-size: .8125rem;
+  line-height: 1.25;
+}
+.desktop-settings-fields { display: grid; gap: .375rem; }
+.desktop-settings-fields h4 { font-size: .8125rem; font-weight: 600; color: #c2cde3; }
+.desktop-settings-fields + .desktop-settings-fields, .desktop-settings-rule { border-top: 1px solid #303a54; padding-top: .5rem; }
+.desktop-settings-feedback { display: grid; gap: .25rem; font-size: .8125rem; overflow-wrap: anywhere; }
+.desktop-settings-steps { list-style: decimal; margin: 0; padding-inline-start: 1.125rem; }
+.desktop-settings-steps li + li { margin-top: .1875rem; }
+.desktop-settings-meta { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .875rem; overflow-wrap: anywhere; }
+.desktop-settings-boosts { font-size: .8125rem; }
+.desktop-settings-boosts > div { display: flex; gap: .375rem; }
+.desktop-settings-boosts dt { color: #aebed9; }
+.desktop-settings-boosts dd { font-variant-numeric: tabular-nums; font-weight: 600; }
+.desktop-settings-body .desktop-data-path { display: block; white-space: normal; overflow-wrap: anywhere; }
+.desktop-media-pack + .desktop-media-pack { border-top: 1px solid #303a54; padding-top: .375rem; }
+.desktop-media-pack progress { display: block; width: min(100%, 12rem); margin-top: .25rem; }
 .desktop-settings-notes { display: grid; gap: .25rem; min-width: 0; }
 .desktop-settings-details { min-width: 0; font-size: .75rem; color: #c2cde3; }
 .desktop-settings-details > summary { cursor: pointer; width: fit-content; }
 .desktop-settings-details[open] > :nth-child(2) { margin-top: .375rem; }
 .desktop-catalog-changes {
   display: grid;
-  grid-template-columns: minmax(0, 1fr);
   gap: .5rem;
   max-block-size: min(16rem, 35vh);
   overflow: auto;
 }
-.desktop-catalog-group + .desktop-catalog-group { border-top: 1px solid #35405b; padding-top: .375rem; }
+.desktop-catalog-group + .desktop-catalog-group { border-top: 1px solid #303a54; padding-top: .375rem; }
 .desktop-catalog-group li { padding-top: .25rem; }
 .desktop-catalog-group li > p { overflow-wrap: anywhere; }
-.desktop-settings-switches, .desktop-format-controls { display: grid; gap: .5rem; }
+.desktop-format-controls, .desktop-settings-controls { display: grid; gap: .375rem; min-width: 0; }
 .desktop-format-row {
   display: grid;
-  grid-template-columns: 7rem minmax(0, 13rem) minmax(0, 1fr);
+  grid-template-columns: minmax(5.5rem, 6.5rem) minmax(0, 11.75rem) minmax(0, 1fr);
   align-items: center;
-  gap: .25rem .625rem;
-  font-size: .875rem;
+  gap: .125rem .5rem;
+  font-size: .8125rem;
 }
-.desktop-format-row select { width: 100%; min-width: 0; }
-.desktop-settings-sidebar-options { display: flex; align-items: start; flex-wrap: wrap; gap: .5rem .75rem; }
-.desktop-settings-sidebar-options > div { max-width: 100%; }
-@media (max-width: 720px) {
-  .desktop-format-row { grid-template-columns: 7rem minmax(0, 13rem); }
+.desktop-format-row select { width: 100%; min-width: 0; height: 2.125rem; padding-block: .25rem; font-size: .8125rem; }
+.desktop-format-row > :nth-child(3) { overflow-wrap: anywhere; }
+.desktop-settings-sidebar-options { display: flex; align-items: start; flex-wrap: wrap; gap: .5rem .625rem; }
+.desktop-settings-sidebar-options > div { display: grid; gap: .25rem; min-width: 0; }
+.desktop-settings-sidebar-options > div > div { height: 2rem; }
+.desktop-settings-tab-order { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem; }
+.desktop-settings-tab-order > select { flex: 1 1 10rem; margin: 0; width: auto; min-width: 0; max-width: 13rem; height: 2.125rem; padding-block: .25rem; font-size: .8125rem; }
+.desktop-settings-dialog-body { display: grid; gap: .625rem; font-size: .875rem; }
+.desktop-settings-dialog-actions { display: flex; flex-wrap: wrap; justify-content: end; gap: .375rem; }
+.desktop-settings-dialog-actions > button { margin: 0; }
+.desktop-settings-dialog-error { margin-bottom: .5rem; overflow-wrap: anywhere; text-align: start; }
+.desktop-settings-import-warnings { display: grid; gap: .25rem; max-height: 8rem; overflow: auto; }
+.desktop-settings-review { border-top: 1px solid #303a54; padding-top: .375rem; }
+.desktop-settings-review > summary { font-weight: 600; cursor: pointer; }
+.desktop-settings-review[open] > dl { margin-top: .375rem; font-size: .8125rem; }
+.desktop-settings-count { display: flex; gap: .375rem; }
+.desktop-settings-count dd { font-weight: 600; }
+@media (max-width: 530px) {
+  .desktop-format-row { grid-template-columns: minmax(5.5rem, 6.5rem) minmax(0, 1fr); }
   .desktop-format-row > :nth-child(3) { grid-column: 2; }
-}
-@media (max-width: 420px) {
-  .desktop-format-row { grid-template-columns: minmax(0, 1fr); }
-  .desktop-format-row > :nth-child(3) { grid-column: 1; }
 }

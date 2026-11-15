@@ -9,6 +9,7 @@ export type AccountProgressEdit =
   | {kind:'use-imported-ranks'; characterIds:string[]}
   | {kind:'toggle-member'; characterId:string}
   | {kind:'quest'; chapter:number; episode:number}
+  | {kind:'memory-bonus' | 'upgrade-bonus'; value:number}
   | {kind:'dream-rank' | 'memories'; value:number};
 
 function bounded(value:number,min:number,max:number,fallback:number) {
@@ -31,12 +32,12 @@ export function accountProgressMemoryBonus(account:AccountState) {
   return accountManifest.memoryCollectEffects.find(entry=>entry.memories===account.memoriesCollected)?.allParameterUpPermil;
 }
 
-export function accountProgressRank(account:AccountState,characterId:string,importedLevel?:number) {
+export function accountProgressRank(account:AccountState,characterId:string,importedLevel?:number,nodes?:string[]) {
   const character = accountCharactersById.get(characterId);
   if (!character) return null;
   const board = account.boards[characterId];
-  const min = board?.unlockedNodeIds.length ?
-    minimumMemberLevelForBoardPoints(characterId,boardPointsSpent(characterId,board.unlockedNodeIds)) : 1;
+  const unlocked=nodes??board?.unlockedNodeIds;
+  const min = unlocked?.length ? minimumMemberLevelForBoardPoints(characterId,boardPointsSpent(characterId,unlocked)) : 1;
   const max = character.maximumLevel;
   const level = bounded(board?.characterLevel ?? importedLevel ?? min,min,max,min);
   return {level,min,max};
@@ -57,7 +58,7 @@ export function syncImportedMemberRanks(account:AccountState,imported:readonly G
   return boards===account.boards?account:{...account,boards};
 }
 
-export function editAccountProgress(account:AccountState,imported:readonly GameAccountMemberSource[],edit:AccountProgressEdit):AccountState {
+export function editAccountProgress(account:AccountState,imported:readonly GameAccountMemberSource[],edit:AccountProgressEdit,nodes?:string[]):AccountState {
   switch(edit.kind) {
     case 'use-imported-ranks': {
       const selected=new Set(edit.characterIds);
@@ -65,7 +66,7 @@ export function editAccountProgress(account:AccountState,imported:readonly GameA
     }
     case 'rank': {
       const importedLevel = imported.find(member => member.characterId === edit.characterId)?.level;
-      const rank = accountProgressRank(account,edit.characterId,importedLevel);
+      const rank = accountProgressRank(account,edit.characterId,importedLevel,nodes);
       if (!rank) return account;
       const level = bounded(edit.value,rank.min,rank.max,rank.level);
       if (level === rank.level) return account;
@@ -97,6 +98,12 @@ export function editAccountProgress(account:AccountState,imported:readonly GameA
       const next={...account,memoriesCollected};
       delete next.memoryBonusPermil;
       return next;
+    }
+    case 'memory-bonus':
+    case 'upgrade-bonus': {
+      if(!Number.isSafeInteger(edit.value)||edit.value<0)return account;
+      const key=edit.kind==='memory-bonus'?'memoryBonusPermil':'upgradeBonusPermyriad';
+      return account[key]===edit.value?account:{...account,[key]:edit.value};
     }
   }
 }

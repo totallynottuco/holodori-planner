@@ -1,5 +1,6 @@
 let activeSource;
 let activeMobile;
+let activeExchanges;
 
 function asSource(record){
   return record?{id:record.id,url:URL.createObjectURL(new Blob([record.json],{type:'application/json'}))}:null;
@@ -35,9 +36,15 @@ function mobileSource(invoke){
   return activeMobile;
 }
 
+function exchangeSource(invoke){
+  activeExchanges??=invoke('desktop_optimizer_exchange_catalog_read').catch(()=>null);
+  return activeExchanges;
+}
+
 export async function optimizerCatalogSource(invoke,workspaceSource=catalogSource(invoke),gameCatalog){
-  const [source,mobile]=await Promise.all([workspaceSource,mobileSource(invoke)]);
-  return mobile||gameCatalog?{...source,...(mobile?{mobile}:{}),...(gameCatalog?{gameCatalog}:{})}:source;
+  const [source,mobile,exchangeCatalog]=await Promise.all([workspaceSource,mobileSource(invoke),exchangeSource(invoke)]);
+  return mobile||gameCatalog||exchangeCatalog?{...source,...(mobile?{mobile}:{}),...(gameCatalog?{gameCatalog}:{}),
+    ...(exchangeCatalog?{exchangeCatalog}:{})}:source;
 }
 
 function requestCatalogWorker(message,replyType){
@@ -100,8 +107,17 @@ async function checkMobile(invoke,continueUpdate){
   }finally{if(!committed)URL.revokeObjectURL(source.url);}
 }
 
+async function checkExchanges(invoke,continueUpdate){
+  if(!continueUpdate())return false;
+  const catalog=await invoke('desktop_optimizer_exchange_catalog_refresh');
+  if(!catalog)return false;
+  activeExchanges=Promise.resolve(catalog);
+  if(continueUpdate())catalogChanged('exchanges');
+  return true;
+}
+
 export async function checkOptimizerCatalog(invoke,continueUpdate){
-  const results=await Promise.allSettled([checkCatalog(invoke,continueUpdate),checkMobile(invoke,continueUpdate)]);
+  const results=await Promise.allSettled([checkCatalog(invoke,continueUpdate),checkMobile(invoke,continueUpdate),checkExchanges(invoke,continueUpdate)]);
   const updated=results.find(result=>result.status==='fulfilled'&&result.value);
   const [catalog,mobile]=results;
   return {

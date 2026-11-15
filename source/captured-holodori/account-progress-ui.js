@@ -5,6 +5,8 @@ import {
 import {createDefaultAccountState} from '../hololive/vendor/shared/profile';
 import {accountProgressLimits,accountProgressMemoryBonus,accountProgressRank} from './account-progress';
 import {createHolomemBoard} from './holomem-board-ui';
+import {currentBoards,currentDreamRank} from './current-account';
+import {game} from './game';
 
 const emptyAccount = createDefaultAccountState();
 const roster = accountRosterBranches.map(branch => ({
@@ -12,15 +14,20 @@ const roster = accountRosterBranches.map(branch => ({
 }));
 const entryNumber = parseNumber;
 
-export function createAccountProgress({h,vnode,resolve,Search,OverlayPanel,Dialog,headingClass,titleClass}) {
-  const Board=createHolomemBoard({h,vnode,Search,Dialog});
+export function createAccountProgress({h,vnode,resolve,Search,OverlayPanel,Dialog,Toggle,headingClass,titleClass}) {
+  const Board=createHolomemBoard({h,vnode,Search,Dialog,Toggle});
   return {
     name:'HolodoriAccountProgress',
     data() { return {search:'',editor:null,sliderDrafts:{},section:'overview'}; },
     computed:{
       profileId() { return window.__seelieApp?.account || 'main'; },
       profile() { return window.__seelieApp?.data?.[`${this.profileId}-holodori`]; },
-      progressAccount() { return this.profile?.account ?? emptyAccount; },
+      progressAccount() { return {...(this.profile?.account??emptyAccount),playerLevel:currentDreamRank(this.profile)}; },
+      currentLayouts(){return currentBoards(this.profile);},
+      inventory(){
+        const inventory=window.__seelieApp?.data?.[`${this.profileId}-inventory`];
+        return Array.isArray(inventory)?Object.fromEntries(game.resourceKeys.map(id=>[id,game.getInventory.call({inventory},id,id)])):this.profile?.inventory;
+      },
       importedRanks() {
         return new Map(this.profile?.gameAccountImport?.snapshot.tables.members.map(member => [member.characterId,member.level]));
       },
@@ -74,7 +81,7 @@ export function createAccountProgress({h,vnode,resolve,Search,OverlayPanel,Dialo
         if (!editor || cancel || editor.profileId !== this.profileId) return;
         const value = entryNumber(editor.text);
         const edit = editor.kind === 'quest' ? {kind:'quest',chapter:value,episode:entryNumber(editor.episode)} :
-          editor.kind === 'rank' ? {kind:'rank',characterId:editor.characterId,value} : {kind:editor.kind,value};
+          editor.kind === 'rank' ? {kind:'rank',characterId:editor.characterId,value} : {kind:editor.kind,value:editor.factor?Math.round(value*editor.factor):value};
         this.save(edit);
       },
       finishEditor({cancel=false,advance=0,focus=false}={}) {
@@ -118,14 +125,14 @@ export function createAccountProgress({h,vnode,resolve,Search,OverlayPanel,Dialo
         )),
       ];
       if(this.section==='board')return h('section',{class:'holo-progress','aria-label':'Progress'},[
-        ...header,vnode(Board,{key:this.profileId,snapshot:this.profile?.gameAccountImport?.snapshot,inventory:this.profile?.inventory}),
+        ...header,vnode(Board,{key:this.profileId,snapshot:this.profile?.gameAccountImport?.snapshot,
+          profile:this.profile??{account:emptyAccount,cards:{}},inventory:this.inventory,
+          goals:window.__seelieApp?.data?.[`${this.profileId}-goals`],
+          saveBoard:(owner,board,before)=>window.__holodoriDesktop.saveCurrentBoard(this.profileId,owner,board,before)}),
       ]);
       const account = this.progressAccount, story = account.storyProgress;
       const limits = accountProgressLimits(account);
       const memoryBonus = accountProgressMemoryBonus(account);
-      const bonus = (label,title,percent) => h('span',{
-        class:'holo-progress-bonus rounded-full',title,'aria-label':`${title} ${percent}`,
-      },`${label} ${percent}`);
       const Check = resolve('check-icon');
       const editor = this.editor;
       const chip = (caption,details) => h('button',{
@@ -143,7 +150,7 @@ export function createAccountProgress({h,vnode,resolve,Search,OverlayPanel,Dialo
         },
       },caption);
       const tile = member => {
-        const rank = accountProgressRank(account,member.id,this.importedRanks.get(member.id));
+        const rank = accountProgressRank(account,member.id,this.importedRanks.get(member.id),this.currentLayouts[member.id]?.nodes);
         const level = this.sliderDrafts[member.id] ?? rank.level;
         const unlocked = this.unlocked.has(member.id);
         const step = (label,delta,disabled,text) => h('button',{
@@ -162,6 +169,11 @@ export function createAccountProgress({h,vnode,resolve,Search,OverlayPanel,Dialo
           },
         },[
           h('h3',{class:'holo-progress-name font-semibold'},member.name),
+          h('button',{type:'button',class:'holo-progress-invite rounded hover:bg-gray-600','aria-label':`${unlocked?'Lock':'Unlock'} ${member.name}`,
+            title:unlocked?'Mark as locked':'Mark as unlocked',onClick:event=>this.toggleMember(event,member.id)},[
+            unlocked?vnode(Check,{class:'w-3.5 h-3.5','aria-hidden':'true'}):
+              h('img',{src:'/assets/boards/ui_999_ico_lock.webp',alt:'',width:14,height:14}),
+          ]),
           h('img',{class:'holo-progress-portrait',src:`/assets/members/${member.assetId}.webp`,
             width:40,height:40,alt:'',loading:'lazy',decoding:'async'}),
           chip(`Rank ${level}`,{kind:'rank',characterId:member.id,label:`Set ${member.name} member rank`,
@@ -186,7 +198,7 @@ export function createAccountProgress({h,vnode,resolve,Search,OverlayPanel,Dialo
       };
       const editField = (label,value,change,primary=false) => h('label',{class:'holo-progress-field'},[
         h('span',{class:'text-xs font-semibold text-gray-300'},label),
-        h('input',{ref:primary?'progressInput':undefined,type:'text',inputmode:'numeric',
+        h('input',{ref:primary?'progressInput':undefined,type:'text',inputmode:editor?.factor?'decimal':'numeric',
           class:'bg-gray-700 border-none rounded-md',value,onInput:event => change(event.target.value)}),
       ]);
       return h('section',{class:'holo-progress','aria-label':'Progress'},[
@@ -198,8 +210,10 @@ export function createAccountProgress({h,vnode,resolve,Search,OverlayPanel,Dialo
             {kind:'dream-rank',label:'Set Dream Rank',inputLabel:'Dream Rank',value:account.playerLevel,min:1,max:limits.dreamRank}),
           chip(`${account.memoriesCollected} ${account.memoriesCollected === 1 ? 'Memory' : 'Memories'}`,
             {kind:'memories',label:'Set Memories Collected',inputLabel:'Memories Collected',value:account.memoriesCollected,min:0,max:limits.memories}),
-          memoryBonus===undefined?null:bonus('Memory','Unit parameter bonus from Memories',`+${formatNumber(memoryBonus/10,{minimumFractionDigits:1,maximumFractionDigits:1})}%`),
-          account.upgradeBonusPermyriad===undefined?null:bonus('Upgrade','Upgrade Bonus',`+${formatNumber(account.upgradeBonusPermyriad/100,{minimumFractionDigits:2,maximumFractionDigits:2})}%`),
+          chip(memoryBonus===undefined?'Memory bonus':`Memory +${formatNumber(memoryBonus/10)}%`,
+            {kind:'memory-bonus',label:'Set Memory bonus',inputLabel:'Memory bonus (%)',value:(memoryBonus??0)/10,factor:10}),
+          chip(account.upgradeBonusPermyriad===undefined?'Upgrade bonus':`Upgrade +${formatNumber(account.upgradeBonusPermyriad/100)}%`,
+            {kind:'upgrade-bonus',label:'Set Upgrade bonus',inputLabel:'Upgrade bonus (%)',value:(account.upgradeBonusPermyriad??0)/100,factor:100}),
         ]),
         vnode(Search,{label:'Search members',search:this.search,'onUpdate:search':value=>{this.search=value;}}),
         h('div',{class:'holo-progress-roster'},this.visibleBranches.length ? this.visibleBranches.map(branch => h('section',{
@@ -220,7 +234,7 @@ export function createAccountProgress({h,vnode,resolve,Search,OverlayPanel,Dialo
               vnode(Check,{class:'w-4 h-4','aria-hidden':'true'}),
             ]),
             h('span',{class:'sr-only'},editor.kind === 'quest' ? `Chapter 1 to ${limits.chapters}. Up to episode ${limits.episodes(Number(editor.text))}.` :
-              `Enter a number from ${editor.min} to ${editor.max}.`),
+              editor.factor?'Enter the bonus as a percentage.':`Enter a number from ${editor.min} to ${editor.max}.`),
           ]),
         ] : []}),
       ]);

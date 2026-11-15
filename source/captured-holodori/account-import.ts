@@ -5,6 +5,7 @@ import {minimumTrainingStage} from '../hololive/vendor/shared/planner';
 import {boostCap,boostRules,defaultBoosts,sampleBoost,type Boosts} from '../hololive/boosts';
 import {inventoryEventCurrency,inventoryEventTime,type InventoryEventWindow} from './inventory-events';
 import {accountProgressRank,syncImportedMemberRanks} from './account-progress';
+import {consolidateBoardEdits,currentDreamRank,observedDreamRank} from './current-account';
 import {diamondInventoryIds,isGameInventoryId,resourceKeys,type AppProfileV2,type CardCatalogEntry,type GameAccountCardSource,type GameAccountIdentity,type GameAccountImportState,type GameAccountSnapshot,type ResourceKey,type SavedCardState} from '../hololive/vendor/shared/types';
 
 /** Reviewed game Item IDs, never inferred from display labels or asset filenames. */
@@ -195,6 +196,16 @@ export function previewAccountImport(input:unknown,previous:AppProfileV2,events:
     cardChanges.push(change);
   }
   const owned=new Set(snapshot.tables.cards.map(card=>card.cardId));
+  delete next.cardOwnership;
+  next.boardEdits=consolidateBoardEdits(previous,snapshot);
+  if(!Object.keys(next.boardEdits).length)delete next.boardEdits;
+  if(snapshot.balances.gachaPoints&&next.gachaPointEdits)for(const id of Object.keys(snapshot.balances.gachaPoints))delete next.gachaPointEdits[id];
+  if(snapshot.tables.missions!==undefined)delete next.achievementEdits;
+  else if(previous.gameAccountImport?.snapshot.tables.missions){
+    const retained=Object.fromEntries(previous.gameAccountImport.snapshot.tables.missions.filter(row=>row.missionPassId==='__NONE__')
+      .map(({missionId,progress,rewardReceivedThresholds})=>[missionId,{progress,rewardReceivedThresholds}]));
+    next.achievementEdits={...retained,...next.achievementEdits};
+  }
   counts.unobservedCardsPreserved=Object.keys(next.cards).filter(id=>!owned.has(id)).length;
   const rows=new Map<string,GameAccountSnapshot['tables']['items']>();
   for(const item of snapshot.tables.items){const group=rows.get(item.itemId)||[];group.push(item);rows.set(item.itemId,group);}
@@ -237,10 +248,15 @@ export function previewAccountImport(input:unknown,previous:AppProfileV2,events:
   });
   next.account.unlockedCharacterIds=[...unlocked];
   const progress=snapshot.progress;
+  const dreamRank=observedDreamRank(snapshot);
+  next.account.playerLevel=dreamRank??currentDreamRank(previous);
+  if(dreamRank!==undefined)delete next.dreamRankManuallySet;
   if(progress){
     if(progress.quest!==undefined)next.account.storyProgress=progress.quest??{chapter:1,episode:0};
-    if(progress.dreamRank!==undefined)next.account.playerLevel=progress.dreamRank;
-    if(progress.memoriesCollected!==undefined)next.account.memoriesCollected=progress.memoriesCollected;
+    if(progress.memoriesCollected!==undefined){
+      if(progress.memoriesCollected!==next.account.memoriesCollected&&progress.memoryBonusPermil===undefined)delete next.account.memoryBonusPermil;
+      next.account.memoriesCollected=progress.memoriesCollected;
+    }
     if(progress.memoryBonusPermil!==undefined)next.account.memoryBonusPermil=progress.memoryBonusPermil;
     if(progress.upgradeBonusPermyriad!==undefined)next.account.upgradeBonusPermyriad=progress.upgradeBonusPermyriad;
   }

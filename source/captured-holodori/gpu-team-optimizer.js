@@ -6,6 +6,8 @@ import {createGpuObjectiveScorer,createGpuTradeScorer} from './gpu-trade-scoring
 import {refineBoardExchanges} from './gpu-board-exchanges';
 import {hasGpuBoardBonusTargets,improveGpuBoardBonuses} from './gpu-board-bonus-targets';
 import {searchGpuNextUpgrades} from './gpu-next-upgrades';
+import * as cpuBoardKernels from './cpu-board-kernels';
+import {boardPlanningBaseline,boardProtection,hasBoardProtection,preservesBoard,preservesBoardProtection} from './board-protection';
 
 const float=new Float32Array(1),bits=new Uint32Array(float.buffer);
 const scoreBits=value=>{float[0]=Math.max(0,value);return bits[0];};
@@ -23,10 +25,13 @@ const protectedNode=(node,targets)=>{
     (Object.hasOwn(targets,prefix)||Object.hasOwn(targets,prefix+':'+node.variant));
 };
 
-export async function createGpuTeamOptimizer(data,objective){
-  const kernels=await createGpuSearchKernels();
-  const scoreTradeTimelines=createGpuTradeScorer(kernels);
-  const scoreObjectives=createGpuObjectiveScorer(kernels,scoreTradeTimelines);
+export const createGpuTeamOptimizer=(data,objective)=>createTeamOptimizer(data,objective,false);
+export const createCpuBoardPlanner=(data,objective)=>createTeamOptimizer(data,objective,true);
+
+async function createTeamOptimizer(data,objective,cpu){
+  const kernels=cpu?cpuBoardKernels:await createGpuSearchKernels();
+  const scoreTradeTimelines=cpu?null:createGpuTradeScorer(kernels);
+  const scoreObjectives=cpu?null:createGpuObjectiveScorer(kernels,scoreTradeTimelines);
   const boardCache=new WeakMap();
   const noBoardEffects=new Map();
   const statCache=new WeakMap();
@@ -154,7 +159,7 @@ export async function createGpuTeamOptimizer(data,objective){
 
   async function rankResults(payload,rows){
     if(!rows.length)return rows;
-    const base=payload.boardOpt?.ignoreExisting?{}:payload.account.boards;
+    const base=boardPlanningBaseline(payload.account.boards,payload.boardOpt);
     const scoredByBoard=new WeakMap();
     const dataFor=row=>{
       const pulls=row.pulls??[];
@@ -187,16 +192,19 @@ export async function createGpuTeamOptimizer(data,objective){
         (b.tieScore??b.score)-(a.tieScore??a.score));
   }
 
+  const solveNext=(payload,findOwnedTeams)=>searchGpuNextUpgrades({
+    data,payload,scorer,rank:cpu?null:rankObjective,plan,findOwnedTeams,
+  });
+
   async function solve(payload){
     if(payload.options.goal==='next'){
       const start=performance.now();
-      const result=await searchGpuNextUpgrades({data,payload,scorer,rank:rankObjective,plan,
-        findOwnedTeams:async query=>(await solve(query)).results});
+      const result=await solveNext(payload,async query=>(await solve(query)).results);
       timings.screen+=performance.now()-start;
       examined+=result.evaluated??0;
       return result;
     }
-    const boards=payload.boardOpt?.ignoreExisting?{}:payload.account.boards;
+    const boards=boardPlanningBaseline(payload.account.boards,payload.boardOpt);
     const {context,score}=scorer(payload,boards);
     const boardScores=[];
     if(payload.boardOpt&&(payload.options.lbCharts?.length||objective!=='holomemLb')){
@@ -286,7 +294,10 @@ export async function createGpuTeamOptimizer(data,objective){
     if(boardOpt.maxBoardPoints)for(const id of Object.keys(ranks))ranks[id]=data.boardPointLadder.length-1;
     const outfits=Object.entries(data.costumes).filter(([id,outfit])=>outfit.characterId===leaderChar&&
       (outfit.isDefault||account.owned[outfit.cardId]?.owned||account.ownedCostumeIds?.includes(id)));
-    let saves=boardOpt.ignoreExisting?{}:account.boards;
+    let saves=boardPlanningBaseline(account.boards,boardOpt);
+    const originalBoards=saves;
+    const canReset=owner=>boardProtection(boardOpt,owner)==='flexible';
+    const pinnedSlot=(owner,socket)=>!canReset(owner)&&Object.hasOwn(originalBoards[owner]?.cards??{},socket);
     const allCharts=payload.targetCharts?undefined:payload.options.lbCharts;
     const baseScorer=scorer(payload,saves,ranks).score;
     const eligibleOutfits=payload.options.leaderMode==='fixed'&&payload.outfitId?[payload.outfitId]:outfits.map(([id])=>id);
@@ -318,7 +329,7 @@ export async function createGpuTeamOptimizer(data,objective){
     }
     const bought={},refunded={},changes=new Map();
     const materials=Object.keys(data.boardItems);
-    const owners=Object.keys(ranks).filter(id=>data.boards[id]);
+    const owners=Object.keys(ranks).filter(id=>data.boards[id]&&boardProtection(boardOpt,id)!=='locked');
     const keep=boardOpt.keep?.targets??{};
     const charts=(payload.options.lbCharts??[{songId:payload.options.songId}]).map(({songId})=>
       data.songs.find(song=>song.id===songId));
@@ -345,6 +356,7 @@ export async function createGpuTeamOptimizer(data,objective){
     const materialKnown=new Set(materials);
     if(boardOpt.ignoreExisting&&!boardOpt.noRefund){
       for(const [owner,saved] of Object.entries(account.boards)){
+        if(!canReset(owner))continue;
         const nodes=new Map((data.boards[owner]??[]).map(node=>[node.id,node]));
         for(const id of saved.nodes)for(const item of nodes.get(id)?.items??[])
           refunded[item.id]=(refunded[item.id]??0)+item.qty;
@@ -359,6 +371,7 @@ export async function createGpuTeamOptimizer(data,objective){
     if(!boardOpt.ignoreExisting&&boardOpt.maxResets!==0&&!payload.seedBoards){
       const sourceSaves=saves;
       for(const owner of owners){
+        if(!canReset(owner))continue;
         const saved=sourceSaves[owner];
         if(!saved?.nodes.length)continue;
         const nodes=data.boards[owner],byId=new Map(nodes.map(node=>[node.id,node]));
@@ -472,7 +485,6 @@ export async function createGpuTeamOptimizer(data,objective){
     const frontiers=new Map();
     const budgets=new Map(owners.map(owner=>[owner,boardPointsAtRank(data.boardPointLadder,ranks[owner])]));
     const emptyBoard={nodes:[],cards:{}};
-    const originalBoards=boardOpt.ignoreExisting?{}:account.boards;
     const originalNodes=new Map(owners.map(owner=>[owner,new Set(originalBoards[owner]?.nodes??[])]));
     const nodeMaps=new Map(owners.map(owner=>[owner,new Map(data.boards[owner].map(node=>[node.id,node]))]));
     const compare=(a,b)=>a.value-b.value||(a.tieScore??a.score)-(b.tieScore??b.score);
@@ -522,6 +534,7 @@ export async function createGpuTeamOptimizer(data,objective){
       return minimum;
     };
     const preservesCoverage=(owner,board,next,active,nextActive=active)=>{
+      if(!preservesBoard(boardOpt,owner,originalBoards[owner],next))return false;
       if(!hasProtectedTargets)return true;
       const old=protectedCoverage(owner,board,active);
       if(!old.size)return true;
@@ -566,6 +579,7 @@ export async function createGpuTeamOptimizer(data,objective){
         socketFootprint(socket,id).reduce((sum,key)=>sum+(weights.get(key)??0),0)*connectPermil(id)/1000:0;
       const proposals=[];
       for(const socket of sockets){
+        if(pinnedSlot(owner,socket.id))continue;
         const incumbent=board.cards[socket.id];
         if(incumbent&&(!data.connects[incumbent]||!account.owned[incumbent]?.owned))continue;
         const before=value(socket,incumbent,target.weights);
@@ -576,6 +590,7 @@ export async function createGpuTeamOptimizer(data,objective){
           if(gain<=0)continue;
           const prior=placed.get(cardId);
           if(!prior){proposals.push({socket,cardId,gain,net:gain});continue;}
+          if(pinnedSlot(prior.member,prior.socket))continue;
           const source=budgets.has(prior.member)&&connectField(prior.member,prior.save,after);
           if(!source||!source.active.has(prior.socket))continue;
           const priorNode=nodeMaps.get(prior.member).get(prior.socket);
@@ -630,7 +645,7 @@ export async function createGpuTeamOptimizer(data,objective){
         for(const socket of data.boards[owner]){
           if(!socket.socket||!field.active.has(socket.id))continue;
           const incumbent=board.cards[socket.id];
-          if(incumbent&&(!data.connects[incumbent]||!account.owned[incumbent]?.owned)){
+          if(incumbent&&(pinnedSlot(owner,socket.id)||!data.connects[incumbent]||!account.owned[incumbent]?.owned)){
             reserved.add(incumbent);
             continue;
           }
@@ -829,10 +844,11 @@ export async function createGpuTeamOptimizer(data,objective){
     const fitsInventory=()=> (boardOpt.maxResets<0||resetCount<=boardOpt.maxResets)&&
       (boardOpt.infiniteMaterials||materials.every(id=>(bought[id]??0)<=(boardOpt.materials[id]??0)+(refunded[id]??0)));
     if(payload.seedBoards){
+      if(!preservesBoardProtection(boardOpt,originalBoards,payload.seedBoards))return {plan:null};
       const used=new Set();
       for(const [owner,next] of Object.entries(payload.seedBoards)){
         const previous=saves[owner]??emptyBoard;
-        if(next===previous){
+        if(next===previous||boardProtection(boardOpt,owner)==='locked'){
           for(const id of Object.values(next.cards)){
             if(used.has(id))return {plan:null};
             used.add(id);
@@ -879,6 +895,7 @@ export async function createGpuTeamOptimizer(data,objective){
       const reachable=(owner,board)=>boardReachability(data.boards[owner],board,account.dreamRank);
       const proposals=new Map();
       for(const owner of scoringOwners){
+        if(!budgets.has(owner)||!canReset(owner))continue;
         const base=saves[owner]??emptyBoard;
         const all=data.boards[owner];
         if(!all||!budgets.has(owner))continue;
@@ -1096,6 +1113,7 @@ export async function createGpuTeamOptimizer(data,objective){
       const timingCuts=[];
       if(!boardOpt.infiniteMaterials){
         for(const owner of owners){
+          if(!canReset(owner))continue;
           if(proposals.has(owner))continue;
           const board=saves[owner]??emptyBoard;
           if(!board.nodes.length)continue;
@@ -1227,6 +1245,8 @@ export async function createGpuTeamOptimizer(data,objective){
     }
     async function rankLayouts(layouts,orders=[order],limit=8){
       if(layouts.length<=limit)return layouts;
+      if(cpu)return layouts.map(layout=>({layout,row:bestOutfit(scorer(payload,layout.boards,ranks).score,orders)}))
+        .sort((a,b)=>compare(b.row,a.row)).slice(0,limit).map(({layout})=>layout);
       if(unit||payload.options.eventBonus||payload.options.eventPoints||!payload.options.lbCharts?.length){
         const trials=layouts.flatMap(({boards},index)=>{
           const {gpuTrial}=scorer(payload,boards,ranks);
@@ -1288,6 +1308,7 @@ export async function createGpuTeamOptimizer(data,objective){
         const skillPaths=paths.filter(move=>move.path.some(node=>node.kind==='activeChance'||node.kind==='activeFreq'));
         const shortlisted=new Set([...paths.slice(0,10),...skillPaths.slice(0,8)]);
         for(const move of shortlisted)receivers.push({...move,save,spent:frontier.spent,budget});
+        if(!canReset(owner))continue;
         let removable=donorTopology.get(save);
         if(!removable){
           removable=[];
@@ -1530,6 +1551,7 @@ export async function createGpuTeamOptimizer(data,objective){
         const socketsOnBoard=new Set(Object.values(save.cards));
         for(const socket of socketNodes.get(owner).filter(node=>
           (socketPaths.has(node.id)||frontier.active.has(node.id)))){
+          if(pinnedSlot(owner,socket.id))continue;
           const path=socketPaths.get(socket.id)??emptyMove;
           const active=keepCoverage.size&&!frontier.active.has(socket.id)?
             new Set([...frontier.active,socket.id]):frontier.active;
@@ -1752,7 +1774,7 @@ export async function createGpuTeamOptimizer(data,objective){
         const exchange=await refineBoardExchanges({boards:saves,owners,topology:data.boards,
           allowed:branches,dreamRank:account.dreamRank,budgets,order,leader:leaderChar,
           materials,stock:exactAvailable(),maxResets:boardOpt.maxResets,resetCount,original:originalNodes,
-          protectedNode:node=>protectedNode(node,keep),rankLayouts:(rows,_,limit)=>rankLayouts(rows,orders,limit),
+          protectedNode:node=>protectedNode(node,keep),canReset,rankLayouts:(rows,_,limit)=>rankLayouts(rows,orders,limit),
           checkTrades:kernels.checkTrades,
           includeSong:payload.exchangeOnly?(node,owner)=>matchingCharts(node,owner).some(index=>
             (!payload.targetCharts||payload.targetCharts.includes(index))&&
@@ -1811,7 +1833,7 @@ export async function createGpuTeamOptimizer(data,objective){
       const rewards=await improveGpuBoardBonuses({owners,topology:data.boards,nodeMaps,budgets,originalNodes,
         targets:keep,branches,dreamRank:account.dreamRank,emptyBoard,materials,infinite:boardOpt.infiniteMaterials,
         available:exactAvailable,resetsLeft:()=>boardOpt.maxResets<0?0xffffffff:Math.max(0,boardOpt.maxResets-resetCount),
-        protectedNode:node=>protectedNode(node,keep),priority:priorityFor,checkTrades:kernels.checkTrades,
+        protectedNode:node=>protectedNode(node,keep),canReset,priority:priorityFor,checkTrades:kernels.checkTrades,
         score:boards=>{const row=bestOutfit(scorer(finalPayload,boards,ranks).score,[rewardOrder]);
           return {...row,rewardSongScore:songScoreFor(boards,row)};},
         scoreValue:row=>row.rewardSongScore,initial:{...after,rewardSongScore:songScoreFor(saves,after)},boards:saves,
@@ -1844,12 +1866,14 @@ export async function createGpuTeamOptimizer(data,objective){
         });
       }
     }
+    if(hasBoardProtection(boardOpt)&&(!preservesBoardProtection(boardOpt,originalBoards,saves)||!fitsInventory()))
+      throw Error('The Board plan violates a protection or shared inventory limit.');
     return {plan:{changes:[...changes.values()],bought,refunded,resetCount,saves,ranks,orderExhaustive:!boardOpt.litePlan,
       ...(rewardGains?{rewardGains}:{}),
       ignoredExisting:boardOpt.ignoreExisting,before,after,leaderChar,outfitId:after.outfitId}};
   }
 
-  return {solve,plan,rankResults,
+    return {solve,solveNext,plan,rankResults,
     close:kernels.close,metrics:()=>({examined,boardMoves,projectedBest,plannedBest,boardProjections,
     connectMatches,frequencyPairs,sameBoardTrades,crossBoardTrades,tradeCandidates,tradeTimelines,tradeTiming,
     shortlistPlans,timings,shortlistTiming,kernelTiming:kernels.timings,timelineCache:{skillHits,skillMisses},objectiveTrials})};

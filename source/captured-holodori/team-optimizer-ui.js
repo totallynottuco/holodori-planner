@@ -5,14 +5,17 @@ import {loadExtraSongs,saveExtraSongs} from './optimizer-song-unlocks';
 import {loadOptimizerPreferences,saveOptimizerPreferences} from './optimizer-preferences';
 import {boardChangeBadge,createHolomemBoard} from './holomem-board-ui';
 import {boardNodeLabel,connectCard} from './holomem-board';
-import {accountProgressRank} from './account-progress';
+import {accountProgressRank,accountProgressMemoryBonus} from './account-progress';
+import {currentBoards,currentMemberRank,currentOwnedCards,currentGachaPoints,currentUpgradeBonus,currentDreamRank} from './current-account';
 import {automaticChapter,defaultEvent,eventStatus} from './optimizer-events';
 import {optimizerPowerUpPresets,referencePowerUpOverride,referenceSearchRoster} from './reference-team-solver';
 import {referencePowerUpBonus} from './reference-rating-math';
 import {previewTeamPlan} from './team-plan';
 import {plannedOptimizerCards} from './planned-optimizer-cards';
 import {optimizerBoards,savedLineupSchema} from './saved-lineups';
-import {boardChanges,boardTable,mergeSavedBoards,projectBoardSelection} from './saved-boards';
+import {boardChanges,boardTable,mergeSavedBoards,projectBoardSelection,protectedSavedBoards,remainingBoardChanges} from './saved-boards';
+import {boardPlanningBaseline,boardProtection,boardProtectionModes,preservesBoard} from './board-protection';
+import {boardBill,optimizerResetLimit,quoteBoardBudget,resetGold} from './board-budget';
 import {createOutfitPreview} from './outfit-preview.js';
 import {optimizerWorkspaceCatalog,prepareOptimizerWorkspace} from './optimizer-workspace-catalog.js';
 import {previewSoundtrack,rememberPreviewSoundtrack} from './optimizer-preview-audio.js';
@@ -20,6 +23,7 @@ import {createPreviewHitPlayback} from './optimizer-preview-hit-playback.js';
 import {loadChartHitEvents} from './optimizer-chart-hit-events.js';
 import {preloadPreviewHitSounds,previewHitSoundTypes} from './optimizer-preview-hit-sounds.js';
 import {loadChartArtwork,chartArtworkCrop,chartArtworkPoint,chartArtworkViewBox,chartArtworkWindows} from './optimizer-chart-artwork.js';
+import {activeGachaCurrencies,nextAcquisitionChoices,quoteCardAcquisitions} from './acquisition-exchanges.js';
 
 export {prepareOptimizerWorkspace};
 
@@ -98,7 +102,7 @@ const objectiveDescriptions = {
   holomemLb:['star','Find the best songs and teams for one Holomem.'],
   unitScore:['star','Maximize team power and skill bonuses without choosing a song.'],
 };
-const boardChoices = [['imported','Use imported Boards'],['saved','Use saved Boards'],['optimize','Optimize Boards'],['none','Ignore Boards']];
+const boardChoices = [['imported','Use current Boards'],['saved','Use saved Board plans'],['optimize','Optimize Boards'],['none','Ignore Boards']];
 const boardDescriptions = {
   imported:'Keep your unlocks and Connect cards.',
   saved:'Use your saved Board plans alongside imported Boards.',
@@ -162,7 +166,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
   const OutfitPreview=createOutfitPreview(h);
   const Board = createHolomemBoard({h,vnode,Search,Dialog});
   const BoardPlanView={props:{view:Function},data:()=>({open:false,expanded:{},editing:{},
-    selected:{},connectOverrides:{},saved:{},pending:false,message:'',error:''}),
+    selected:{},connectOverrides:{},pending:false,message:'',error:''}),
     render(){return this.view(this);}};
   const TeamDetailsView={props:{view:Function,report:Object},data:()=>({
     unit:'overall',distribution:'stats',histogramBin:null,histogramExpanded:false,continueOpen:false,continueSeconds:10,
@@ -429,32 +433,33 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
 
   return {
     name:'HolodoriTeamOptimizer',
+    props:{profileKey:String},
     data(){
       const workspace=optimizerWorkspaceCatalog();
       return {
-        ...loadOptimizerPreferences(localStorage,window.__seelieApp?.account||'main'),
+        ...loadOptimizerPreferences(localStorage,this.profileKey||window.__seelieApp?.account||'main'),
         catalog:workspace?.catalog??null,optimizerSource:workspace?.source??null,ratingExtraSongs:[],updatedJackets:null,
         picker:null,pickerVisible:false,query:'',previewCard:null,outfitPreviewId:null,outfitDraftTraining:{},outfitMedia:{},outfitStageReady:false,searching:false,progress:null,result:null,error:'',
         previewTeam:null,reviewDetails:null,detailRequest:0,previewChartKey:'',previewPc:false,previewSection:null,
         previewSlot:null,previewQuery:'',planTeam:null,planError:'',
         savedLineups:[],savedLineupId:null,lineupNameDraft:null,lineupDeleting:false,lineupError:'',lineupScore:null,lineupScoring:false,resultContext:null,
         lineupValueEdit:null,activeStep:'build',visitedSteps:['build'],resultsChanged:false,eventClock:Date.now(),eventTimer:null,eventPage:0,
-        catalogRefreshPending:false,catalogLoading:false,searchBackend:null,gpuError:false,
+        catalogRefreshPending:false,catalogLoading:false,searchBackend:null,gpuError:false,gachaError:'',
       };
     },
     computed:{
       useGpu(){return window.__seelieApp?.settings?.optimizer_use_gpu===true;},
-      profileId(){return window.__seelieApp?.account || 'main';},
+      profileId(){return this.profileKey||window.__seelieApp?.account||'main';},
       profile(){return window.__seelieApp?.data?.[`${this.profileId}-holodori`];},
       snapshot(){return this.profile?.gameAccountImport?.snapshot;},
       ownedCostumeIds(){
         return this.snapshot?.tables.costumes?.map(row=>row.costumeId)??this.profile?.account?.ownedCostumeIds??[];
       },
       savedLineup(){return this.savedLineups.find(row=>row.id===this.savedLineupId);},
-      missingLineupCards(){return this.snapshot&&this.savedLineup?this.savedLineup.cardIds.filter(id=>!this.ownedById.has(id)):[];},
+      missingLineupCards(){return this.savedLineup?this.savedLineup.cardIds.filter(id=>!this.ownedById.has(id)):[];},
       canRecalculateLineup(){
         const pool=this.savedLineup?.cardAssumptions?.cardPool;
-        return !!this.savedLineup&&(!!this.snapshot||!!this.savedLineup.plannedCards||pool==='allCustom'||pool==='allMaxed');
+        return !!this.savedLineup&&(!!this.ownedCards.length||!!this.savedLineup.plannedCards||pool==='allCustom'||pool==='allMaxed');
       },
       teamPlan(){
         if(!this.planTeam||this.planTeam.profile!==this.profileId)return null;
@@ -467,17 +472,16 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         return this.passportOverride ?? window.__seelieApp?.data?.[`${this.profileId}-boosts`]?.holoPassport ??
           this.profile?.boosts?.holoPassport ?? false;
       },
-      hasBoards(){return this.snapshot?.tables.boards !== undefined;},
+      currentBoardLayouts(){return currentBoards(this.profile);},
+      hasBoards(){return !!Object.keys(this.currentBoardLayouts).length;},
       hasSavedBoards(){return !!Object.keys(this.profile?.savedBoards??{}).length;},
       members(){
         const account = this.profile?.account;
-        const ranks = new Map(this.snapshot?.tables.members.map(row=>[row.characterId,row.level]));
-        for(const id of account?.unlockedCharacterIds ?? []){
-          ranks.set(id,account.boards?.[id]?.characterLevel ?? ranks.get(id) ?? 1);
-        }
-        return [...ranks].map(([characterId,level])=>({characterId,level}));
+        return (account?.unlockedCharacterIds??[]).map(characterId=>({characterId,level:currentMemberRank(this.profile,characterId)}));
       },
-      ownedCards(){return this.snapshot?.tables.cards ?? [];},
+      ownedCards(){return currentOwnedCards(this.profile,window.__seelieApp?.data?.[`${this.profileId}-goals`]);},
+      gachaPoints(){return currentGachaPoints(this.profile);},
+      upgradeBonus(){return currentUpgradeBonus(this.profile,this.ownedCards);},
       ownedById(){return new Map(this.ownedCards.map(card=>[card.cardId,card]));},
       plannedCards(){
         const data=window.__seelieApp?.data;
@@ -498,10 +502,10 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         const owned=Object.fromEntries(this.rosterCards.map(card=>[card.cardId,{owned:true,level:card.level,bloom:card.potentialUpgradeCount}]));
         const input={goal:this.mode,cardPool:this.effectivePool,customLevel:this.customLevel,customBloom:this.customBloom,
           noDelevel:this.keepHigherLevel,noDebloom:this.keepHigherBloom,
-          upgradeBonusPermyriad:this.rosterSource==='owned'?this.snapshot?.progress?.upgradeBonusPermyriad:undefined,
+          upgradeBonusPermyriad:this.rosterSource==='owned'?this.upgradeBonus:undefined,
           outfitAssumption:this.activeOutfitAssumption};
         const imported=referencePowerUpOverride(data,owned,input);
-        const automatic=imported!==undefined?`${input.outfitAssumption?'Search roster':'Imported'} · ${powerUpLabel(imported)}`:this.mode==='next'?'Search roster':
+        const automatic=imported!==undefined?`${input.outfitAssumption?'Search roster':'Current'} · ${powerUpLabel(imported)}`:this.mode==='next'?'Search roster':
           `Search roster · ${powerUpLabel(referencePowerUpBonus(referenceSearchRoster(data,owned,input),data,'owned'))}`;
         return [['auto',automatic],...optimizerPowerUpPresets.map(([id,label])=>[id,
           `${label} · ${powerUpLabel(referencePowerUpOverride(data,owned,{...input,powerUpPreset:id}))}`])];
@@ -584,15 +588,11 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           song.characterIds?.includes(this.ratingCharacterId) && (song.singerType==='SOLO'||song.singerType==='GROUP'&&song.characterIds.length>1));
       },
       automaticSongs(){
-        const imported=this.snapshot?.tables.songs;
-        if(imported){
-          const ids=new Set(imported.filter(row=>Number(row.releasedTime)<=this.eventClock).map(row=>row.musicId));
-          return new Set(this.songs.filter(song=>ids.has(song.id)||song.unlock?.autoGiven).map(song=>song.id));
-        }
+        const imported=new Set(this.snapshot?.tables.songs?.filter(row=>Number(row.releasedTime)<=this.eventClock).map(row=>row.musicId));
         const quest=this.profile?.account?.storyProgress;
         const questStep=quest ? quest.chapter*1000+quest.episode : 0;
         const invited=new Set(this.members.map(row=>row.characterId));
-        return new Set(this.songs.filter(({unlock})=>unlock && (unlock.autoGiven||
+        return new Set(this.songs.filter(({id,unlock})=>imported.has(id)||unlock && (unlock.autoGiven||
           unlock.mainQuestUnlock && questStep>=unlock.mainQuestUnlock[0]*1000+unlock.mainQuestUnlock[1] ||
           invited.has(unlock.holomemUnlock))).map(song=>song.id));
       },
@@ -632,19 +632,53 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       },
       effectiveBoards(){return this.boardMode==='imported'&&!this.hasBoards||this.boardMode==='saved'&&!this.hasSavedBoards||
         this.boardMode==='optimize'&&this.catalog?.boardOptimization===false?'none':this.boardMode;},
+      protectedBoardSetup(){
+        if(this.effectiveBoards!=='optimize'||!Object.keys(this.boardProtection).length)return null;
+        try{
+          return protectedSavedBoards(this.currentBoardLayouts,this.profile?.savedBoards??{},this.boardProtection);
+        }catch(error){return {error:error.message};}
+      },
+      boardStock(){
+        const inventory=window.__seelieApp?.data?.[`${this.profileId}-inventory`];
+        const quantity=key=>Array.isArray(inventory)?game.getInventory.call({inventory},key,key):
+          this.profile?.inventory?.[key]??0;
+        return {...Object.fromEntries(boardItems.map(item=>[item.key,this.boardMaterials[item.id]??quantity(item.key)])),
+          hologold:quantity('hologold')};
+      },
+      boardBudget(){
+        if(this.effectiveBoards!=='optimize')return null;
+        const imported=this.currentBoardLayouts;
+        const limits={stock:this.boardStock,maxResets:this.boardMaxResets,infiniteMaterials:this.boardUnlimited};
+        const refundResets=!(this.boardIgnoreExisting&&this.boardNoRefund);
+        const protectedPlans=this.protectedBoardSetup?.plans??{};
+        const flexible=Object.entries(imported).filter(([owner])=>!Object.hasOwn(this.boardProtection,owner));
+        try{
+          const reserved=boardBill(imported,protectedPlans,refundResets);
+          const cleared=this.boardIgnoreExisting?Object.fromEntries(flexible.map(([owner])=>[owner,{nodes:[],cards:{}}])):{};
+          const startingBill=this.boardIgnoreExisting?boardBill(imported,{...protectedPlans,...cleared},refundResets):reserved;
+          const ceiling=this.boardIgnoreExisting?0:flexible.reduce((total,[,board])=>total+board.nodes.length,0);
+          return {imported,protectedPlans,limits,refundResets,reserved,startingBill,
+            quote:quoteBoardBudget(startingBill,limits),maxResets:optimizerResetLimit(startingBill.resets,ceiling,limits)};
+        }catch(error){return {error:error.message};}
+      },
       boardOpt(){
         if(this.effectiveBoards!=='optimize')return undefined;
-        const materials = Object.fromEntries(boardItems.map(item=>[item.id,this.boardMaterials[item.id] ??
-          this.profile?.inventory?.[item.key] ?? 0]));
-        return {ignoreExisting:this.boardIgnoreExisting,noRefund:this.boardIgnoreExisting&&this.boardNoRefund,
-          // The captured worker uses -1 internally. The control and saved preference use null for Unlimited.
-          maxResets:this.boardMaxResets??-1,infiniteMaterials:this.boardUnlimited,materials,maxBoardPoints:this.boardMaxPoints,
-          allInvited:this.boardAllInvited,branches:[...this.boardBranches],keep:{targets:{...this.boardKeep}}};
+        const budget=this.boardBudget;
+        if(!budget?.quote)return undefined;
+        const materials=Object.fromEntries(boardItems.map(item=>[item.id,budget.quote.remaining[item.key]??0]));
+        // The full-reset refund is already in the shared starting balance.
+        return {ignoreExisting:this.boardIgnoreExisting,noRefund:this.boardIgnoreExisting,
+          maxResets:budget.maxResets,infiniteMaterials:this.boardUnlimited,materials,maxBoardPoints:this.boardMaxPoints,
+          allInvited:this.boardAllInvited,branches:[...this.boardBranches],keep:{targets:{...this.boardKeep}},
+          ...(Object.keys(this.boardProtection).length?{protection:{...this.boardProtection},objective:this.objective}:{})};
       },
       needsChart(){return this.eventMode;},
       searchBlocker(){
         const rosterReady = this.mode==='next' ? this.candidates.length>0 : this.candidateMembers.size>=5;
         if(!this.supportedObjectives.has(this.objective))return ['target','Choose an available objective.'];
+        if(this.protectedBoardSetup?.error)return ['boards',this.protectedBoardSetup.error];
+        if(this.boardBudget?.error)return ['boards',this.boardBudget.error];
+        if(this.boardBudget?.quote&&!this.boardBudget.quote.fits)return ['boards','The starting Boards exceed the shared budget. Check the shortfall in Boards.'];
         if(this.unitMode&&this.mode==='next')return ['build','Choose Best team or Build around cards for Unit Score.'];
         if(this.mode==='next'&&!this.useOwned){
           const outfit=this.activeOutfitAssumption;
@@ -666,31 +700,25 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         if(this.ratingMode&&!this.activeLeaderId)return ['target','Choose a Holomem for Rating.'];
         if(this.ratingMode&&!this.hasRatingChart)return ['target','Adjust song access or the maximum difficulty to include a chart.'];
         if(!this.ratingMode&&!this.unitMode&&!this.chart&&(this.needsChart||this.rangeCharts===0))return ['target','Choose a chart or an available difficulty range.'];
-        if(!rosterReady)return ['lineup',this.useOwned&&this.rosterSource==='planned'?'Add more active cards to Planner or choose another card pool.':this.useOwned&&!this.snapshot?'Import your cards in Settings or choose another card pool.':
+        if(!rosterReady)return ['lineup',this.useOwned&&this.rosterSource==='planned'?'Add more active cards to Planner or choose another card pool.':this.useOwned&&!this.ownedCards.length?'Mark cards as owned in Characters, import your account, or choose another card pool.':
           this.mode==='next'?'Add owned cards to find your next upgrade.':'Choose a card pool with five different Holomems.'];
         if(this.mode==='holomem'&&!this.lockedCardIds.length)return ['lineup','Lock at least one card.'];
         if(this.automaticInvitedOnly&&!this.availableLeaders.some(leader=>this.invitedLeaderIds.has(leader.id)))
-          return ['lineup','Import invited Holomems, choose a leader, or allow all Holomems.'];
+          return ['lineup','Unlock members in Progress, choose a leader, or allow all Holomems.'];
         return null;
       },
       canSearch(){return !this.searching&&!this.catalogLoading&&!this.searchBlocker;},
     },
     watch:{
       searching(active){if(!active&&this.catalogRefreshPending)this.refreshOptimizerCatalog();},
-      profileId(){
-        this.closePicker();
-        this.savedLineups=window.__holodoriDesktop.getSavedLineups(this.profileId);
-        Object.assign(this,loadOptimizerPreferences(localStorage,this.profileId));
-        this.reconcile();
-        this.ratingExtraSongs = loadExtraSongs(localStorage,this.profileId);
-        this.clearResult();
-        this.resultsChanged=false;
-        this.activeStep='build';
-        this.visitedSteps=['build'];
-      },
-      snapshot(){this.reconcile();this.clearResult();this.clearLineupScore();},
-      'profile.account'(next,previous){if(next!==previous){this.reconcile();this.clearResult();this.clearLineupScore();}},
-      passport(){if(this.objective==='eventPoints')this.clearResult();},
+      profile(next,previous){if(!next&&previous)this.clearResult();},
+      snapshot(){this.reconcile();this.inputsChanged();this.clearLineupScore();},
+      'profile.account'(next,previous){if(next!==previous){this.reconcile();this.inputsChanged();this.clearLineupScore();}},
+      'profile.boardEdits'(){this.inputsChanged();this.clearLineupScore();},
+      'profile.cardOwnership'(){this.reconcile();this.inputsChanged();this.clearLineupScore();},
+      'profile.gachaPointEdits'(){this.inputsChanged();},
+      passport(){if(this.resultContext?.objective==='eventPoints')this.inputsChanged();},
+      useGpu(){this.inputsChanged();},
     },
     mounted(){
       this.savedLineups=window.__holodoriDesktop.getSavedLineups(this.profileId);
@@ -709,6 +737,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       this.stopWorker();
       this.clearLineupScore();
     },
+    deactivated(){if(this.pickerVisible)this.closePicker();},
     methods:{
       async refreshJackets(){
         this.updatedJackets=await loadJacketUpdates()??this.updatedJackets;
@@ -822,13 +851,26 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       },
       clearResult(){
         if(this.searching)this.stopWorker();
-        if(this.result)this.resultsChanged=true;
         this.result = null;
+        this.resultContext = null;
+        this.resultsChanged=false;
         this.searchBackend = null;
         this.gpuError = false;
 
         this.detailRequest++;
         if(this.catalog)this.error = '';
+      },
+      inputsChanged(){
+        if(this.result||this.searching)this.resultsChanged=true;
+        if(this.catalog&&!this.searching){this.error='';this.gpuError=false;}
+      },
+      updateGachaBalance(point,event){
+        const input=event.target;
+        this.gachaError='';
+        try{window.__holodoriDesktop.setGachaPoints(this.profileId,point,input.value.trim()?parseNumber(input.value):null);}
+        catch(error){this.gachaError=error.message;}
+        const amount=this.gachaPoints[point];
+        input.value=amount==null?'':formatNumber(BigInt(amount));
       },
       reconcile(){
         if(!this.catalog)return;
@@ -870,9 +912,15 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         if(['mode','pool','plannedPool','objective','rosterSource'].includes(key))this.reconcile();
         this.saveOptions();
         if(key==='leaderPickerInvitedOnly'||key==='ratingInvitedOnly')return;
-        this.clearResult();
+        this.inputsChanged();
       },
       saveOptions(){saveOptimizerPreferences(localStorage,this.profileId,this);},
+      protectBoard(owner,mode){
+        if((this.boardProtection[owner]??'flexible')===mode)return;
+        const next={...this.boardProtection};
+        if(mode==='flexible')delete next[owner];else next[owner]=mode;
+        this.change('boardProtection',next);
+      },
       openPicker(picker){
         if(picker==='outfit'&&this.picker==='outfit'&&this.pickerVisible)return;
         this.query='';this.eventPage=0;this.picker=picker;this.pickerVisible=true;
@@ -936,7 +984,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           this[`${prefix}SongId`]=id;
           this.change(`${prefix}ChartKey`,'');
           this.saveOptions();
-          this.clearResult();
+          this.inputsChanged();
         }
         this.closePicker();
       },
@@ -1126,28 +1174,26 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         this.closePicker();
         this.$router.push('/planner');
       },
-      boardPlanPreview(team,change,overrides){
+      boardPlanPreview(team,change,base,overrides){
         let previews=boardPreviews.get(team);
         if(!previews){previews=new Map();boardPreviews.set(team,previews);}
         const cached=previews.get(change.owner);
-        if(cached&&cached.overrides===overrides)return cached.preview;
-        const optimized=team.plan?.saves?.[change.owner];
-        if(!optimized)return null;
-        const saved=overrides?{nodes:optimized.nodes,cards:{...optimized.cards,...overrides}}:optimized;
-        const oldCards=this.resultContext?.boardPlanBase?.[change.owner]?.cards??{};
-        const slots=Object.keys(saved.cards).filter(id=>saved.cards[id]);
+        if(cached&&cached.base===base&&cached.overrides===overrides)return cached.preview;
+        const picks=change.picks;
+        const {board,points}=projectBoardSelection(change.owner,base,picks,picks.map(pick=>pick.key),change.ptsBudget);
+        const oldCards=base?.cards??{};
+        const slots=Object.keys(board.cards);
         const connects=new Set(change.connects.map(row=>row.socket));
-        const cards=slots.map(slot=>({cardId:saved.cards[slot],
-          potentialUpgradeCount:team.boardCards?.[saved.cards[slot]]??this.resultContext?.connectPool?.[saved.cards[slot]]??null}));
+        const cards=slots.map(slot=>({cardId:board.cards[slot],
+          potentialUpgradeCount:team.boardCards?.[board.cards[slot]]??this.resultContext?.connectPool?.[board.cards[slot]]??null}));
         const members=[{characterId:change.owner,level:team.plan.ranks?.[change.owner]??null}];
-        const boards=[{characterId:change.owner,releasedSkillTreeNodeGroupIds:saved.nodes,
-          connectedSkillTreeNodeGroupIds:slots,connectedSkillTreeNodeCardIds:slots.map(slot=>saved.cards[slot])}];
-        const picks=boardChanges(this.resultContext?.boardPlanBase?.[change.owner],saved);
+        const boards=[{characterId:change.owner,releasedSkillTreeNodeGroupIds:board.nodes,
+          connectedSkillTreeNodeGroupIds:slots,connectedSkillTreeNodeCardIds:slots.map(slot=>board.cards[slot])}];
         const preview={snapshot:{tables:{boards,members,cards},progress:{dreamRank:this.resultContext?.boardDreamRank}},
           added:new Set(picks.filter(pick=>pick.kind==='buy').map(pick=>pick.id)),
           removed:new Set(picks.filter(pick=>pick.kind==='reset').map(pick=>pick.id)),connects,oldCards,
-          available:change.ptsBudget-change.ptsSpent};
-        previews.set(change.owner,{overrides,preview});
+          available:points===null?null:change.ptsBudget-points};
+        previews.set(change.owner,{base,overrides,preview});
         return preview;
       },
       finishPicker(){if(!this.pickerVisible){
@@ -1183,7 +1229,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         this.change(this.ratingMode?'ratingLeaderMode':'leaderMode',mode);
         this.reconcile();
         this.saveOptions();
-        this.clearResult();
+        this.inputsChanged();
         if(close)this.closePicker();
       },
       canSelectOutfit(outfit){
@@ -1226,7 +1272,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           this.diffMin=null;
           this.change('diffMax',null);
           this.saveOptions();
-          this.clearResult();
+          this.inputsChanged();
         }
       },
       clearRatingSongs(){
@@ -1246,26 +1292,27 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         else if(this.lockedCardIds.length<5&&!this.lockedMembers.has(this.cardMember(id)))this.change('lockedCardIds',[...this.lockedCardIds,id]);
       },
       accountScoreInput(){
-        const account=this.profile?.account,progress=this.snapshot?.progress;
+        const account=this.profile?.account;
         const memoryCount=account?.memoriesCollected??0;
         return {cards:this.ownedCards.map(({cardId,level,potentialUpgradeCount,levelLimitBreakCount})=>({cardId,level,potentialUpgradeCount,levelLimitBreakCount})),
-          members:clone(this.members),ownedCostumeIds:clone(this.ownedCostumeIds),dreamRank:account?.playerLevel??progress?.dreamRank??0,memoryCount,
-          memoryBonusPermil:progress?.memoriesCollected===memoryCount?progress.memoryBonusPermil:undefined,
-          upgradeBonusPermyriad:progress?.upgradeBonusPermyriad};
+          members:clone(this.members),ownedCostumeIds:clone(this.ownedCostumeIds),dreamRank:currentDreamRank(this.profile),memoryCount,
+          memoryBonusPermil:account?accountProgressMemoryBonus(account):undefined,
+          upgradeBonusPermyriad:this.upgradeBonus};
       },
       async searchTeams(){
         if(!this.canSearch)return;
-        this.error = '';
-        this.gpuError = false;
-        this.searchBackend = null;
+        this.clearResult();
         const worker = this.openWorker();
         if(!worker)return;
         const plannedCards=this.rosterSource==='planned'?clone(this.plannedCards):undefined;
         const scoring=this.accountScoreInput();
         const chart = this.ratingMode||this.unitMode?null:this.chart;
         const importedBoards=this.snapshot?.tables.boards;
-          const boardMode=this.effectiveBoards;
-        const boards=boardMode==='saved'?boardTable(mergeSavedBoards(optimizerBoards(importedBoards),this.profile.savedBoards)):importedBoards;
+        const imported=this.currentBoardLayouts;
+        const boardMode=this.effectiveBoards;
+        const protectedSetup=this.protectedBoardSetup;
+        const boards=boardMode==='saved'?boardTable(mergeSavedBoards(imported,this.profile.savedBoards)):
+          boardTable(protectedSetup?.boards??imported);
         const pc = this.objective!=='holomemLb' && this.pc;
         const options = {
           goal:this.mode,focusCardIds:this.mode==='holomem'?[...this.lockedCardIds]:[],
@@ -1288,7 +1335,15 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           .map(([id,entry])=>[id,entry.bloom]));
         const eventId=this.eventMode?this.event?.id:undefined;
         const eventChapter=this.objective==='eventPoints'?this.currentChapter??undefined:undefined;
-        this.resultContext={profileId:this.profileId,connectPool,objective:this.objective,charts:chart?[chart]:[],pc,anyDiffMin:options.anyDiffMin,
+        const boardOpt=this.boardOpt;
+        const existing={...imported,...this.profile?.savedBoards};
+        const boardPlanBase={...existing};
+        for(const owner of Object.keys(boardOpt?.protection??{})){
+          const protectedBoard=protectedSetup?.boards?.[owner];
+          if(protectedBoard)boardPlanBase[owner]=protectedBoard;else delete boardPlanBase[owner];
+        }
+        this.resultContext={profileId:this.profileId,connectPool,mode:this.mode,nextAcquisition:this.nextAcquisition,
+          objective:this.objective,charts:chart?[chart]:[],pc,anyDiffMin:options.anyDiffMin,
           anyDiffMax:options.anyDiffMax,anyDiffTypes:options.anyDiffTypes,sortBy:options.sortBy,eventId,eventChapter,
           ...(this.customPool||this.effectivePool==='allMaxed'?{cardAssumptions:{cardPool:this.effectivePool,
             customLevel:this.customLevel,customBloom:this.customBloom,
@@ -1297,17 +1352,17 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           ...(outfitAssumption?{outfitAssumption}:{}),
           ...(plannedCards?{plannedCards}:{}),
           liveBoost:this.liveBoost,boardMode,boardDreamRank:this.boardOpt?.maxBoardPoints?1_000_000:scoring.dreamRank,
-          boardPlanBase:{...optimizerBoards(importedBoards),...this.profile?.savedBoards},
-          boards:boardMode==='none'||this.boardOpt?.ignoreExisting?{}:optimizerBoards(boards)};
-        this.result = null;
-        this.resultsChanged=false;
-
+          boardPlanBase,boardPlanExisting:existing,boardPlanSaved:{},boardProtection:boardOpt?.protection,
+          boardBudget:boardOpt?clone(this.boardBudget):null,
+          boards:boardMode==='none'?{}:boardPlanningBaseline(optimizerBoards(boards),boardOpt)};
         this.progress = null;
         this.searching = true;
-        const boardOpt=this.boardOpt;
         const useBoardWorkers=this.effectiveBoards==='optimize'&&this.mode!=='next';
         const useGpu=this.useGpu;
         const standaloneGpu=useGpu&&!!boardOpt;
+        const nextAcquisition=this.mode==='next'&&this.nextAcquisition!=='any'?{
+          mode:this.nextAcquisition,at:Date.now(),balances:clone(this.gachaPoints),
+        }:undefined;
         const message={type:'search',input:{
           options,objective:this.objective,reviewedMobile:true,eventId,eventChapter,liveBoost:this.liveBoost,outfitAssumption,plannedCards,
           useGpu,
@@ -1316,15 +1371,20 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           chartKey:chart?.key??'',customLevel:this.customLevel,customBloom:this.customBloom,
           noDelevel:this.keepHigherLevel,noDebloom:this.keepHigherBloom,
           ...scoring,boards:clone(boards),savedBoardMode:boardMode==='saved',boardPointBalances:clone(this.snapshot?.tables.boardPoints),
+          importedBoards:clone(importedBoards),
+          ...(Object.keys(protectedSetup?.plans??{}).length?{
+            protectedSavedOwners:Object.keys(protectedSetup.plans),
+          }:{}),
           importedMemberRanks:clone(this.snapshot?.tables.members),
           powerUpPreset:this.powerUpPreset,
           lockedCardIds:this.mode==='best'?[]:[...this.lockedCardIds],leaderCharacterId:this.activeLeaderId || undefined,
           useBoards:this.effectiveBoards!=='none',boardOpt,resultLimit:this.topN,
           ...(this.mode==='next' ? {nextDeck:[...this.lockedCardIds],nextEntry:{level:this.nextLevel,bloom:this.nextBloom},
-            nextCount:this.nextCount,nextBlooms:this.nextBlooms} : {}),
+            nextCount:this.nextCount,nextBlooms:this.nextBlooms,nextAcquisition} : {}),
         }};
         try{
           message.source=await window.__holodoriDesktop.optimizerCatalogSource(clone(this.optimizerSource)??null);
+          if(nextAcquisition)nextAcquisition.catalog=message.source?.exchangeCatalog;
           if(workers.get(this)!==worker)return;
           worker.postMessage(message,useGpu&&!standaloneGpu?[]:this.createSearchPorts(useBoardWorkers,standaloneGpu));
         }catch{
@@ -1530,13 +1590,19 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       };
       const pickerTitles = {chart:'Choose a chart',event:'Choose an event',eventSong:this.objective==='event'?'Choose an event song':'Choose a song',
         cards:'Lock cards',leader:this.ratingMode?'Choose a Holomem':'Choose a leader',outfit:'Choose an outfit',
-        ratingSongs:'Additional unlocked songs',
+        ratingSongs:'Additional unlocked songs',boardProtection:'Protect Boards',
         preview:this.previewCard && this.cardName(this.previewCard.id),
         team:'Preview details','plan-team':'Plan this team',
         'saved-lineups':'Saved lineups','saved-lineup':this.savedLineup?.name??'Saved lineup'};
       const pickerLabels = {chart:'Search songs and difficulty',eventSong:'Search songs',
-        cards:'Search cards',leader:this.ratingMode?'Search Holomems':'Search leaders',outfit:'Search outfits',ratingSongs:'Search songs'};
-      const multiSelectPicker = ['cards','ratingSongs'].includes(this.picker);
+        cards:'Search cards',leader:this.ratingMode?'Search Holomems':'Search leaders',outfit:'Search outfits',ratingSongs:'Search songs',
+        boardProtection:'Search Holomems'};
+      const protectedBoards=Object.keys(this.boardProtection).length;
+      const protectionChoices=(owner,unavailable=disabled)=>boardProtectionModes.map(([mode,label])=>
+        button(label,()=>this.protectBoard(owner,mode),{
+          key:mode,'aria-pressed':(this.boardProtection[owner]??'flexible')===mode,disabled:unavailable,
+        }));
+      const multiSelectPicker = ['cards','ratingSongs','boardProtection'].includes(this.picker);
       const detailPicker = ['team','plan-team','saved-lineups','saved-lineup'].includes(this.picker);
       const pickerContentClass = this.picker==='outfit'?'holo-team-outfit-content':
         this.picker==='preview'?'holo-team-preview-content':
@@ -1548,6 +1614,13 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       });
       const pickerOptions = ()=>{
         if(this.picker==='chart')return button('Any song',()=>this.choose('chartKey',''),{'aria-pressed':!chart});
+        if(this.picker==='boardProtection')return h('div',{class:'holo-team-picker-actions'},[
+          caption('Preserves saved layouts, or imported Boards if no plan is saved. No resets still allows additions.'),
+          h('div',{class:'holo-team-options'},[
+            protectedBoards?pickerClear('Clear protections',()=>this.change('boardProtection',{})):null,
+            button('Done',()=>this.closePicker(),{class:primary}),
+          ]),
+        ]);
         if(this.picker==='eventSong')return this.objective==='eventPoints'&&this.eventSong?
           button('Clear song',()=>this.chooseEventSong('')):null;
         if(this.picker==='cards')return h('div',{class:'holo-team-picker-actions'},[
@@ -1574,6 +1647,20 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         ]);
       };
       const pickerBody = ()=>{
+        if(this.picker==='boardProtection'){
+          const imported=this.currentBoardLayouts;
+          const names=new Map(this.availableLeaders.map(({id,name})=>[id,name]));
+          const supported=new Set([...Object.keys(imported),...this.members.map(member=>member.characterId)]);
+          const who=[...supported].map(id=>({id,name:names.get(id)??id}))
+            .filter(({name})=>contains(name,this.queryText))
+            .sort((a,b)=>(boardRosterOrder.get(a.id)?.index??Infinity)-(boardRosterOrder.get(b.id)?.index??Infinity)||
+              (boardRosterOrder.get(a.id)?.order??0)-(boardRosterOrder.get(b.id)?.order??0)||a.name.localeCompare(b.name));
+          return who.length?who.map(({id,name})=>h('div',{key:id,class:'holo-board-protect-row'},[
+            h('span',{class:'holo-encore-fact-person'},[portrait(id,28),name]),
+            h('div',{class:'holo-team-options holo-encore-segments',role:'group','aria-label':name},
+              protectionChoices(id)),
+          ])):caption(this.queryText?'No matching Holomems.':'Record Boards in Progress to protect them.');
+        }
         if(this.picker==='eventSong')return [this.visibleEventSongs.length?
           h('div',{class:'holo-team-person-grid'},this.visibleEventSongs.map(song=>button([
             image(songJacket(song.id),'holo-team-jacket',40,40),h('span',{},song.title),
@@ -1744,14 +1831,41 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             percent(team.breakdown[key]) : count(team.breakdown[key])),
         ]))) : null;
       };
-      const upgrades = team => (team.pulls ?? team.upgrades)?.length ? h('ul',{class:'holo-team-notes text-xs text-gray-300'},(team.pulls ?? team.upgrades).map((upgrade,index)=>{
-        const id = typeof upgrade==='string' ? upgrade : upgrade.cardId ?? upgrade.id;
-        const label = typeof upgrade==='string' || upgrade.new ? 'New card' : `Bloom +${upgrade.copies ?? 1}`;
-        const character=this.cardMember(id);
-        return h('li',{key:`${id}-${index}`,class:'holo-encore-upgrade'},[
-          character?portrait(character,20):null,h('span',{},[h('strong',{},this.cardName(id)),` · ${label}`]),
+      const upgrades = team => {
+        const changes=team.pulls??team.upgrades;
+        if(!changes?.length)return null;
+        const balances=this.snapshot?.balances;
+        const observedAt=balances?.gachaPointsObservedAt??this.snapshot?.capturedAt;
+        const quoted=quoteCardAcquisitions(changes,this.gachaPoints,this.eventClock,this.optimizerSource?.exchangeCatalog);
+        const status=(price,limitReached=false)=>h('span',{
+          class:['holo-encore-acquisition-status',price.short==null?'text-gray-400':'',
+            !limitReached&&price.short===0n?'holo-encore-acquisition-covered':''],
+          title:price.balance==null?'Enter a balance in Lineup or import game data.':
+            `${formatNumber(price.balance)} Pt${Object.hasOwn(this.profile?.gachaPointEdits??{},price.point)?' recorded manually':observedAt?' · '+formatDateTime(observedAt):''}`,
+        },limitReached?'Exceeds exchange limit':price.short==null?'Balance unknown':
+          price.short>0n?`${formatNumber(price.short)} Pt short`:'Points covered');
+        return h('div',{class:'holo-encore-acquisition text-xs text-gray-300'},[
+          h('ul',{class:'holo-encore-acquisition-list'},quoted.cards.map(({id,isNew,copies,offers},index)=>{
+            const character=this.cardMember(id);
+            return h('li',{key:`${id}-${index}`,class:'holo-encore-upgrade'},[
+              character?portrait(character,20):null,
+              h('div',{class:'holo-encore-acquisition-card'},[
+                h('span',{},[h('strong',{},this.cardName(id)),` · ${isNew?'New card':`Bloom +${copies}`}`]),
+                ...offers.map(offer=>h('div',{key:offer.id,class:'holo-encore-acquisition-offer'},[
+                  h('span',{class:'text-gray-400',title:offer.endTime?`Closes ${formatDateTime(offer.endTime)}`:undefined},offer.route),
+                  h('span',{class:'holo-encore-acquisition-price',title:`${formatNumber(offer.price)} Pt per copy · Check remaining exchange allowance in game`},
+                    `${formatNumber(offer.cost)} ${offer.costLabel}`),
+                  status(offer,copies>offer.limit),
+                ])),
+                offers.length?null:h('span',{class:'text-gray-400'},'No current source verified'),
+              ]),
+            ]);
+          })),
+          ...quoted.shared.map(pool=>h('div',{key:pool.point,class:'holo-encore-acquisition-offer holo-encore-acquisition-total'},[
+            h('strong',{},`${pool.currency} total`),h('span',{class:'holo-encore-acquisition-price'},`${formatNumber(pool.cost)} Pt`),status(pool),
+          ])),
         ]);
-      })) : null;
+      };
       const boardPlan = team => {
         const node=(type,props,children)=>vnode(type,props,Array.isArray(children)?children.filter(child=>child!=null):children);
         const plan=team.plan;
@@ -1780,7 +1894,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           ]);
         };
         const materials=(label,items)=>{
-          const entries=Object.entries(items??{}).filter(([,quantity])=>quantity>0);
+          const entries=Object.entries(items??{}).filter(([,quantity])=>quantity!==0);
           return entries.length?node('div',{class:'holo-team-board-cost-row'},[
             node('span',{},label),...entries.map(([id,quantity])=>material(id,quantity)),
           ]):null;
@@ -1801,18 +1915,21 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           ]);
           const toggle=event=>{state.open=event.currentTarget.open;};
           if(!state.open)return node('details',{class:'holo-team-board-plan',onToggle:toggle},[header]);
-          const base=this.resultContext?.boardPlanBase??{};
+          const context=this.resultContext;
+          const budget=context?.boardBudget;
+          const original=context?.boardPlanBase??{};
+          const saved=context?.boardPlanSaved??{};
+          const base={...original,...saved};
+          const protection={protection:context?.boardProtection};
+          const pinnedCards=new Set(Object.keys(protection.protection??{}).flatMap(owner=>Object.values(original[owner]?.cards??{})));
           const reported=new Map((plan.changes??[]).map(row=>[row.owner,row]));
-          const changes=[...new Set([...reported.keys(),...Object.keys(plan.saves??{})])].flatMap(owner=>{
-            const board=plan.saves?.[owner];
-            const picks=board&&boardChanges(base[owner],board);
-            if(!picks?.length)return [];
-            for(const [id,card] of Object.entries(state.connectOverrides[owner]??{})){
-              const key='connect:'+id;
-              const index=picks.findIndex(pick=>pick.key===key);
-              const pick={key,kind:'connect',id,card:card??undefined};
-              if(index<0)picks.push(pick);else picks[index]=pick;
-            }
+          const cleared=plan.ignoredExisting?Object.keys(budget?.imported??{}).filter(owner=>
+            boardProtection(protection,owner)==='flexible'):[];
+          const changes=[...new Set([...reported.keys(),...Object.keys(plan.saves??{}),...cleared])].flatMap(owner=>{
+            if(boardProtection(protection,owner)==='locked')return [];
+            const board=plan.saves?.[owner]??(cleared.includes(owner)?{nodes:[],cards:{}}:null);
+            if(!board||!boardChanges(original[owner],board).length)return [];
+            const picks=remainingBoardChanges(original[owner],board,saved[owner],state.connectOverrides[owner]);
             const rank=plan.ranks?.[owner]??this.members.find(member=>member.characterId===owner)?.level??1;
             const change=reported.get(owner)??{owner,ptsBudget:boardPointsForMemberLevel(owner,rank),
               ptsSpent:projectBoardSelection(owner,board,[],[],Infinity).points};
@@ -1825,10 +1942,38 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             return (left?.index??boardRosterGroups.length)-(right?.index??boardRosterGroups.length)||
               (left?.order??0)-(right?.order??0);
           }):changes;
-          const selection=change=>state.selected[change.owner]??change.picks.map(pick=>pick.key);
-          const project=change=>projectBoardSelection(change.owner,base[change.owner],change.picks,selection(change),change.ptsBudget);
+          const selection=change=>{
+            const selected=state.selected[change.owner];
+            return change.picks.map(pick=>pick.key).filter(key=>!selected||selected.includes(key));
+          };
+          const project=change=>{
+            const result=projectBoardSelection(change.owner,base[change.owner],change.picks,selection(change),change.ptsBudget);
+            if(!preservesBoard(protection,change.owner,original[change.owner],result.board))
+              return {...result,error:'This change would alter a protected node or Connect card.'};
+            return result;
+          };
           const editorStatus=changes.map(change=>[change,project(change)]);
-          const changed=editorStatus.filter(([change,result])=>boardChanges(state.saved[change.owner]??base[change.owner],result.board).length);
+          const changed=editorStatus.filter(([change,result])=>boardChanges(base[change.owner],result.board).length);
+          const reservedTargets={...budget?.protectedPlans,...saved};
+          const billFor=rows=>boardBill(budget.imported,{
+            ...reservedTargets,...Object.fromEntries(rows.map(([change,result])=>[change.owner,result.board])),
+          },budget.refundResets);
+          const budgetFor=rows=>{
+            if(!budget)return null;
+            try{
+              const bill=billFor(rows);
+              return {bill,...quoteBoardBudget(bill,{...budget.limits,stock:this.boardStock})};
+            }catch(error){return {error:error.message,fits:false};}
+          };
+          const reserved=budgetFor([]);
+          const selectedBudget=changed.length?budgetFor(changed):reserved;
+          const difference=(after,before)=>Object.fromEntries([...new Set([...Object.keys(after),...Object.keys(before)])]
+            .map(key=>[key,(after[key]??0)-(before[key]??0)]));
+          const itemIds=Object.fromEntries(boardItems.map(item=>[item.key,item.id]));
+          const budgetItems=(items,hologold)=>({
+            ...Object.fromEntries(Object.entries(items).map(([key,quantity])=>[itemIds[key]??key,quantity])),
+            ...(hologold?{hologold}:{}),
+          });
           const save=async rows=>{
             if(state.pending||!rows.length)return;
             state.error='';state.message='';state.pending=true;
@@ -1837,28 +1982,44 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                 if(result.error)throw Error(memberName(change.owner)+' · '+result.error);
                 return [change.owner,result.board];
               }));
-              const expected={...base,...state.saved};
-              await window.__holodoriDesktop.saveBoardPlans(this.resultContext?.profileId,updates,expected);
-              for(const [owner,board] of Object.entries(updates))state.saved[owner]=board;
+              const quote=budgetFor(rows);
+              if(quote&&!quote.fits)throw Error(quote.error||'These changes exceed the shared Board budget.');
+              await window.__holodoriDesktop.saveBoardPlans(context?.profileId,updates,
+                {...(context?.boardPlanExisting??original),...saved},protection);
+              for(const [owner,board] of Object.entries(updates)){
+                saved[owner]=board;
+                delete state.selected[owner];
+                delete state.editing[owner];
+              }
               state.message=rows.length===1?'Board plan saved.':count(rows.length)+' Board plans saved.';
             }catch(error){state.error=error?.message??'Could not save Board plans.';}
             finally{state.pending=false;}
           };
           const saveAll=button(state.pending?'Saving…':'Save all Boards',()=>save(changed),
-            {class:primary,disabled:state.pending||!changed.length||changed.some(([,result])=>!!result.error)});
+            {class:primary,disabled:state.pending||!changed.length||selectedBudget?.fits===false||changed.some(([,result])=>!!result.error)});
           const sortMembers=check('Sort by Holomems',this.boardSortHolomems,value=>{
             this.boardSortHolomems=!!value;
             this.saveOptions();
           });
-          const costs=node('div',{class:'holo-team-board-costs','aria-label':'Optimized plan costs'},[
-            plan.resetCount>0&&!plan.ignoredExisting?node('div',{class:'holo-team-board-cost-row'},[
-              node('span',{},'Reset cost'),material('hologold',plan.resetCount*accountManifest.boardReset.hologoldCostPerRemovedNode),
+          const total=selectedBudget?.bill,reservedBill=reserved?.bill;
+          const costs=budget?node('div',{class:'holo-team-board-costs','aria-label':'Shared Board budget','aria-live':'polite'},[
+            reservedBill?materials('Reserved',budgetItems(reservedBill.bought,resetGold(reservedBill.resets))):null,
+            total&&reservedBill?materials('Selected changes',budgetItems(difference(total.bought,reservedBill.bought),
+              resetGold(total.resets-reservedBill.resets))):null,
+            total?materials('Refunded by resets',budgetItems(total.refunded)):null,
+            total?.resets?node('div',{class:'holo-team-board-cost-row'},[
+              node('span',{},'Resets'),
+              node('strong',{},count(total.resets)+(budget.limits.maxResets===null?'':' / '+count(budget.limits.maxResets))),
+              reservedBill.resets?node('span',{},`(${count(reservedBill.resets)} reserved)`):null,
+              selectedBudget.overResets?node('span',{class:'text-red-400'},`${count(selectedBudget.overResets)} over limit`):null,
             ]):null,
-            materials('Materials needed',plan.bought),
-            materials(plan.ignoredExisting?'Full reset refund':'Refunded by resets',plan.refunded),
-          ]);
+            selectedBudget?.short?materials('Short',budgetItems(selectedBudget.short)):null,
+            selectedBudget?.error?node('p',{class:'text-xs text-red-400'},selectedBudget.error):null,
+          ]):null;
           const planBody=!changes.length?
-            node('p',{class:'text-sm text-gray-300 holo-team-board-empty'},'No Board changes for this team.'):
+            node('div',{class:'holo-team-board-plan-body'},[
+              costs,node('p',{class:'text-sm text-gray-300'},'No Board changes for this team.'),
+            ]):
               node('div',{class:'holo-team-board-plan-body'},[
                 node('div',{class:'holo-team-board-toolbar'},[
                   node('div',{class:'holo-team-board-toggles'},[
@@ -1873,13 +2034,15 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                   const group=this.boardSortHolomems?boardRosterOrder.get(change.owner)?.group:null;
                   const previousGroup=boardRosterOrder.get(members[index-1]?.owner)?.group;
                   const open=state.expanded[change.owner];
-                  const preview=open?this.boardPlanPreview(team,change,state.connectOverrides[change.owner]):null;
+                  const preview=open?this.boardPlanPreview(team,change,base[change.owner],state.connectOverrides[change.owner]):null;
                   const picked=new Set(selection(change));
                   const result=editorStatus.find(([row])=>row===change)[1];
-                  const previous=state.saved[change.owner];
-                  const isSaved=previous&&!boardChanges(previous,result.board).length;
-                  const hasChanges=boardChanges(previous??base[change.owner],result.board).length;
-                  const editing=!!state.editing[change.owner];
+                  const pointsLeft=result.points===null?null:change.ptsBudget-result.points;
+                  const isSaved=!!saved[change.owner]&&!change.picks.length;
+                  const hasChanges=boardChanges(base[change.owner],result.board).length;
+                  const editing=!isSaved&&!!state.editing[change.owner];
+                  const noResets=boardProtection(protection,change.owner)==='noResets';
+                  const pinnedSlot=slot=>noResets&&Object.hasOwn(original[change.owner]?.cards??{},slot);
                   const togglePick=key=>{
                     if(!editing||state.pending)return;
                     if(picked.has(key))picked.delete(key);else picked.add(key);
@@ -1888,12 +2051,14 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                   };
                   const changeConnect=(slot,card)=>{
                     if(!editing||state.pending)return;
+                    if(pinnedSlot(slot)||card&&pinnedCards.has(card))return;
                     state.connectOverrides[change.owner]={...state.connectOverrides[change.owner],[slot]:card};
                     state.selected[change.owner]=[...new Set([...picked,'connect:'+slot])];
                     state.error='';state.message='';
                   };
                   const connectChoices=()=>Object.entries({...this.resultContext?.connectPool,...team.boardCards,
                     ...Object.fromEntries(team.cardIds.map((id,index)=>[id,team.lineup[index].bloom]))}).flatMap(([id,bloom])=>{
+                    if(pinnedCards.has(id))return [];
                     const card=connectCard({cardId:id,potentialUpgradeCount:bloom},id);
                     return card.effect?[{...card,name:this.cardName(id),member:this.catalog.cardDetails[id]?.member??card.member}]:[];
                   }).sort((a,b)=>a.member.localeCompare(b.member)||a.name.localeCompare(b.name));
@@ -1905,37 +2070,55 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                   const nodeChanges=change.picks.filter(pick=>pick.kind!=='connect');
                   const memberHeading=[
                       icon('chevron-right','holo-team-board-chevron'),portrait(change.owner,26),
-                      node('strong',{class:'holo-team-board-member-name'},memberName(change.owner)),
+                      node('strong',{class:'holo-team-board-member-name'},[
+                        memberName(change.owner),
+                        this.boardProtection[change.owner]?node('span',{class:'holo-team-board-protect-mark',
+                          title:this.boardProtection[change.owner]==='locked'?'Lock Board':'No resets'},[
+                          image('/assets/boards/ui_999_ico_lock.webp','',12,12),
+                        ]):null,
+                      ]),
                       node('span',{class:'holo-team-board-counts'},[
                         change.buys.length?chip(count(change.buys.length)+(change.buys.length===1?' unlock':' unlocks'),'add'):null,
                         change.resets.length?chip(count(change.resets.length)+(change.resets.length===1?' reset':' resets'),'reset'):null,
                         change.connects.length?chip(count(change.connects.length)+' Connect','connect'):null,
                       ]),
                       node('span',{class:'holo-team-board-points'},[
-                        isSaved?chip('Saved','kept'):null,
-                        node('span',{},count(result.points)+' / '+count(change.ptsBudget)+' Board Pt'),
+                        isSaved?node('span',{class:'sr-only'},'Saved Board'):null,
+                        node('strong',{class:pointsLeft<0?'text-red-400':''},
+                          pointsLeft<0?`${count(-pointsLeft)} Board Pt over`:`${count(pointsLeft)} Board Pt available`),
+                        node('span',{},`${count(result.points)} / ${count(change.ptsBudget)} used`),
                       ]),
                   ];
                   const memberAccordion=body=>[
                     group&&group!==previousGroup?node('h5',{key:'group-'+group.id,class:'holo-team-board-group'},group.name):null,
-                    node('details',{key:change.owner,class:'holo-team-board-member',open:!!open,
+                    node('details',{key:change.owner,class:'holo-team-board-member','data-saved':isSaved?'true':undefined,open:!!open,
                       onToggle:event=>{
                         state.expanded[change.owner]=event.currentTarget.open;
                       }},[node('summary',{},memberHeading),body]),
                   ];
                   if(!preview)return memberAccordion(null);
+                  const rowBudget=!isSaved&&hasChanges?budgetFor([[change,result]]):null;
                   const editToolbar=node('div',{class:'holo-team-board-toolbar holo-team-board-edit'},[
-                        node('div',{class:'holo-team-board-toggles'},[
-                          check('Edit plan',editing,value=>{state.editing[change.owner]=!!value;},state.pending),
-                          editing?node('div',{class:'holo-team-board-selection-actions','aria-label':'Change selection',role:'group'},[
-                            button('Select all',()=>{state.selected[change.owner]=change.picks.map(pick=>pick.key);},
-                              {disabled:state.pending||picked.size===change.picks.length}),
-                            button('Clear selection',()=>{state.selected[change.owner]=[];},{disabled:state.pending||!picked.size}),
-                          ]):null,
+                        node('div',{class:'holo-team-options holo-encore-segments holo-team-board-protection',role:'group',
+                          'aria-label':`Board protection for ${memberName(change.owner)}`,
+                          title:'Keeps the saved layout on your next search, or the imported Board if there is no saved plan.'},[
+                          node('span',{},'Protect on next search'),
+                          ...protectionChoices(change.owner,disabled||state.pending),
                         ]),
-                        node('div',{class:'holo-team-board-selection-actions'},[
-                          button(isSaved?'Saved':editing?'Save selected ('+count(picked.size)+')':'Save Board',
-                            ()=>save([[change,result]]),{class:primary,disabled:state.pending||!hasChanges||!!result.error}),
+                        isSaved?null:node('div',{class:'holo-team-board-edit-actions'},[
+                          node('div',{class:'holo-team-board-toggles'},[
+                            check('Edit plan',editing,value=>{state.editing[change.owner]=!!value;},state.pending),
+                            editing?node('div',{class:'holo-team-board-selection-actions','aria-label':'Change selection',role:'group'},[
+                              button('Select all',()=>{state.selected[change.owner]=change.picks.map(pick=>pick.key);},
+                                {disabled:state.pending||picked.size===change.picks.length}),
+                              button('Clear selection',()=>{state.selected[change.owner]=[];},{disabled:state.pending||!picked.size}),
+                            ]):null,
+                          ]),
+                          button(editing?'Save selected ('+count(picked.size)+')':'Save Board',
+                            ()=>save([[change,result]]),{class:primary,
+                              disabled:state.pending||!hasChanges||!!result.error||rowBudget?.fits===false,
+                              title:rowBudget?.fits===false?(selectedBudget?.fits?
+                                'Use Save all Boards to include the other selected changes and refunds.':'This Board exceeds the shared budget.'):undefined}),
                         ]),
                       ]);
                   const error=result.error?node('p',{class:'text-xs text-red-400',role:'status'},result.error):null;
@@ -1946,7 +2129,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                           ]))),
                         editing?node('span',{},'Click to select · Right-click a Connect slot to edit'):null,
                       ]);
-                  const changeRows=node('ul',{class:'holo-team-board-change-rows'},[
+                  const changeRows=change.picks.length?node('ul',{class:'holo-team-board-change-rows'},[
                           ...nodeChanges.map(({id,key,kind})=>node('li',{key},[
                             chip(kind==='buy'?'Unlock':'Reset',kind==='buy'?'add':'reset'),
                             node('span',{class:'holo-team-board-change-name'},nodes.has(id)?boardNodeLabel(nodes.get(id)):id),
@@ -1967,15 +2150,15 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                               editing?pickButton('connect:'+socket,socket):null,
                             ]);
                           }),
-                        ]);
+                        ]):null;
                   const map=vnode(Board,{snapshot:preview.snapshot,plan:preview,
                     planSelection:editing?picked:null,planNodes:editing?result.board.nodes:undefined,onPlanChange:togglePick,
-                    planConnectChoices:editing&&!state.pending?connectChoices:null,planConnectCards:result.board.cards,
+                    planConnectChoices:editing&&!state.pending?connectChoices:null,planConnectProtected:pinnedSlot,planConnectCards:result.board.cards,
                     onPlanConnect:changeConnect});
                   return memberAccordion(node('div',{class:'holo-team-board-map-body'},[
-                    editToolbar,error,map,caption,node('details',{class:'holo-team-board-change-list'},[
+                    editToolbar,error,map,caption,changeRows?node('details',{class:'holo-team-board-change-list'},[
                       node('summary',{},[icon('chevron-right','holo-team-board-chevron'),'Changes']),changeRows,
-                    ]),
+                    ]):null,
                   ]));
                 })),
               ]);
@@ -2738,7 +2921,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
               {disabled:this.lineupScoring||!this.canRecalculateLineup}),
             button('Plan this team',()=>{this.clearLineupScore();this.openTeamPlan(row);},{class:primary}),
           ]),
-          !this.canRecalculateLineup?caption('Import your account to recalculate this lineup.'):null,
+          !this.canRecalculateLineup?caption('Add to your owned roster in Characters or import your account.'):null,
           this.lineupError?h('p',{role:'alert',class:'text-sm text-amber-300'},this.lineupError):null,
           score?h('div',{class:'holo-team-estimates holo-saved-lineup-edit','aria-label':'Recalculated scores',role:'status'},[
             summaryMetric('Unit Score',score.displayUnitScore),summaryMetric('Estimated average song score',score.score),
@@ -2748,6 +2931,10 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         ];
       };
       const planResult = team => this.openTeamPlan(team);
+      const resultMode=this.resultContext?.mode??this.mode;
+      const resultObjective=this.resultContext?.objective??this.objective;
+      const resultBaseline=resultMode==='next'&&resultObjective==='score'&&
+        (!this.resultContext?.charts.length||this.resultContext?.sortBy==='avg')&&Number.isFinite(this.result?.baseline);
       const renderRows = (teams,openFirst=true,group=null)=>teams.map((team,index)=>h('details',{
         key:`${index}-${team.cardIds.join(',')}`,class:'holo-team-result rounded bg-gray-800',open:openFirst&&index===0,
       },[
@@ -2793,7 +2980,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             Number.isFinite(team.unitScore) ? h('dl',{class:'holo-team-breakdown'},[metric('Chart base score',team.unitScore)]) : null,
             breakdown(team),
           ]) : null,
-          this.mode==='next'&&this.objective==='score'&&(!chart||this.sortBy==='avg')&&Number.isFinite(this.result?.baseline) ?
+          resultBaseline ?
             caption(Math.abs(scoreOf(team)-this.result.baseline)<.5?'Matches the current best':
               `${count(Math.abs(scoreOf(team)-this.result.baseline))} points ${scoreOf(team)>this.result.baseline?'above':'below'} current best`):null,
           upgrades(team),boardPlan(team),
@@ -2844,6 +3031,19 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           }),
         ]);
       });
+      const setupBudget=this.boardBudget;
+      const setupBudgetRow=(label,values,extra)=> {
+        const entries=Object.entries(values??{}).filter(([,amount])=>amount>0);
+        if(!entries.length&&!extra)return null;
+        return h('div',{class:'holo-team-board-cost-row'},[
+          h('span',{},label),
+          ...entries.map(([key,amount])=>{
+            const item=boardItems.find(item=>item.key===key)??{key,label:'Hologold'};
+            return h('span',{key,class:'holo-team-material',title:item.label},[itemIcon(item,16),count(amount)]);
+          }),
+          extra?h('span',{},extra):null,
+        ]);
+      };
       const boardControls = [
         h('div',{class:'holo-board-mode'},[
           choices('boardMode','Holomem Boards',this.hasSavedBoards?boardChoices:boardChoices.filter(([mode])=>mode!=='saved'),
@@ -2851,6 +3051,20 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             this.effectiveBoards),
           caption(boardDescriptions[this.effectiveBoards]),
         ]),
+        this.effectiveBoards==='optimize'?button([
+          h('span',{class:'holo-board-protect-icon'},[
+            image('/assets/boards/ui_999_ico_lock.webp','',16,16),
+          ]),
+          h('span',{class:'holo-board-protect-copy'},[
+            h('strong',{},'Protect Boards'),
+            h('small',{id:'holo-board-protect-hint'},'Keep selected Holomems’ unlocks and Connect cards in place.'),
+          ]),
+          protectedBoards?h('span',{id:'holo-board-protect-count',class:'holo-board-protect-count'},`${count(protectedBoards)} protected`):null,
+          icon('chevron-right','holo-team-choice-arrow'),
+        ],()=>this.openPicker('boardProtection'),{
+          class:`${action} holo-team-choice holo-board-protect-trigger`,disabled,'aria-haspopup':'dialog',
+          'aria-label':'Protect Boards','aria-describedby':protectedBoards?'holo-board-protect-hint holo-board-protect-count':'holo-board-protect-hint',
+        }):null,
         this.effectiveBoards==='optimize' ? h('section',{class:'holo-board-settings','aria-label':'Board planning options'},[
           h('h4',{class:'holo-board-section-title'},'Board planning options'),
           h('div',{class:'holo-board-flags holo-team-options'},[
@@ -2887,9 +3101,17 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             ]),
             h('div',{class:'holo-encore-material-grid',role:'group','aria-label':'Available Board materials'},
               boardItems.map(item=>number(item.id,[itemIcon(item),h('span',{class:'holo-encore-visually-hidden'},item.label)],0,99999999,
-                this.boardMaterials[item.id] ?? this.profile?.inventory?.[item.key] ?? 0,
+                this.boardStock[item.key],
                 value=>this.change('boardMaterials',{...this.boardMaterials,[item.id]:value}),item.label))),
           ]) : null,
+          setupBudget?.quote?setupBudgetRow('Reserved for protected Boards',{
+            ...setupBudget.reserved.bought,hologold:resetGold(setupBudget.reserved.resets),
+          },setupBudget.reserved.resets?`${count(setupBudget.reserved.resets)} resets`:null):null,
+          setupBudget?.quote&&setupBudget.startingBill.resets>setupBudget.reserved.resets?setupBudgetRow('Full reset',{
+            hologold:resetGold(setupBudget.startingBill.resets-setupBudget.reserved.resets),
+          },`${count(setupBudget.startingBill.resets-setupBudget.reserved.resets)} resets`):null,
+          setupBudget?.quote?setupBudgetRow('Starting shortfall',setupBudget.quote.short,
+            setupBudget.quote.overResets?`${count(setupBudget.quote.overResets)} resets over limit`:null):null,
         ]) : null,
         this.effectiveBoards==='optimize'&&bonusTargets.length ? h('details',{class:'holo-board-bonuses'},[
           h('summary',{class:'holo-board-section-title'},[
@@ -3014,6 +3236,17 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                 this.rosterSource==='planned'&&this.useOwned?caption(count(this.plannedCards.length)+' active Planner cards'):
                   caption(poolHints[this.effectivePool]),
                 ...(this.customPool?lineupAssumptions():[]),
+                this.mode==='next'?h('div',{class:'holo-lineup-next'},[
+                  h('span',{class:'holo-team-label font-semibold'},'Acquisition'),
+                  choices('nextAcquisition','Acquisition',nextAcquisitionChoices),
+                  details('Exchange balances',[h('div',{class:'holo-encore-inline-fields'},
+                    activeGachaCurrencies(this.eventClock,this.optimizerSource?.exchangeCatalog).map(([point,currency])=>{
+                      const amount=this.gachaPoints[point];
+                      return field(currency,h('input',{class:inputClass,type:'text',inputmode:'numeric','aria-label':currency,
+                        value:amount==null?'':formatNumber(BigInt(amount)),placeholder:'Unknown',disabled,
+                        onChange:event=>this.updateGachaBalance(point,event)}));
+                    })),this.gachaError?h('p',{class:'text-red-400',role:'alert'},this.gachaError):null]),
+                ]):null,
                 this.mode==='next'&&(this.effectivePool!=='allMaxed'||this.activeOutfitAssumption)?nextCardAssumptions():null,
               ]),
               this.mode==='best' ? null : h('div',{class:'holo-team-options'},[
@@ -3059,7 +3292,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         target:this.unitMode?objectiveTitle:`${objectiveTitle} · ${chartTitle}`,
         lineup:`${this.lockedCardIds.length&&this.mode!=='best'?`${this.lockedCardIds.length} locked · `:''}${poolTitle}`,
         boards:boardTitle,
-        run:disabled?'Searching':this.result?'Results ready':this.resultsChanged?'Setup changed':this.ratingMode&&!this.ratingMerge?
+        run:disabled?'Searching':this.resultsChanged?'Setup changed':this.result?'Results ready':this.ratingMode&&!this.ratingMerge?
           `${this.ratingSongCount} songs`:`${this.topN} teams`,
       };
       const workflow = h('div',{class:'holo-team-settings holo-encore-steps','aria-label':'Search setup'},steps.map(([id,label],index)=>{
@@ -3080,7 +3313,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
               icon('information-circle'),h('span',{},blocker[1]),
               button('Review '+steps.find(([key])=>key===blocker[0])[1],()=>this.goToStep(blocker[0],true)),
               this.rosterSource==='planned'&&this.useOwned&&blocker[0]==='lineup'?button('Open Planner',()=>this.$router.push('/planner')):
-                this.rosterSource==='owned'&&!this.snapshot&&this.useOwned?button('Open Settings',()=>this.$router.push('/settings')):null,
+                this.rosterSource==='owned'&&!this.ownedCards.length&&this.useOwned?button('Open Characters',()=>this.$router.push('/characters')):null,
             ]):null,
             id==='run'&&this.error?h('div',{class:'holo-encore-notice',role:'alert'},[icon('exclamation-circle'),h('span',{},this.error),
               this.gpuError?button('Open Settings',()=>this.$router.push('/settings')):null,
@@ -3097,6 +3330,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         h('div',{key:label},[h('dt',{},label),h('dd',{},[value])])));
       const briefChoices=[
         ['Build',modeTitle],this.unitMode?null:['Objective',objectiveTitle],['Lineup',stepNotes.lineup],
+        this.mode==='next'&&this.nextAcquisition!=='any'?
+          ['Acquisition',nextAcquisitionChoices.find(([id])=>id===this.nextAcquisition)?.[1]]:null,
         ['Leader',leader?h('span',{class:'holo-encore-fact-person'},[portrait(leader.id,18),leader.name]):
           this.ratingMode?'Not selected':'Automatic'],['Boards',boardTitle],
       ];
@@ -3114,18 +3349,18 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           this.result?.scoringModel?['Scoring model',this.result.scoringModel==='mobile'?'Mobile game model':
             this.result.scoringModel==='steam'?'Steam game model':
             this.result.scoringModel==='game-pc-estimate'?'PC estimate from game charts':'Score estimate']:null,
-          this.rosterSource==='planned'?['Planned cards',count(this.plannedCards.length)]:this.useOwned?['Owned cards',count(this.ownedCards.length)+' imported']:null,
+          this.rosterSource==='planned'?['Planned cards',count(this.plannedCards.length)]:this.useOwned?['Owned cards',count(this.ownedCards.length)]:null,
           ['Invited Holomems',count(this.members.length)],
           ['Outfit',outfit?h('span',{class:'holo-encore-fact-person'},[
             outfit.cardId?image(cardPortrait(outfit.cardId),'holo-team-outfit-icon',16,20):portrait(outfit.characterId,18),outfit.name,
           ]):(this.activeLeaderMode==='holomem'?'From a locked card':'Automatic')],
-          ['Memory bonus',this.snapshot?.progress?.memoryBonusPermil!==undefined&&
-            this.snapshot.progress.memoriesCollected===(this.profile?.account?.memoriesCollected??0)?'Imported':'From Memory count'],
+          ['Memory bonus',this.profile?.account?.memoryBonusPermil!==undefined?'Current bonus':'From Memory count'],
           ['Member Power-Up',h('select',{class:inputClass+' holo-encore-power-up','aria-label':'Member Power-Up preset',
             disabled:disabled||!this.catalog,value:this.powerUpPreset,onChange:event=>this.change('powerUpPreset',event.target.value)},
           this.powerUpChoices.map(([id,label])=>h('option',{key:id,value:id},label)))],
           this.effectiveBoards==='optimize'?['Board Points',this.boardMaxPoints?'Maximum assumed':
             !this.boardIgnoreExisting&&this.snapshot?.tables.boardPoints?.length?'Checked against import':'From rank and unlocks']:null,
+          this.effectiveBoards==='optimize'&&protectedBoards?['Protected Boards',count(protectedBoards)]:null,
           this.ratingMode?['Song access',this.ratingAllSongs?'All eligible songs assumed':
             `${this.automaticSongs.size} automatic · ${this.ratingExtraSongs.length} manual`]:null,
         ])]),
@@ -3153,9 +3388,13 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           workflow,
           brief,
           h('section',{ref:'encoreResults',tabindex:-1,class:'holo-team-results','aria-label':'Team search results'},this.result ? [
-            h('h2',{class:'font-semibold'},this.unitMode?'Best Unit Score teams':this.ratingMode?'Holomem Rating':this.mode==='next'?'Best next cards':'Your best teams'),
+            h('div',{class:'holo-team-results-heading'},[
+              h('h2',{class:'font-semibold'},resultObjective==='unitScore'?'Best Unit Score teams':resultObjective==='holomemLb'?'Holomem Rating':resultMode==='next'?'Best next cards':'Your best teams'),
+              button('Clear Results',this.clearResult),
+            ]),
+            this.resultsChanged?h('p',{class:'text-xs text-gray-400',role:'status'},'These results use your previous search setup. Run again to apply changes.'):null,
             this.result.scoringModel==='game-pc-estimate'?caption('PC estimate from game chart data.'):null,
-            this.ratingMode?h('p',{class:'text-xs text-gray-400',role:'status'},
+            resultObjective==='holomemLb'?h('p',{class:'text-xs text-gray-400',role:'status'},
               `${count(this.result.ratingTotal)} ${this.result.byMax?'max rating':'rating'}`):null,
             this.result.excluded?caption(`${count(this.result.excluded)} cards excluded`):null,
             this.result.boardWarnings?.length?h('div',{class:'holo-encore-notice',role:'status'},[
@@ -3170,11 +3409,12 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                 kind:'use-imported-ranks',characterIds:ranksToSync,
               })):button('Review ranks',()=>this.$router.push('/progress')),
             ]):null,
-            this.mode==='next' && this.objective==='score' && (!chart||this.sortBy==='avg') && Number.isFinite(this.result.baseline) ?
+            resultBaseline ?
               caption(`Current best · ${count(this.result.baseline)} estimated average song score`) : null,
             ...rows,
             ...ratingGroups,
-            !rows.length&&!ratingGroups.length ? caption('No supported team matched these options.') : null,
+            !rows.length&&!ratingGroups.length ? caption(resultMode==='next'&&this.resultContext?.nextAcquisition!=='any'?
+              'No upgrade team matched this acquisition filter.':'No supported team matched these options.') : null,
           ] : [h('div',{class:'holo-team-result-placeholder bg-gray-800 rounded'},[
             h('h2',{class:'font-semibold'},this.resultsChanged&&!disabled?'Setup changed':'Results'),
             this.searching?h('div',{class:'holo-encore-search-progress'},[

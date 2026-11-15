@@ -5,7 +5,7 @@ const compare=(a,b)=>a.value-b.value||(a.tieScore??a.score)-(b.tieScore??b.score
 const amount=(materials,values)=>materials.map(id=>values[id]??0);
 
 export async function refineBoardExchanges({boards,owners,topology,allowed,dreamRank,budgets,order,leader,
-  materials,stock,maxResets,resetCount,original,protectedNode,rankLayouts,checkTrades,score,includeSong,infinite=false}){
+  materials,stock,maxResets,resetCount,original,protectedNode,canReset,rankLayouts,checkTrades,score,includeSong,infinite=false}){
   const members=new Set(order.map(card=>card.characterId));
   const branches=new Set(includeSong?['blue','green','yellow','red']:['blue','green']);
   const targets=node=>order.some(card=>node.targetType==='ALL'||
@@ -84,6 +84,7 @@ export async function refineBoardExchanges({boards,owners,topology,allowed,dream
       out.push(...new Set([...blue.slice(0,limit),...green.slice(0,limit),...timing.slice(0,2),...others.slice(0,limit)]));
     };
     addPaths(board,graph,[],0,12);
+    if(!canReset(owner))return out;
     const cuts=new Set();
     for(const id of board.nodes){
       if(preserve.has(id)||!branches.has(byId.get(id).branch))continue;

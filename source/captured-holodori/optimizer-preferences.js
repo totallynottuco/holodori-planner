@@ -1,3 +1,5 @@
+import {nextAcquisitionChoices} from './acquisition-exchanges.js';
+
 const key='optimizer_preferences';
 const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
 const cardPools=['owned','ownedCustom','allMaxed','allCustom'];
@@ -12,8 +14,8 @@ export function optimizerDefaults(){
     lockedCardIds:[],leaderCharacterId:'',leaderMode:'auto',outfitId:null,outfitTraining:null,allLeaders:false,leaderPickerInvitedOnly:true,
     powerUpPreset:'auto',
     boardMode:'optimize',boardSortHolomems:false,boardIgnoreExisting:false,boardNoRefund:false,boardMaxResets:null,boardResetLimit:0,boardUnlimited:false,
-    boardMaxPoints:false,boardAllInvited:false,boardBranches:['red','blue','yellow','green'],boardMaterials:{},boardKeep:{},
-    topN:10,sortBy:'avg',nextLevel:null,nextBloom:0,nextCount:1,nextBlooms:true,
+    boardMaxPoints:false,boardAllInvited:false,boardBranches:['red','blue','yellow','green'],boardMaterials:{},boardKeep:{},boardProtection:{},
+    topN:10,sortBy:'avg',nextLevel:null,nextBloom:0,nextCount:1,nextBlooms:true,nextAcquisition:'any',
     liveBoost:3,passportOverride:null,ratingCharacterId:'',ratingOutfitId:null,ratingOutfitTraining:null,ratingLeaderMode:'auto',ratingInvitedOnly:true,
     ratingAllSongs:false,ratingSongCount:5,ratingTeamsPerSong:3,ratingMaxDifficulty:null,ratingMerge:false,
   };
@@ -21,6 +23,7 @@ export function optimizerDefaults(){
 const choices={
   mode:['best','holomem','next'],objective:['score','event','eventPoints','holomemLb','unitScore'],difficultyMode:['levels','types'],
   rosterSource:['owned','planned'],
+  nextAcquisition:nextAcquisitionChoices.map(([id])=>id),
   powerUpPreset:['auto','allMax','ownedMax','owned'],
   pool:cardPools,plannedPool:cardPools,leaderMode:['auto','fixed','holomem'],
   ratingLeaderMode:['auto','fixed','holomem'],boardMode:['optimize','imported','saved','none'],sortBy:['avg','max'],
@@ -45,6 +48,11 @@ export function loadOptimizerPreferences(storage,id){
     if(name==='boardMaterials'||name==='boardKeep'){
       defaults[name]=Object.fromEntries(Object.entries(record(value)).filter(([,entry])=>
         Number.isSafeInteger(entry)&&entry>=0||name==='boardKeep'&&entry===null));
+      continue;
+    }
+    if(name==='boardProtection'){
+      defaults[name]=Object.fromEntries(Object.entries(record(value)).filter(([id,mode])=>
+        /^chr-\d+$/.test(id)&&['noResets','locked'].includes(mode)));
       continue;
     }
     if(name==='boardMaxResets'||name==='boardResetLimit'){

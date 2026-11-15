@@ -1,4 +1,5 @@
 import {createReferenceScoreContext,evaluateReferenceTeam,isReferenceRatingSong,referenceComboAverage,withReferenceChart} from './reference-rating-math.js';
+import {boardPlanningBaseline,hasBoardProtection} from './board-protection.js';
 
 const ratingFor = score => Math.ceil(score/5000);
 const sum = values => values.reduce((total,value)=>total+value,0);
@@ -61,6 +62,7 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,prepa
   const teamsPerSong = bounded(input.ratingTeamsPerSong,3,1,5);
   const candidateCount = Math.max(songCount+3,10);
   const {account,boardOpt} = payload;
+  const startingBoards=hasBoardProtection(boardOpt)?boardPlanningBaseline(account.boards,boardOpt):account.boards;
   const extras = {...payload.extras};
   if(nextMode){
     const maxLevel = Math.max(...data.cards.map(card=>card.maxLevel));
@@ -93,10 +95,10 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,prepa
     plan(chartPayload(candidate,overrides),rows,phase,{maxRows,fullCount:Math.max(12,teamsPerSong)});
   const combinePlans = (rows,plans=[])=>rows.map((row,index)=>({row,plan:plans[index]??null}))
     .sort((a,b)=>(b.plan?.after?.[scoreKey]??b.row[scoreKey])-(a.plan?.after?.[scoreKey]??a.row[scoreKey]));
-  const scoreContext = (candidate,boards=account.boards,owned=account.owned,ranks=account.ranks)=>createReferenceScoreContext(data,
+  const scoreContext = (candidate,boards=startingBoards,owned=account.owned,ranks=account.ranks)=>createReferenceScoreContext(data,
     owned,boards,ranks,chartOptions(options,candidate.song,candidate.chart),account.dreamRank);
   const screeningContext = (candidate,row)=>nextMode?scoreContext(candidate,
-    row.plan?.saves??row.boards??(boardOpt?.ignoreExisting?{}:account.boards),
+    row.plan?.saves??row.boards??boardPlanningBaseline(account.boards,boardOpt),
     upgradeEntries(cards,account.owned,extras,row),row.plan?.ranks):scoreContext(candidate);
 
   let work = Math.min(candidates.length,candidateCount),done = 0;
@@ -173,15 +175,15 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,prepa
     };
     const baseline = (row,owned)=>{
       const key = nextMode?pullsFor(row).map(pull=>`${pull.id}:${pull.new?'n':'b'}${pull.copies}`).sort().join('|'):'';
-      if(!baseContexts.has(key))baseContexts.set(key,chartContexts(account.boards,owned));
+      if(!baseContexts.has(key))baseContexts.set(key,chartContexts(startingBoards,owned));
       return baseContexts.get(key);
     };
     const rows = [];
     for(const [index,row] of ranked.entries()){
       const applied = plans[index]??(nextMode?row.plan:null);
       const owned = nextMode?upgradeEntries(cards,account.owned,extras,row):account.owned;
-      const boards = applied?.saves??(nextMode&&row.boards?row.boards:account.boards);
-      const contexts = boards===account.boards&&!applied?.ranks?
+      const boards = applied?.saves??(nextMode&&row.boards?row.boards:startingBoards);
+      const contexts = boards===startingBoards&&!applied?.ranks?
         baseline(row,owned):chartContexts(boards,owned,applied?.ranks);
       const order = (applied?.after.order??row.order).map(id=>cards.get(id));
       if(order.some(card=>!card))continue;
@@ -199,7 +201,7 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,prepa
       };
       if(applied){
         const prior = applied.ignoredExisting?
-          chartContexts(applied.ignoredExisting?{}:account.boards,owned):baseline(row,owned);
+          chartContexts(boardPlanningBaseline(account.boards,boardOpt),owned):baseline(row,owned);
         result.plan={...applied,
           before:evaluateReferenceTeam(prior.get(strongest.songId),order,outfitId,leader),
           after:strongest.result,

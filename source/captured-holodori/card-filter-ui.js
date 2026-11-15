@@ -1,5 +1,6 @@
 import {cardFilters,load,save} from './card-filters';
 import {getCard,rulesFor} from './game';
+import {currentOwnership} from './current-account';
 import catalogOrder from './card-catalog-order.json';
 
 function sortPickerCards(cards,sort){
@@ -29,7 +30,7 @@ export function configureCardFilters(original,collection=false) {
       filters:{deep:true,flush:'sync',handler(filters){if(this.cardFilterOwner===this.account)save(localStorage,this.cardFilterOwner,scope,filters);}},
     },
     computed:{...original.computed,
-      cardOwnershipSet(){const ids=window.__seelieApp?.data?.[`${this.account}-holodori`]?.gameAccountImport?.ownedCardIds;return ids?new Set(ids):null;},
+      cardOwnershipSet(){return currentOwnership(window.__seelieApp?.data?.[`${this.account}-holodori`]);},
       ownershipAvailable(){return this.cardOwnershipSet!==null;},
       filteredCharacters(){
         const maxed=new Set();

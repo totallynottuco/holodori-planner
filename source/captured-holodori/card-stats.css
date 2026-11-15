@@ -156,3 +156,6 @@
 @media(max-width: 380px) {
   .card-picker-grid { grid-template-columns: repeat(2,minmax(0,1fr)); }
 }
+.holo-card-stats-actions { display: flex; gap: .375rem; }
+.holo-card-ownership { flex: none; padding: .375rem .625rem; }
+.holo-card-ownership[aria-pressed="true"] { box-shadow: inset 0 0 0 1px #a78bfa; color: #dccdff; }

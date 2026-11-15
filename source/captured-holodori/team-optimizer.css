@@ -89,6 +89,28 @@
 .holo-board-mode, .holo-board-settings, .holo-board-materials { display: grid; gap: .5rem; }
 .holo-board-settings, .holo-board-bonuses { border-top: 1px solid #35405b; padding-top: .625rem; }
 .holo-board-section-title { color: #d4ddf0; font-size: .8125rem; font-weight: 600; }
+.holo-team-choice.holo-board-protect-trigger { gap: .625rem; }
+.holo-board-protect-icon {
+  display: grid;
+  place-items: center;
+  flex: none;
+  inline-size: 1.75rem;
+  block-size: 1.75rem;
+  border-radius: .25rem;
+  background: #393358;
+}
+.holo-board-protect-copy { display: grid; min-width: 0; flex: 1; }
+.holo-board-protect-copy small { color: #b6c3dc; font-size: .75rem; font-weight: 400; line-height: 1.25; }
+.holo-board-protect-count {
+  flex: none;
+  padding: .125rem .375rem;
+  border-radius: .25rem;
+  background: #393358;
+  color: #d9c9ff;
+  font-size: .6875rem;
+  white-space: nowrap;
+}
+.holo-board-protect-trigger > .holo-team-choice-arrow { margin-inline-start: 0; }
 .holo-board-flags { gap: .375rem 1rem; }
 .holo-board-materials-heading, .holo-board-bonuses > summary {
   display: flex;
@@ -229,6 +251,7 @@
 .holo-encore-choice:focus-visible,
 .holo-encore-chart:focus-visible,
 .holo-team-results:focus-visible { outline: 2px solid #bca4f9; outline-offset: 2px; }
+.holo-team-results-heading { display: flex; align-items: center; justify-content: space-between; flex-wrap: wrap; gap: .5rem; }
 .holo-team-section {
   display: grid;
   gap: .5rem;
@@ -449,6 +472,15 @@
   gap: .375rem;
 }
 .holo-encore-board-controls { gap: .375rem .875rem; }
+.holo-board-protect-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: .35rem .75rem;
+  padding: .375rem 0;
+}
+.holo-board-protect-row + .holo-board-protect-row { border-top: 1px solid var(--gray-600, #303950); }
 .holo-encore-board-field > .holo-team-field { width: 4.25rem; }
 .holo-encore-branch { display: grid; place-items: center; inline-size: var(--optimizer-control-size); padding: 0; }
 .holo-encore-material-grid {
@@ -463,7 +495,17 @@
 }
 .holo-encore-material-grid input { font-variant-numeric: tabular-nums; padding-inline: .375rem; }
 .holo-encore-material-icon { object-fit: contain; }
-.holo-encore-upgrade, .holo-encore-label-icon { display: flex; align-items: center; gap: .375rem; }
+.holo-encore-label-icon { display: flex; align-items: center; gap: .375rem; }
+.holo-encore-acquisition-list { display: grid; gap: .375rem; }
+.holo-encore-upgrade { display: flex; align-items: flex-start; gap: .375rem; }
+.holo-encore-upgrade > img { flex: none; }
+.holo-encore-acquisition-card { display: grid; gap: .125rem; min-width: 0; }
+.holo-encore-acquisition-offer { display: flex; align-items: baseline; flex-wrap: wrap; gap: .125rem .5rem; }
+.holo-encore-acquisition-price, .holo-encore-acquisition-status { font-variant-numeric: tabular-nums; }
+.holo-encore-acquisition-status { font-weight: 600; color: #f5ba8e; }
+.holo-encore-acquisition-status.text-gray-400 { color: inherit; opacity: .72; }
+.holo-encore-acquisition-covered { color: #8eddb9; }
+.holo-encore-acquisition-total { margin: .375rem 0 0 1.625rem; }
 .holo-encore-visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .holo-team-check input { accent-color: #8b5cf6; }
 .holo-team-check input:disabled { opacity: .5; }
@@ -1020,6 +1062,9 @@
 }
 .holo-team-board-toolbar { justify-content: space-between; }
 .holo-team-board-toolbar > :last-child { margin-inline-start: auto; }
+.holo-team-board-edit > .holo-team-board-protection { margin-inline-start: 0; }
+.holo-team-board-protection > span { font-size: .75rem; color: #c6cde0; margin-inline-end: .25rem; }
+.holo-team-board-edit-actions { display: flex; flex-wrap: wrap; align-items: center; gap: .25rem .625rem; }
 .holo-team-board-selection-actions { gap: .25rem; }
 .holo-team-board-toolbar .holo-team-action { min-height: 1.875rem; padding: .25rem .5rem; font-size: .75rem; box-shadow: none; }
 .holo-team-board-costs { display: flex; flex-wrap: wrap; gap: .25rem 1rem; }
@@ -1037,7 +1082,13 @@
   gap: .25rem .5rem; padding: .375rem .25rem; font-size: .75rem;
 }
 .holo-team-board-member-name { min-width: 0; overflow-wrap: anywhere; }
+.holo-team-board-protect-mark { display: inline-flex; margin-inline-start: .25rem; vertical-align: middle; }
 .holo-team-board-member > summary:hover, .holo-team-board-member[open] > summary { background: #222c45; }
+.holo-team-board-member[data-saved=true] > summary,
+.holo-team-board-member[data-saved=true] > summary .holo-team-board-points { color: #a2acc2; }
+.holo-team-board-member[data-saved=true] > summary { background: #202638; }
+.holo-team-board-member[data-saved=true] > summary:hover { background: #272e42; }
+.holo-team-board-member[data-saved=true] > summary img { filter: grayscale(1); }
 .holo-team-board-counts { display: grid; grid-template-columns: repeat(3, 4.125rem); gap: .25rem; }
 .holo-team-board-counts > [data-plan-change=add] { grid-column: 1; }
 .holo-team-board-counts > [data-plan-change=reset] { grid-column: 2; }
@@ -1048,9 +1099,10 @@
   color: var(--plan-change); border-radius: .25rem; background: #29344d; padding-inline: .375rem; font-size: .6875rem;
 }
 .holo-team-board-points {
-  display: flex; flex-wrap: wrap; justify-content: flex-end; align-items: center; gap: .125rem .375rem;
+  display: grid; justify-items: end; gap: .0625rem;
   text-align: right; font-size: .6875rem; white-space: nowrap; color: #c6cde0; font-variant-numeric: tabular-nums;
 }
+.holo-team-board-points > strong { font-size: .75rem; }
 .holo-team-board-map-body { padding-inline: .25rem; }
 .holo-team-board-map-caption { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: .25rem .625rem; color: #c6cde0; font-size: .6875rem; }
 .holo-team-board-legend { display: flex; flex-wrap: wrap; gap: .25rem .625rem; }

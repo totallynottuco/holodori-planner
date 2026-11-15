@@ -75,3 +75,6 @@
 .holo-progress-field { display: grid; gap: .25rem; }
 .holo-progress-field input { width: 5rem; padding: .375rem .5rem; }
 .holo-progress-confirm { display: grid; place-items: center; width: 2rem; height: 2rem; }
+.holo-progress-tile { position: relative; }
+.holo-progress-tile .holo-progress-invite { position: absolute; top: .375rem; right: .375rem; display: grid; place-items: center; width: 1.375rem; height: 1.375rem; }
+.holo-progress-tile .holo-progress-name { padding-inline: 1.25rem; }

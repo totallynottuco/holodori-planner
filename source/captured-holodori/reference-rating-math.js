@@ -339,11 +339,12 @@ function Rc(e, a, o, n, r, l, prepared) {
       (m.set(H.id, Z), d.set(H.id, e.cardStats ? e.cardStats(H, Z.level, Z.bloom) : Sm(H, Z.level, Z.bloom)));
     }
   const g = [];
+  const connectRoster = r.pinnedConnectEntries ? {...r.pinnedConnectEntries,...a} : a;
   for (const H of Object.keys(e.boards)) {
     let decoded;
-    const read = (mode) => mm(H, e, o, a, l, mode, (decoded ??= o[H] ? oD(H, e, o, a, l) : []));
+    const read = (mode) => mm(H, e, o, a, l, mode, (decoded ??= o[H] ? oD(H, e, o, connectRoster, l) : []));
     const [always, leader, song] = e.boardEffects
-      ? e.boardEffects(H, o[H], a, l, read)
+      ? e.boardEffects(H, o[H], connectRoster, l, read)
       : [read("always"), read("leader"), read("song")];
     u.set(H, always);
     p.set(H, leader);

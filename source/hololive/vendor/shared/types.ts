@@ -259,6 +259,11 @@ export interface AppProfileV12 {
   tasks?: import('../../tasks').PlannerTask[]
   gameAccountImport?: GameAccountImportState
   savedBoards?: Record<string,{nodes:string[];cards:Record<string,string>}>
+  boardEdits?: AppProfileV12['savedBoards']
+  dreamRankManuallySet?: boolean
+  cardOwnership?: Record<string,boolean>
+  gachaPointEdits?: Record<string,number>
+  achievementEdits?: Record<string,{progress:string;rewardReceivedThresholds:string[]}>
   schemaVersion: 12
   revision: number
   catalogVersionLastSeen: string

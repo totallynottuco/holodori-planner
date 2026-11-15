@@ -1,4 +1,5 @@
 import {referencePowerUpBonus} from './reference-rating-math.js';
+import {boardProtection} from './board-protection.js';
 
 const endpoint = '/assets/team-optimizer/';
 const expected = {
@@ -182,9 +183,17 @@ export function prepareReferenceSearch(data,input) {
   const boards=input.useBoards===false?{}:Object.fromEntries((input.boards??[]).map(board=>[
     board.characterId,{nodes:board.releasedSkillTreeNodeGroupIds,
       cards:Object.fromEntries(board.connectedSkillTreeNodeGroupIds.map((slot,index)=>[slot,board.connectedSkillTreeNodeCardIds[index]])
-        .filter(([,id])=>!(input.plannedCards||input.savedBoardMode)||owned[id]?.owned))},
+        .filter(([,id])=>boardProtection(input.boardOpt,board.characterId)!=='flexible'||
+          !(input.plannedCards||input.savedBoardMode)||owned[id]?.owned))},
   ]));
   const boardOpt=input.useBoards!==false&&input.boardOpt?.branches?.length?input.boardOpt:null;
+  if(boardOpt?.protection&&input.plannedCards){
+    const pinned=new Set(Object.entries(boards).flatMap(([owner,board])=>
+      boardProtection(boardOpt,owner)!=='flexible'?Object.values(board.cards):[]));
+    const entries=Object.fromEntries(input.cards.filter(card=>pinned.has(card.cardId)&&!owned[card.cardId])
+      .map(card=>[card.cardId,{level:card.level,bloom:card.potentialUpgradeCount,sp:card.levelLimitBreakCount}]));
+    if(Object.keys(entries).length)options.pinnedConnectEntries=entries;
+  }
   const rank=boardOpt?.maxBoardPoints?1_000_000:input.dreamRank??0;
   return {
     account:{dreamRank:rank,owned,boards,ranks,ownedCostumeIds:outfitAssumption?
@@ -192,7 +201,8 @@ export function prepareReferenceSearch(data,input) {
     limits:{jointBoards:!!boardOpt&&(goal==='best'||goal==='holomem'),shardIndex:0,shardCount:1},
     extras:{accountOwned:goal==='next'?owned:withAssumedOutfitCard(accountOwned,outfitAssumption),outfitAssumption,
       nextDeck:input.nextDeck,nextLevel:input.nextEntry?.level,nextBloom:input.nextEntry?.bloom,
-      nextCount:input.nextCount,nextBlooms:input.nextBlooms},
+      nextCount:input.nextCount,nextBlooms:input.nextBlooms,
+      ...(goal==='next'&&input.nextAcquisition?{nextAcquisition:input.nextAcquisition,objective:input.objective}:{})},
     boardOpt,
   };
 }

@@ -4,13 +4,14 @@ import {optimizeReferenceBoards} from './reference-board-search';
 import {searchReferenceRating} from './reference-holomem-rating';
 import {createReferenceScoreContext,evaluateReferenceTeam,referenceCardStats,referenceRangeCharts,referenceTeamScoreBonus,referenceUnitScore,withReferenceChart} from './reference-rating-math';
 import {compareUnitScore,evaluateUnitScore,searchUnitScore,unitScoreContext} from './unit-score-search';
-import {boardPointsAtRank,improveUnitScoreBoards} from './unit-score-board-search';
+import {boardPointsAtRank,boardReachability,improveUnitScoreBoards} from './unit-score-board-search';
 import {optimizerPack,verifyOptimizerPack} from './optimizer-catalog-data';
 import {applyEventSongBonus,automaticChapter,normalizeOptimizerEvents,overlayGameOptimizerEvents,referenceEventCardBonuses,referenceEventSongBonus} from './optimizer-events';
 import {MobileCoverageError,searchReviewedMobile} from './reviewed-mobile-search';
 import {overlayGameOptimizerCards} from './game-optimizer-cards';
 import {hasGpuBoardBonusTargets} from './gpu-board-bonus-targets';
 import {decodeChartGeometry} from './optimizer-chart-hit-events.js';
+import {boardPlanningBaseline,hasBoardProtection} from './board-protection';
 import bundledChartGeometry from '../hololive/scoring-reviewed/optimizer-preview-geometry.json';
 
 let source=null;
@@ -19,6 +20,31 @@ let lastPreview=null;
 let previewSession=null;
 let lastReferenceRating=null;
 const gpuSearches=new WeakMap();
+const cpuBoardPlanners=new WeakMap();
+async function runCpuJob(data,operation,payload,onProgress){
+  const {account,boardOpt,options}=payload;
+  const filtered=operation==='_hd_solve'&&options.goal==='next'&&payload.extras.nextAcquisition;
+  if(!filtered&&!hasBoardProtection(boardOpt))return runReferenceJob(data,operation,payload,onProgress);
+  const lineupJob=(query,progress)=>runReferenceJob(data,'_hd_solve',{
+    ...query,boardOpt:null,limits:{...query.limits,jointBoards:false},
+    account:{...query.account,boards:boardPlanningBaseline(query.account.boards,query.boardOpt)},
+  },progress);
+  if(operation==='_hd_solve'&&options.goal!=='next'){
+    return lineupJob({...payload,options:{...options,topN:Math.max(24,options.topN)}},onProgress);
+  }
+  const objective=boardOpt?.objective??payload.extras?.objective;
+  let planners=cpuBoardPlanners.get(data);
+  if(!planners){planners=new Map();cpuBoardPlanners.set(data,planners);}
+  if(!planners.has(objective)){
+    planners.set(objective,import('./gpu-team-optimizer').then(module=>module.createCpuBoardPlanner(data,objective)));
+  }
+  const planner=await planners.get(objective);
+  if(operation==='_hd_plan')return planner.plan(payload);
+  if(operation==='_hd_solve'){
+    return planner.solveNext(payload,async query=>(await lineupJob(query,onProgress)).results??[]);
+  }
+  throw Error('Unsupported protected Board search operation.');
+}
 let shardGpuSearch,shardGpuData;
 const sourceKey=selected=>[selected?.id,selected?.mobile?.id,selected?.gameCatalog?.id];
 function referenceRatingKey(payload,input){
@@ -177,7 +203,7 @@ async function runJobs(jobs,selection,onProgress,ports,completionOrder=false) {
         };
         const job=jobs[index];
         responses[index]=port?await sendJob(port,{type:'shard',selection,...job},progress):
-          await runReferenceJob(data,job.operation,job.payload,(phase,fraction)=>progress(fraction,phase));
+          await runCpuJob(data,job.operation,job.payload,(phase,fraction)=>progress(fraction,phase));
         if(completionOrder)completedResponses.push(responses[index]);
         completed++;
         fractions[index]=1;
@@ -187,7 +213,8 @@ async function runJobs(jobs,selection,onProgress,ports,completionOrder=false) {
   return completionOrder?completedResponses:responses;
 }
 function solveShards(payload,selection,onProgress,ports) {
-  const count=gpuSearches.has(selection)?1:logicalShardCount();
+  const singleNext=payload.options.goal==='next'&&(payload.extras.nextAcquisition||hasBoardProtection(payload.boardOpt));
+  const count=gpuSearches.has(selection)||singleNext?1:logicalShardCount();
   const jobs=Array.from({length:count},(_,shardIndex)=>({operation:'_hd_solve',payload:{
     ...payload,limits:{...payload.limits,shardIndex,shardCount:count},
   }}));
@@ -195,7 +222,7 @@ function solveShards(payload,selection,onProgress,ports) {
 }
 async function searchUnitScoreRows(data,payload,selection,progress,ports) {
   const query={...payload,boardOpt:null,limits:{...payload.limits,jointBoards:false},
-    account:payload.boardOpt?.ignoreExisting?{...payload.account,boards:{}}:payload.account,
+    account:{...payload.account,boards:boardPlanningBaseline(payload.account.boards,payload.boardOpt)},
     options:{...payload.options,topN:Math.max(24,payload.options.topN*2)}};
   const responses=await solveShards(query,selection,progress,ports);
   const gpuSearch=gpuSearches.get(selection);
@@ -209,7 +236,7 @@ async function planReferenceRows(payload,rows,selection,onProgress,ports,fullCou
   const scoreKey=options.sortBy==='max'?'maxScore':'score';
   const jobs=(indices,lite,previews)=>indices.map(index=>{
     const row=rows[index];
-    const fixed=gpu&&row.outfitId;
+    const fixed=(gpu||hasBoardProtection(boardOpt))&&row.outfitId;
     const order=(row.activeSpecialist?previews?.[index]?.plan?.after?.order:null)??row.order;
     return {operation:'_hd_plan',payload:{
       account,options:fixed?{...options,leaderMode:'fixed'}:options,
@@ -375,7 +402,7 @@ function mobileSearchRows(data,payload,cards,baseAccount) {
 
 async function prepareMobileRating(data,payload,input,charts,selection,ports) {
   const {boardOpt}=payload;
-  const account=boardOpt?.ignoreExisting?{...payload.account,boards:{}}:payload.account;
+  const account={...payload.account,boards:boardPlanningBaseline(payload.account.boards,boardOpt)};
   if(unresolvedBoardEntries(data,account.boards))throw new MobileCoverageError('Some Board entries are unavailable.');
   const engine=await reviewedEngine(data,{...payload,account,options:{...payload.options,scoringMode:'chart'}},
     input,charts,'Some eligible Holomem Rating charts are outside the reviewed Mobile chart pack.');
@@ -441,7 +468,7 @@ async function reviewedNextBaseline(data,payload,account,cards,engine,selection,
 
 async function runReviewedMobile(data,payload,input,selection,progress,ports) {
   const {options,boardOpt}=payload;
-  const account=boardOpt?.ignoreExisting?{...payload.account,boards:{}}:payload.account;
+  const account={...payload.account,boards:boardPlanningBaseline(payload.account.boards,boardOpt)};
   if(unresolvedBoardEntries(data,account.boards))throw new MobileCoverageError('Some Board entries are unavailable.');
   const anySong=options.scoringMode==='generic';
   const song=anySong?null:data.songs.find(row=>row.id===options.songId);
@@ -514,7 +541,7 @@ async function planUnitScoreRows(data,payload,rows,selection,onProgress,ports) {
   return ranked.map(({team,best},index)=>{
     const fullPlan=applyPlan(team,full[index]?.plan);
     if(compareUnitScore(fullPlan,best)<0)best=fullPlan;
-    if(directTeams.has(team)&&!gpuSearches.has(selection)){
+    if(directTeams.has(team)&&!gpuSearches.has(selection)&&!hasBoardProtection(boardOpt)){
       onProgress(checked++,directTeams.size,checked/directTeams.size,'Optimizing Boards for Unit Score');
       const direct=improveUnitScoreBoards(data,payload,team);
       if(compareUnitScore(direct,best)<0)best=direct;
@@ -525,12 +552,14 @@ async function planUnitScoreRows(data,payload,rows,selection,onProgress,ports) {
 
 function boardBudgetMessages(data,account,input){
   const imported=new Map((input.importedMemberRanks??[]).map(row=>[row.characterId,row.level]));
+  const importedBoards=input.importedBoards&&new Map(input.importedBoards.map(row=>
+    [row.characterId,{nodes:row.releasedSkillTreeNodeGroupIds}]));
   const names=new Map(data.cards.map(card=>[card.characterId,card.character]));
   const mismatches=[],overrides=[];
   for(const row of input.boardPointBalances??[]){
     const id=row.skillTreePointId.replace(/^skill_tree_point-/,'');
     const rank=imported.get(id),planned=account.ranks[id];
-    const board=account.boards[id],nodes=data.boards[id];
+    const board=importedBoards?importedBoards.get(id):account.boards[id],nodes=data.boards[id];
     if(!nodes||!board||!Number.isInteger(rank))continue;
     const byId=new Map(nodes.map(node=>[node.id,node]));
     if(board.nodes.some(node=>!byId.has(node)))continue;
@@ -566,7 +595,8 @@ function teamsForUi(data,rows,payload) {
     upgrades:row.pulls??(row.candidateId?[{id:row.candidateId,new:true,copies:1}]:[]),
     ...(row.plan?{boardCards:Object.fromEntries([...new Set(Object.values(row.plan.saves??{}).flatMap(save=>Object.values(save.cards)))].flatMap(id=>{
       const card=cards.get(id),pull=nextPulls(row).find(entry=>entry.id===id);
-      const entry=pull&&card?nextCardEntry(card,extras,pull,account.owned[id]):account.owned[id];
+      const entry=pull&&card?nextCardEntry(card,extras,pull,account.owned[id]):
+        account.owned[id]??payload.options.pinnedConnectEntries?.[id];
       return entry?[[id,entry.bloom]]:[];
     }))}:{}),
   }));
@@ -606,7 +636,7 @@ async function resultPreview({data,payload,input,previewData},team,chartKey,simu
   const {account,options}=payload;
   const order=team.cardIds.map(id=>data.cards.find(card=>card.id===id));
   if(order.some(card=>!card))return null;
-  const boards=team.plan?.saves??team.boards??(payload.boardOpt?.ignoreExisting?{}:account.boards);
+  const boards=team.plan?.saves??team.boards??boardPlanningBaseline(account.boards,payload.boardOpt);
   const ranks=team.plan?.ranks??account.ranks;
   const owned={...account.owned};
   for(const [id,bloom] of Object.entries(team.boardCards??{}))if(owned[id])owned[id]={...owned[id],bloom};
@@ -1051,8 +1081,9 @@ self.addEventListener('message',async({data:message,ports})=>{
       const data=await dataFor(message.selection);
       let response;
       try{
-        response=await runReferenceJob(data,message.operation,message.payload,(phase,fraction)=>notify('shard-progress',{phase,fraction}));
+        response=await runCpuJob(data,message.operation,message.payload,(phase,fraction)=>notify('shard-progress',{phase,fraction}));
       }catch(error){
+        if(hasBoardProtection(message.payload.boardOpt))throw error;
         if(message.operation==='_hd_plan')response={plan:null};
         else if(message.operation==='_hd_neighbors')response={results:[]};
         else throw error;
@@ -1070,6 +1101,17 @@ self.addEventListener('message',async({data:message,ports})=>{
         anyDiffMin:1,anyDiffMax:999,anyDiffTypes:undefined,eventBonus:false,eventPoints:false,sortBy:'avg',
       }}:input);
       const {options}=payload;
+      for(const owner of input.protectedSavedOwners??[]){
+        const {account,boardOpt}=payload;
+        const board=account.boards[owner],nodes=data.boards[owner];
+        const name=data.cards.find(card=>card.characterId===owner)?.character??owner;
+        const rank=boardOpt.maxBoardPoints?data.boardPointLadder.length-1:account.ranks[owner]??(boardOpt.allInvited?1:0);
+        const state=nodes&&board&&boardReachability(nodes,board,account.dreamRank);
+        if(!state||board.nodes.some(id=>!state.active.has(id))||Object.keys(board.cards).some(id=>!state.active.has(id)))
+          throw Error(`${name}’s protected saved Board contains unavailable nodes or Connect slots.`);
+        if(state.spent>boardPointsAtRank(data.boardPointLadder,rank))
+          throw Error(`${name}’s protected saved Board exceeds the current Board Point budget.`);
+      }
       const cardIds=new Set(data.cards.map(card=>card.id));
       const excluded=input.cards.filter(card=>!cardIds.has(card.cardId)).length;
       const unresolved=unresolvedBoardEntries(data,payload.account.boards);
@@ -1155,11 +1197,20 @@ self.addEventListener('message',async({data:message,ports})=>{
         return;
       }
       const runFallback=job=>runReferenceJob(jobData,job.operation,job.payload);
-      const runBoard=(responses,query)=>optimizeReferenceBoards(responses,query,{
+      const runBoard=async(responses,query)=>{
+        if(hasBoardProtection(query.boardOpt)){
+          const candidates=collectBoardFinalists(responses,query.options).slice(0,Math.max(24,query.options.topN));
+          const plans=await planReferenceRows(query,candidates,selection,progress,ports);
+          const score=query.options.sortBy==='max'?'maxScore':'score';
+          return candidates.map((row,index)=>plans[index]?{...row,...plans[index].after,plan:plans[index]}:row)
+            .sort((a,b)=>b[score]-a[score]).slice(0,query.options.topN);
+        }
+        return optimizeReferenceBoards(responses,query,{
         workerCount:ports.length,
         runJob:(slot,job)=>sendJob(ports[slot],{type:'shard',selection,...job},()=>{}),
         runFallback,onProgress:progress,
-      });
+        });
+      };
       if(input.objective==='holomemLb'){
         const driver={
           solve:async(query,ratingProgress=progress,{rawJoint=false}={})=>{

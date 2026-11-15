@@ -168,9 +168,9 @@ export function buildAchievementRewardCatalog(categories: AchievementCategory[])
   return [...options.values()].sort((left,right) => left.label.localeCompare(right.label,'en'));
 }
 
-export function achievementProgress(mission: AchievementMission, source: ReturnType<typeof indexAchievementProgress>) {
+export function achievementProgress(mission: AchievementMission, source: ReturnType<typeof indexAchievementProgress>,missingUnknown=false) {
   const row = source?.get(mission.id);
-  const progress = source === null ? null : row?.progress ?? '0';
+  const progress = source === null ? null : row?.progress ?? (missingUnknown?null:'0');
   const received = new Set(row?.rewardReceivedThresholds);
   const value = progress === null ? null : BigInt(progress);
   const tiers = mission.tiers.map(tier => ({

@@ -14,7 +14,7 @@ export function hasGpuBoardBonusTargets(targets){
 }
 
 export async function improveGpuBoardBonuses({owners,topology,nodeMaps,budgets,originalNodes,targets,branches,dreamRank,
-  emptyBoard,materials,infinite,available,resetsLeft,protectedNode,priority,checkTrades,score,scoreValue,initial,boards,commit}){
+  emptyBoard,materials,infinite,available,resetsLeft,protectedNode,canReset=()=>true,priority,checkTrades,score,scoreValue,initial,boards,commit}){
   const baseline=scoreValue(initial);
   let row=initial;
   const gains={};
@@ -77,7 +77,7 @@ export async function improveGpuBoardBonuses({owners,topology,nodeMaps,budgets,o
         if(save!==emptyBoard)frontierCache.set(save,options);
         additions.push(...options);
       }else additions.push(...frontierCache.get(save)??[]);
-      if(!save.nodes.length)continue;
+      if(!canReset(owner)||!save.nodes.length)continue;
       if(!cutCache.has(save))cutCache.set(save,cuts(owner,save).sort((a,b)=>a.loss-b.loss));
       const removable=cutCache.get(save).filter(cut=>cut.resetCost<=resetBudget);
       donors.push(...removable);

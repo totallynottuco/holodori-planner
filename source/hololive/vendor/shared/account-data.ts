@@ -177,6 +177,7 @@ export interface ResolvedBoardNode extends BoardNodeVariant {
 
 export interface BoardActivationPath {
   nodeIds: string[]
+  routeNodeIds: string[]
   boardPointCost: number
 }
 
@@ -366,8 +367,8 @@ export function boardPointsForMemberLevel(characterId: string, level: number): n
 }
 
 export function boardPointsSpent(characterId: string, unlockedNodeIds: Iterable<string>): number {
-  const nodes = new Map(resolveBoardNodes(characterId).map((node) => [node.groupId, node]))
-  return [...new Set(unlockedNodeIds)].reduce((total, nodeId) => total + (nodes.get(nodeId)?.boardPointCost ?? 0), 0)
+  const { byId } = boardTopology(resolveBoardNodes(characterId))
+  return [...new Set(unlockedNodeIds)].reduce((total, nodeId) => total + (byId.get(nodeId)?.boardPointCost ?? 0), 0)
 }
 
 export function minimumMemberLevelForBoardPoints(characterId: string, requiredPoints: number): number {
@@ -375,44 +376,67 @@ export function minimumMemberLevelForBoardPoints(characterId: string, requiredPo
   return levels.find((entry) => entry.cumulativeBoardPoints >= requiredPoints)?.level ?? levels.at(-1)?.level ?? 1
 }
 
-export function resolveBoardNodes(characterId: string): ResolvedBoardNode[] {
+const resolvedBoards = new Map<string, readonly ResolvedBoardNode[]>()
+
+export function resolveBoardNodes(characterId: string): readonly ResolvedBoardNode[] {
+  const cached = resolvedBoards.get(characterId)
+  if (cached) return cached
   const character = accountCharactersById.get(characterId)
   if (!character) throw new Error(`Unknown account member ${characterId}`)
   const template = accountManifest.templates.find((entry) => entry.id === character.boardTemplateId)
   if (!template) throw new Error(`Missing Board template ${character.boardTemplateId}`)
-  return template.nodes.map((position) => {
+  const nodes = Object.freeze(template.nodes.map((position) => {
     const group = accountManifest.nodeGroups[position.nodeGroupId]
     if (!group) throw new Error(`Missing Board node group ${position.nodeGroupId}`)
     const variant = group.variants.find((entry) => entry.characterIds.includes(characterId))
       ?? group.variants.find((entry) => entry.characterIds.length === 0)
     if (!variant) throw new Error(`Board node ${position.nodeGroupId} does not apply to ${character.name}`)
-    return { ...variant, groupId: position.nodeGroupId, x: position.x, y: position.y }
-  })
+    return Object.freeze({ ...variant, groupId: position.nodeGroupId, x: position.x, y: position.y })
+  }))
+  resolvedBoards.set(characterId, nodes)
+  return nodes
 }
 
-function boardNodeGraph(nodes: ResolvedBoardNode[]): Map<string, string[]> {
+interface BoardTopology {
+  byId: ReadonlyMap<string, ResolvedBoardNode>
+  edges: readonly (readonly [string, string])[]
+  neighbors: ReadonlyMap<string, readonly string[]>
+}
+const boardTopologies = new WeakMap<readonly ResolvedBoardNode[], BoardTopology>()
+
+export function boardTopology(nodes: readonly ResolvedBoardNode[]): BoardTopology {
+  const cached = boardTopologies.get(nodes)
+  if (cached) return cached
   const at = new Map(nodes.map((node) => [`${node.x},${node.y}`, node.groupId]))
-  return new Map(nodes.map((node) => [node.groupId, [
-    at.get(`${node.x - 1},${node.y}`),
-    at.get(`${node.x + 1},${node.y}`),
-    at.get(`${node.x},${node.y - 1}`),
-    at.get(`${node.x},${node.y + 1}`)
-  ].filter((groupId): groupId is string => Boolean(groupId)).sort()]))
+  const neighbors = new Map<string, string[]>(nodes.map((node) => [node.groupId, []]))
+  const edges: Array<[string, string]> = []
+  for (const {groupId, x, y} of nodes) {
+    for (const key of [`${x + 1},${y}`, `${x},${y + 1}`]) {
+      const next = at.get(key)
+      if (!next) continue
+      edges.push([groupId, next])
+      neighbors.get(groupId)!.push(next)
+      neighbors.get(next)!.push(groupId)
+    }
+  }
+  const topology = { byId: new Map(nodes.map((node) => [node.groupId, node])), edges, neighbors }
+  boardTopologies.set(nodes, topology)
+  return topology
 }
 
-export function boardRootNodeIds(nodes: ResolvedBoardNode[]): Set<string> {
+export function boardRootNodeIds(nodes: readonly ResolvedBoardNode[]): Set<string> {
   return new Set(nodes.filter((node) => node.boardPointCost === 0).map((node) => node.groupId))
 }
 
 /** Returns the purchased component connected to the Board's zero-cost origin. */
-export function connectedBoardNodeIds(nodes: ResolvedBoardNode[], unlockedNodeIds: Iterable<string>): Set<string> {
-  const graph = boardNodeGraph(nodes)
+export function connectedBoardNodeIds(nodes: readonly ResolvedBoardNode[], unlockedNodeIds: Iterable<string>): Set<string> {
+  const { neighbors } = boardTopology(nodes)
   const active = new Set(unlockedNodeIds)
   const connected = boardRootNodeIds(nodes)
   const pending = [...connected]
   while (pending.length > 0) {
     const current = pending.shift()!
-    for (const neighbor of graph.get(current) ?? []) {
+    for (const neighbor of neighbors.get(current) ?? []) {
       if (!active.has(neighbor) || connected.has(neighbor)) continue
       connected.add(neighbor)
       pending.push(neighbor)
@@ -422,7 +446,7 @@ export function connectedBoardNodeIds(nodes: ResolvedBoardNode[], unlockedNodeId
 }
 
 /** Removes purchases that no longer have an uninterrupted route to the Board origin. */
-export function pruneDisconnectedBoardNodeIds(nodes: ResolvedBoardNode[], unlockedNodeIds: Iterable<string>): string[] {
+export function pruneDisconnectedBoardNodeIds(nodes: readonly ResolvedBoardNode[], unlockedNodeIds: Iterable<string>): string[] {
   const unlocked = [...new Set(unlockedNodeIds)]
   const connected = connectedBoardNodeIds(nodes, unlocked)
   const roots = boardRootNodeIds(nodes)
@@ -462,67 +486,64 @@ export function quoteBoardReset(
 }
 
 /**
- * Finds the route requiring the fewest additional node activations from the
- * currently connected component. Board Pt and geometric length break ties.
+ * The Steam Board walks backward from the target and minimizes the sum of
+ * material quantities. Ties use hop count, then ordinal node group ID.
  */
 export function shortestBoardActivationPath(
-  nodes: ResolvedBoardNode[],
+  nodes: readonly ResolvedBoardNode[],
   unlockedNodeIds: Iterable<string>,
   targetGroupId: string,
   dreamRank: number
 ): BoardActivationPath | null {
-  const byId = new Map(nodes.map((node) => [node.groupId, node]))
-  if (!byId.has(targetGroupId)) return null
-  const graph = boardNodeGraph(nodes)
-  const unlocked = new Set(unlockedNodeIds)
-  const connected = connectedBoardNodeIds(nodes, unlocked)
-  if (connected.has(targetGroupId)) return { nodeIds: [], boardPointCost: 0 }
+  const { byId, neighbors } = boardTopology(nodes)
+  const target = byId.get(targetGroupId)
+  if (!target) return null
+  const released = new Set([...boardRootNodeIds(nodes), ...unlockedNodeIds])
+  if (released.has(targetGroupId)) return { nodeIds: [], routeNodeIds: [targetGroupId], boardPointCost: 0 }
+  const passesRank = (node: ResolvedBoardNode) => Math.max(node.unlockPlayerLevel ?? 0, node.viewPlayerLevel ?? 0) <= dreamRank
+  if (!passesRank(target)) return null
 
-  interface RouteState {
-    groupId: string
-    activations: number
-    boardPointCost: number
-    distance: number
-    nodeIds: string[]
-  }
-  const compare = (left: RouteState, right: RouteState): number =>
-    left.activations - right.activations
-    || left.boardPointCost - right.boardPointCost
-    || left.distance - right.distance
-    || left.groupId.localeCompare(right.groupId)
-  const frontier: RouteState[] = [...connected].map((groupId) => ({
-    groupId,
-    activations: 0,
-    boardPointCost: 0,
-    distance: 0,
-    nodeIds: []
-  }))
-  const best = new Map<string, RouteState>()
+  type Route = { materials: number; steps: number; next?: string }
+  const compare = (a: Route, b: Route) => a.materials - b.materials || a.steps - b.steps
+  const best = new Map<string, Route>([[targetGroupId, { materials: 0, steps: 0 }]])
+  const frontier = new Set([targetGroupId])
 
-  while (frontier.length > 0) {
-    frontier.sort(compare)
-    const current = frontier.shift()!
-    const previous = best.get(current.groupId)
-    if (previous && compare(previous, current) <= 0) continue
-    best.set(current.groupId, current)
-    if (current.groupId === targetGroupId) {
-      return { nodeIds: current.nodeIds, boardPointCost: current.boardPointCost }
+  while (frontier.size) {
+    let currentId = frontier.values().next().value!
+    for (const id of frontier) {
+      const order = compare(best.get(id)!, best.get(currentId)!)
+      if (order < 0 || (order === 0 && id < currentId)) currentId = id
+    }
+    frontier.delete(currentId)
+    const current = best.get(currentId)!
+    const node = byId.get(currentId)!
+    // Released Connect slots can be traversed for free. Only the center socket can end the search.
+    if (released.has(currentId) && (node.type !== 'connect' || (node.x === 0 && node.y === 0))) {
+      const nodeIds: string[] = []
+      const routeNodeIds = [currentId]
+      let boardPointCost = 0
+      for (let id = current.next; id; id = best.get(id)!.next) {
+        routeNodeIds.push(id)
+        if (released.has(id)) continue
+        nodeIds.push(id)
+        boardPointCost += byId.get(id)!.boardPointCost
+      }
+      return { nodeIds, routeNodeIds, boardPointCost }
     }
 
-    for (const neighborId of graph.get(current.groupId) ?? []) {
+    for (const neighborId of neighbors.get(currentId) ?? []) {
       const neighbor = byId.get(neighborId)!
-      const alreadyPurchased = unlocked.has(neighborId) || connected.has(neighborId)
-      const requiredRank = neighbor.unlockPlayerLevel ?? neighbor.viewPlayerLevel ?? 1
-      if (!alreadyPurchased && requiredRank > dreamRank) continue
-      const next: RouteState = {
-        groupId: neighborId,
-        activations: current.activations + (alreadyPurchased ? 0 : 1),
-        boardPointCost: current.boardPointCost + (alreadyPurchased ? 0 : neighbor.boardPointCost),
-        distance: current.distance + 1,
-        nodeIds: alreadyPurchased ? current.nodeIds : [...current.nodeIds, neighborId]
+      const purchased = released.has(neighborId)
+      if (!purchased && !passesRank(neighbor)) continue
+      const route = {
+        materials: current.materials + (purchased ? 0 : neighbor.costs.reduce((total, cost) => total + cost.quantity, 0)),
+        steps: current.steps + 1,
+        next: currentId,
       }
       const known = best.get(neighborId)
-      if (!known || compare(next, known) < 0) frontier.push(next)
+      if (known && compare(route, known) >= 0) continue
+      best.set(neighborId, route)
+      frontier.add(neighborId)
     }
   }
   return null
@@ -574,7 +595,7 @@ export function resolveCardParameters(cardId: string, level: number, bloomStage:
 }
 
 export function boardConnectAffectedNodeIds(
-  nodes: ResolvedBoardNode[],
+  nodes: readonly ResolvedBoardNode[],
   connectNodeId: string,
   effect: Pick<ResolvedBoardConnectEffect, 'offsets'>
 ): string[] {
@@ -588,7 +609,7 @@ export function boardConnectAffectedNodeIds(
 }
 
 export function boardConnectBonusPermilByNode(
-  nodes: ResolvedBoardNode[],
+  nodes: readonly ResolvedBoardNode[],
   unlockedNodeIds: Iterable<string>,
   assignments: Record<string, string | null>,
   bloomStages: ReadonlyMap<string, number>

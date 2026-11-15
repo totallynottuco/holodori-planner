@@ -155,8 +155,13 @@ simple(functions.get('T1').body,{Identifier(node){if(node.name==='M1')patch(node
 // Keep Seelie's Achievements page, search, category rail and row containers.
 // The checklist fills the original page slot with Holodori groups and tiers.
 patch(0,0,'const holoTierSlot={props:{content:Object},render(){return i("div",Lw,[this.content]);}};\nconst holoChecklist=Z1(()=>import("/captured/achievements-ui.js").then(({createAchievements})=>createAchievements({h:i,vnode:g,resolve:M,Search:Ys,Toggle:Ae,Rail:sw,Row:Qs,OverlayPanel:N1,headingClass:ow.class,titleClass:lw.class})));\n','Lazy Holodori achievement checklist in the captured Vue runtime');
-patch(0,0,'const holoProgress=Z1(()=>import("/captured/account-progress-ui.js").then(({createAccountProgress})=>createAccountProgress({h:i,vnode:g,resolve:M,Search:Ys,OverlayPanel:N1,Dialog:le,headingClass:ow.class,titleClass:lw.class})));\n','Lazy account progress and Board in the captured Vue shell');
+patch(0,0,'const holoProgress=Z1(()=>import("/captured/account-progress-ui.js").then(({createAccountProgress})=>createAccountProgress({h:i,vnode:g,resolve:M,Search:Ys,OverlayPanel:N1,Dialog:le,Toggle:Ae,headingClass:ow.class,titleClass:lw.class})));\n','Lazy account progress and Board in the captured Vue shell');
 patch(0,0,'const importTeamOptimizer=()=>import("/captured/team-optimizer-ui.js");\nconst prepareTeamOptimizer=async()=>{const module=await importTeamOptimizer();await module.prepareOptimizerWorkspace().catch(()=>{});};\nconst holoTeamOptimizer=()=>importTeamOptimizer().then(({createTeamOptimizer})=>createTeamOptimizer({h:i,vnode:g,resolve:M,Search:Ys,Dialog:le,Toggle:Ae,headingClass:ow.class,titleClass:lw.class}));\n','Resolve the optimizer catalog before entering its captured route');
+patch(0,0,'import {holoKeepAlive} from "./vendor-8ba3b986.js";\n','Reuse the captured Vue KeepAlive component for the optimizer route');
+simple(functions.get('Jo').body,{CallExpression(node){
+  if(text(node)!=='g(z)')return;
+  patch(node.start,node.end,'g(z,null,{default:R(({Component})=>Component?[g(holoKeepAlive,{include:"HolodoriTeamOptimizer"},{default:R(()=>[e.$route.path==="/team-optimizer"?g(Component,{key:e.account,profileKey:e.account}):Component]),_:2},1024)]:[]),_:1})','Keep the optimizer and its search worker mounted per profile across sidebar navigation');
+}});
 replaceInit('iw','{data(){return {isLoading:false};}}','Keep the captured Achievements page frame with offline data');
 const achievementFrame=functions.get('Cw').body.body[0];
 patch(achievementFrame.start,achievementFrame.end,'const f=vC;','Keep the captured page container and remove retired achievement children');
@@ -279,6 +284,9 @@ simple(ast,{ConditionalExpression(node){
 }});
 simple(functions.get('Jo').body,{ConditionalExpression(node){if(text(node.test)==='e.settings.sidebar_divider_style !== "none"'&&text(node.consequent).includes('key: 0'))patch(node.start,node.end,'C("",true)','One original divider between active sections and Settings');}});
 simple(functions.get('Jo').body,{CallExpression(node){
+  if(node.callee.name==='g'&&node.arguments[0]?.name==='x'&&node.arguments.length===1){
+    patch(node.end,node.end,',g(window.__holodoriDesktop.appUpdateDialog)','Mount the app update prompt in the captured shell');
+  }
   if(node.callee.name==='i'&&['So','Fo'].includes(node.arguments[1]?.name)){
     patch(node.start,node.end,'C("",false)','Remove sidebar title and language controls');
     return;
@@ -441,31 +449,50 @@ simple(functions.get('Tm').body,{CallExpression(node){
 }});
 const profileChildren=settingsSections.get('b3').arguments[2].elements;
 patch(profileChildren[0].start,profileChildren[0].end,'i("h2",{class:"font-semibold text-sm"},_(e.$t("account")))','Label the profile toolbar');
-patch(profileChildren[1].start,profileChildren[1].end,'i("p",{class:"text-xs text-gray-300 mt-2"},_(e.$t("importing_warning")),1)','Keep profile file scope beside the profile toolbar');
-replaceInit('b3','{id:"settings-profile",class:"bg-gray-700 p-3 rounded-md mt-3"}','Group all captured profile actions in one compact toolbar');
-replaceInit('w3','{class:"desktop-profile-actions mt-2"}','Wrap profile actions as one toolbar');
+patch(profileChildren[1].start,profileChildren[1].end,'C("",false)','Keep the toolbar concise and explain full backups with backup actions');
+replaceInit('b3','{id:"settings-profile",class:"bg-gray-700 p-3 rounded-md mt-3"}','Keep the active profile and its actions in one toolbar');
+replaceInit('w3','{class:"desktop-profile-actions"}','Wrap profile actions as one toolbar');
 replaceInit('k3','{class:"desktop-profile-action-group"}','Align profile management controls with profile file actions');
 replaceInit('V3','{class:"desktop-profile-action-group"}','Align profile file actions with profile management controls');
 const profileActions=profileChildren[2].arguments[2].elements[0].arguments[2].elements;
 const [addProfile, ,renameProfile]=profileActions;
-const addAction='i("button",{"aria-label":"Add profile",disabled:r.profileLocked,class:"bg-gray-600 shadow rounded-md px-2 lg:pr-3 py-2 flex items-center justify-center",onClick:t[0]||(t[0]=(...f)=>r.addAccount&&r.addAccount(...f))},[g(c,{class:"w-5 h-6"}),i("span",x3,_(e.$t("add")),1)],8,["disabled"])';
+const addAction='i("button",{"aria-label":"Add profile",title:"Add profile",disabled:r.profileLocked,class:"bg-gray-600 shadow rounded-md px-2 lg:pr-3 py-2 flex items-center justify-center",onClick:t[0]||(t[0]=(...f)=>r.addAccount&&r.addAccount(...f))},[g(c,{class:"w-5 h-6"}),i("span",x3,_(e.$t("add")),1)],8,["disabled"])';
 patch(addProfile.start,addProfile.end,'C("",false)','Place the active profile first in visual and keyboard order');
 patch(renameProfile.end,renameProfile.end,','+addAction,'Place Add beside Rename in the profile toolbar');
-const plannerSettings=settingsSections.get('X3').arguments[2].elements.slice(1);
+const [materialEntry,goals]=settingsSections.get('X3').arguments[2].elements.slice(1);
 const [,hideArtwork,hideBloom,appearance]=settingsSections.get('cm').arguments[2].elements;
 const [hour,...sidebar]=appearance.arguments[2].elements;
 const clock=text(hour).replace('i("p", _m, _(e.$t("hour_format")), 1)','i("span",{class:"font-semibold"},_(e.$t("hour_format")),1)')
   .replace('i("div", null, [','i("label",{class:"desktop-format-row"},[')
   .replace('class: "bg-gray-600 rounded-md",','class:"bg-gray-600 rounded-md","aria-label":e.$t("hour_format"),');
+const sidebarControls=sidebar.map(node=>{
+  const replacements=[];
+  simple(node,{CallExpression(button){
+    if(button.callee.name!=='i'||button.arguments[0]?.value!=='button')return;
+    const [,props,,flags]=button.arguments;
+    const selected=text(props).match(/r\.sidebar(?:Density|DividerStyle) == "[^"]+"/)?.[0];
+    if(!selected||flags?.value!==3)throw Error('Captured sidebar toggle changed');
+    replacements.push([props.start+1,props.start+1,`type:"button","aria-pressed":${selected},`],
+      [flags.start,flags.end,'11,["aria-pressed"]']);
+  }});
+  let output=text(node);
+  for(const [start,end,value] of replacements.reverse())output=output.slice(0,start-node.start)+value+output.slice(end-node.start);
+  return output;
+});
 const panels=settingsSections.get('P3');
 patch(panels.start,settingsSections.get('Cm').end,
   `g(window.__holodoriDesktop.settingsComponent,null,{
     formats:R(()=>[${clock}]),
-    sidebar:R(()=>[${sidebar.map(text).join(',')}]),
-    planner:R(()=>[${[...plannerSettings,hideArtwork,hideBloom].map(text).join(',')}])
-  })`,'Arrange captured settings controls in Profile first disclosures');
-replaceInit('tm','{class:"desktop-settings-switches"}','Use flat planner preference rows');
-replaceInit('lm','{class:"desktop-settings-switches"}','Use flat goals summary preference rows');
+    sidebar:R(()=>[${sidebarControls.join(',')}]),
+    materialEntry:R(()=>[${text(materialEntry)}]),
+    goals:R(()=>[${text(goals)}]),
+    cardDetails:R(()=>[${[hideArtwork,hideBloom].map(node=>text(node).replace('class: "mt-2",','')).join(',')}])
+  })`,'Place original settings controls in their workflow groups');
+replaceInit('tm','{class:"desktop-settings-controls"}','Align material entry controls');
+replaceInit('lm','{class:"desktop-settings-controls"}','Align goals summary controls');
+replaceInit('rm','{key:0,class:"desktop-settings-tab-order"}','Allow the conditional tab-order field to wrap');
+replaceInit('z3','{class:"text-sm break-words"}','Remove reserved header spacing from the profile confirmation');
+replaceInit('O3','{class:"desktop-settings-dialog-actions mt-3"}','Align the profile confirmation actions');
 const mount=source.indexOf('e.mount("#app")');patch(mount,mount+'e.mount("#app")'.length,'(window.__seelieApp=e.mount("#app"),window.__holodoriApp=window.__seelieApp,window.__holodoriDesktop.onMounted())','Expose actual mounted Vue root and native boundary');
 const boot=functions.get('sx');patch(boot.body.start+1,boot.body.start+1,'await window.__holodoriDesktop.ready;window.__holodoriDesktop.install({h:i,reactive:ea,vnode:g,resolve:M,Dialog:le,Switch:Ae});','Wait for native data before original Vue bootstrap');
 patch(boot.body.start+1,boot.body.start+1,'window.__holodoriInventoryConversions=createInventoryConversions({h:i,vnode:g,Dialog:le,Cost:cs});','Use captured Dialog and ItemCost renderers for manual conversion');
@@ -502,6 +529,11 @@ parse(adapted,{ecmaVersion:'latest',sourceType:'module'});
 // Only generated build trees are replaced; saves and source captures are separate.
 for(const directory of [stage,out]){if(path.resolve(directory)!==path.join(root,path.basename(directory)))throw Error('Unexpected build directory');await fs.rm(directory,{recursive:true,force:true});await fs.mkdir(directory,{recursive:true});}
 await fs.cp(path.join(archive,'upstream/assets'),path.join(stage,'assets'),{recursive:true,filter:file=>!path.extname(file)||/\.(?:js|css)$/.test(file)});
+const capturedVendor=path.join(stage,'assets/vendor-8ba3b986.js');
+const vendorSource=await fs.readFile(capturedVendor,'utf8');
+const keepAlive=vendorSource.match(/\b([\w$]+)=\{name:"KeepAlive",__isKeepAlive:!0,/);
+if(!keepAlive)throw Error('Missing captured Vue KeepAlive');
+await fs.appendFile(capturedVendor,'\nexport {'+keepAlive[1]+' as holoKeepAlive};\n');
 await fs.writeFile(path.join(stage,'assets/index-f19fde22.js'),adapted);
 
 // Strip game dictionaries from all original locale modules. Shared interface
@@ -509,7 +541,7 @@ await fs.writeFile(path.join(stage,'assets/index-f19fde22.js'),adapted);
 const gameBundle=await build({entryPoints:[path.join(root,'source/captured-holodori/game.ts')],bundle:true,format:'esm',platform:'node',write:false});
 const dataModule=await import('data:text/javascript;base64,'+Buffer.from(gameBundle.outputFiles[0].contents).toString('base64'));
 const labels={...dataModule.game.translations,title:'Hololive Dreams Planner',characters:'Characters',character:'Card',inventory:'Inventory',settings:'Settings',path:'Stat',paths:'Stats',type:'Type',types:'Types',tier:'Rarity',traces:'SP Training',trace:'SP Training',cone:'Bloom',cones:'Bloom',relics:'Artwork',eidolons:'Bloom',current_sp:'Current SP',goal_sp:'Goal SP',owned:'Owned',unowned:'Unowned',ownership_unavailable:'Import account data to filter by ownership.',hide_maxed_cards:'Hide maxed cards',current_bloom:'Current Bloom',training:'SP Training',bloom:'Bloom',other:'Other',materials:'materials',planner_category_ready:'No missing materials in this category.',planner_materials_ready:'All planned materials are ready.',planner_no_requirements:'Add card goals or extra materials to build your plan.',none_required:'None required',share_goal_traces:'SP Training',share_format_landscape:'Landscape',share_made_with:'Made with',share_art_local:'Your image is saved in this profile on this computer.',crafted_explanation:'Convert surplus Beads needed to cover planned Crystal shortages. Each exchange uses 30 matching Beads and 200 Mega Sphere Coins for 10 Crystals.',clean_confirmation:'Clear the recorded inventory quantities for this profile? Goals and other profile data are kept.',only_obtainable:'Materials required for the selected goals. No farming estimates are assumed.'};
-Object.assign(labels,{goal_bloom:'Goal Bloom',resin_full:'Full',account:'Profile',more_than_one_account:'Keep separate card progress and inventories in each profile.',importing_warning:'Profile exports include progress, inventory, tasks, and preferences. Use an all-profile backup to include custom artwork.',export_account:'Export profile',import_account:'Import profile',delete_profile_confirmation:'Delete this profile? A recovery backup will be created first.',hide_artifacts_expanded_goals:'Hide Artwork from expanded cards',hide_weapons_expanded_goals:'Hide Bloom from expanded cards'});
+Object.assign(labels,{goal_bloom:'Goal Bloom',resin_full:'Full',account:'Profile',more_than_one_account:'Keep separate card progress and inventories in each profile.',export_account:'Export profile',import_account:'Import profile',delete_profile_confirmation:'Delete this profile? A recovery backup will be created first.',hide_artifacts_expanded_goals:'Hide Artwork from expanded cards',hide_weapons_expanded_goals:'Hide Bloom from expanded cards',hour_format:'Time format',sidebar_density:'Sidebar density',sidebar_divider_style:'Sidebar divider'});
 Object.assign(labels,{inventory_training:'Training',inventory_construction:'Construction',inventory_other:'Others',inventory_hide_zero:'Hide zero quantities'});
 labels.show_added_cards='Show added cards';
 labels.back_to_seelie='Back to Planner';

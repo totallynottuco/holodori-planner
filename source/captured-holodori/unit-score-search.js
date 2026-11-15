@@ -1,5 +1,6 @@
 import {createReferenceScoreContext,evaluateReferenceTeam,referenceTeamScoreBonus,referenceUnitScore,
   referenceUnitSkillInputs} from './reference-rating-math';
+import {boardPlanningBaseline} from './board-protection';
 
 const powerComponents=['parameters','board','passive','memory','powerUp','leader'];
 const lineupKey=order=>order.map(card=>card.id).sort().join('|');
@@ -35,7 +36,7 @@ export function compareUnitScore(a,b) {
 
 export function searchUnitScore(data,payload,seeds,{progress=()=>{}}={}) {
   const {options,account,boardOpt}=payload;
-  const context=unitScoreContext(data,payload,boardOpt?.ignoreExisting?{}:account.boards);
+  const context=unitScoreContext(data,payload,boardPlanningBaseline(account.boards,boardOpt));
   const available=data.cards.filter(card=>account.owned[card.id]?.owned);
   const cards=new Map(available.map(card=>[card.id,card]));
   const locked=new Set(options.focusCardIds);

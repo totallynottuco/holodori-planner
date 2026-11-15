@@ -683,12 +683,42 @@ fn fetch(host: &str, path: &str, limit: usize) -> Result<Vec<u8>> {
     fetch_with_headers(host, path, limit, "")
 }
 
+pub(crate) enum PublicResponse {
+    Body(Vec<u8>),
+    Redirect(String),
+}
+
+pub(crate) enum PublicTransfer {
+    Complete,
+    Redirect(String),
+}
+
+pub(crate) fn fetch_with_headers(host: &str, path: &str, limit: usize, headers: &str) -> Result<Vec<u8>> {
+    match public_request(host, path, limit, headers, false)? {
+        PublicResponse::Body(bytes) => Ok(bytes),
+        PublicResponse::Redirect(_) => Err("Unexpected public catalog redirect.".into()),
+    }
+}
+
+pub(crate) fn public_request(host: &str, path: &str, limit: usize, headers: &str, redirect: bool) -> Result<PublicResponse> {
+    let mut bytes = Vec::new();
+    match public_transfer(host, path, limit, headers, redirect, None, |chunk| {
+        bytes.extend_from_slice(chunk);
+        Ok(())
+    })? {
+        PublicTransfer::Complete => Ok(PublicResponse::Body(bytes)),
+        PublicTransfer::Redirect(address) => Ok(PublicResponse::Redirect(address)),
+    }
+}
+
 #[cfg(not(windows))]
-pub(crate) fn fetch_with_headers(_host: &str, _path: &str, _limit: usize, _headers: &str) -> Result<Vec<u8>> {
-    Err("Catalog HTTPS transport requires Windows.".into())
+pub(crate) fn public_transfer(_host: &str, _path: &str, _limit: usize, _headers: &str, _redirect: bool,
+    _trusted_origin: Option<&str>, _write: impl FnMut(&[u8]) -> Result<()>) -> Result<PublicTransfer> {
+    Err("Native HTTPS transport requires Windows.".into())
 }
 #[cfg(windows)]
-pub(crate) fn fetch_with_headers(host: &str, path: &str, limit: usize, headers: &str) -> Result<Vec<u8>> {
+pub(crate) fn public_transfer(host: &str, path: &str, limit: usize, headers: &str, redirect: bool,
+    trusted_origin: Option<&str>, mut write: impl FnMut(&[u8]) -> Result<()>) -> Result<PublicTransfer> {
     use std::ffi::c_void;
     type Handle = *mut c_void;
     #[link(name = "winhttp")]
@@ -748,17 +778,18 @@ pub(crate) fn fetch_with_headers(host: &str, path: &str, limit: usize, headers: 
         }
     }
     let wide = |value: &str| value.encode_utf16().chain(Some(0)).collect::<Vec<_>>();
-    if !matches!(
+    if !(trusted_origin == Some(host) || matches!(
         host,
         "api.github.com" | "raw.githubusercontent.com" | "cdn.holodori.dev" | "us.game-hololive-dreams.com"
-    ) || !path.starts_with('/')
+        | "github.com" | "release-assets.githubusercontent.com" | "objects.githubusercontent.com"
+    )) || !path.starts_with('/')
         || path.contains('\r')
         || path.contains('\n')
     {
         return Err("Catalog URL is not allowed.".into());
     }
     let (agent, server, verb, object) = (
-        wide("HolodoriPlanner-Catalog/1"),
+        wide("HololiveDreamsPlanner/1"),
         wide(host),
         wide("GET"),
         wide(path),
@@ -822,10 +853,23 @@ pub(crate) fn fetch_with_headers(host: &str, path: &str, limit: usize, headers: 
         {
             return Err(failure());
         }
+        if redirect && matches!(status, 301 | 302 | 303 | 307 | 308) {
+            let mut location = [0u16; 4096];
+            let mut length = std::mem::size_of_val(&location) as u32;
+            if WinHttpQueryHeaders(
+                request.0, 33, std::ptr::null(), location.as_mut_ptr().cast(),
+                &mut length, std::ptr::null_mut(),
+            ) == 0 {
+                return Err("The download redirect could not be read.".into());
+            }
+            let address = String::from_utf16(&location[..length as usize / 2])
+                .map_err(|_| "The download redirect is invalid.")?;
+            return Ok(PublicTransfer::Redirect(address.trim_end_matches('\0').to_owned()));
+        }
         if status != 200 {
             return Err(format!("Public catalog request returned HTTP {status}."));
         }
-        let mut result = Vec::new();
+        let mut received = 0usize;
         let mut buffer = [0u8; 65536];
         loop {
             let mut read = 0u32;
@@ -841,12 +885,13 @@ pub(crate) fn fetch_with_headers(host: &str, path: &str, limit: usize, headers: 
             if read == 0 {
                 break;
             }
-            if result.len().saturating_add(read as usize) > limit {
+            received = received.saturating_add(read as usize);
+            if received > limit {
                 return Err("Public catalog response exceeds the supported size.".into());
             }
-            result.extend_from_slice(&buffer[..read as usize]);
+            write(&buffer[..read as usize])?;
         }
-        Ok(result)
+        Ok(PublicTransfer::Complete)
     }
 }
 

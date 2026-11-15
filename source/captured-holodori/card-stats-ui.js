@@ -1,24 +1,28 @@
 import {formatNumber,formatDateTime,numberParts} from './regional-formats.js';
 import {cardStats,statNames} from './card-stats';
 import {createCardPreview} from './card-preview';
+import {currentOwnership} from './current-account';
 
 /** Approved Seelie Fusion presentation inside the captured card Dialog. */
 export function createCardStats({h,vnode,resolve,withDirectives,vShow}){
   const Preview=createCardPreview(h);
   return {name:'CardStats',props:{cardId:String,goals:Array,account:String,active:{type:Boolean,default:true}},
-    data(){return {breakdownOpen:false};},
+    data(){return {breakdownOpen:false,ownershipError:''};},
     computed:{
+      profile(){return window.__seelieApp?.data?.[`${this.account}-holodori`];},
+      owned(){return currentOwnership(this.profile)?.has(this.cardId)??false;},
       stats(){
         const goal=this.goals?.find(value=>value.type==='character'&&value.character===this.cardId);
         const blooms=new Map((this.goals||[]).filter(value=>value.type==='character').map(value=>[value.character,value.eidolon||0]));
-        const profile=window.__seelieApp?.data?.[`${this.account}-holodori`];
-        return cardStats(this.cardId,goal?.current?.level||1,goal?.eidolon||0,profile?.gameAccountImport,blooms);
+        return cardStats(this.cardId,goal?.current?.level||1,goal?.eidolon||0,this.profile?.gameAccountImport,blooms,this.profile);
       },
     },
     render(){
       const stats=this.stats,number=value=>value==null?'—':formatNumber(value);
       if(!stats)return h('p',{class:'text-xs text-gray-400 mt-3','data-card-stats':''},'Stats are unavailable for this card.');
-      const source=stats.reason==='no-import'?'Import account data to include board bonuses.':stats.reason==='boards-unavailable'?'Board bonuses are unavailable for this import.':`Boards from last import · ${formatDateTime(stats.importedAt)}.`;
+      const source=stats.reason==='no-import'?'Record Holomem Boards in Progress to include Board bonuses.':stats.reason==='boards-unavailable'?'Board bonuses are unavailable for the current layout.':
+        this.profile?.boardEdits&&Object.keys(this.profile.boardEdits).length?'Uses your current Holomem Boards.':stats.importedAt?
+          `Boards from last import · ${formatDateTime(stats.importedAt)}.`:'Uses your current Holomem Boards.';
       const digits=value=>{
         if(value==null)return [h('span',{},'—')];
         const text=String(value),padding=Math.max(0,6-text.length);
@@ -44,9 +48,18 @@ export function createCardStats({h,vnode,resolve,withDirectives,vShow}){
           ]),
         ]),
         h('div',{class:'holo-card-stats-breakdown'},[
-          h('button',{type:'button',class:'flex w-full items-center py-2 px-3 justify-between rounded bg-gray-600/50 hover:bg-gray-600 transition-colors','aria-expanded':this.breakdownOpen,'aria-controls':breakdownId,title:source,onClick:()=>{this.breakdownOpen=!this.breakdownOpen;}},[
-            h('span',{class:'flex items-center justify-center font-semibold'},[vnode(Chevron,{class:'w-4 transition-all mr-1'+(this.breakdownOpen?' rotate-90':'')}),'Card and board breakdown']),
+          h('div',{class:'holo-card-stats-actions'},[
+            h('button',{type:'button',class:'flex w-full items-center py-2 px-3 rounded bg-gray-600/50 hover:bg-gray-600 transition-colors','aria-expanded':this.breakdownOpen,'aria-controls':breakdownId,title:source,onClick:()=>{this.breakdownOpen=!this.breakdownOpen;}},[
+              h('span',{class:'flex items-center font-semibold'},[vnode(Chevron,{class:'w-4 transition-all mr-1'+(this.breakdownOpen?' rotate-90':'')}),'Card and board breakdown']),
+            ]),
+            h('button',{type:'button','aria-pressed':this.owned,'aria-label':'Owned card',title:'Include this card in your owned roster',
+              class:'holo-card-ownership rounded bg-gray-600/50 hover:bg-gray-600 font-semibold',onClick:()=>{
+                this.ownershipError='';
+                try{window.__holodoriDesktop.setCardOwnership(this.account,this.cardId,!this.owned);}
+                catch(error){this.ownershipError=error.message;}
+              }},this.owned?'Owned':'Unowned'),
           ]),
+          this.ownershipError?h('p',{class:'text-red-400',role:'alert'},this.ownershipError):null,
           withDirectives(h('div',{id:breakdownId,class:'holo-card-stats-table bg-gray-600/20 rounded mt-2'},[
             h('table',{class:'w-full text-right',style:{fontVariantNumeric:'tabular-nums'},'aria-label':'Card and board breakdown'},[
               h('colgroup',{},[h('col',{style:{width:'40%'}}),h('col',{style:{width:'20%'}}),h('col',{style:{width:'20%'}}),h('col',{style:{width:'20%'}})]),

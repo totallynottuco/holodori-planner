@@ -300,12 +300,18 @@ export function validateGameAccountImport(input:unknown):GameAccountImportState 
   return gameAccountImportSchema.parse(input)
 }
 
-export const appProfileSchema = z.object({
-  gameAccountImport:gameAccountImportSchema.optional(),
-  savedBoards:z.record(z.string().regex(/^chr-\d+$/),z.object({
+const boardLayoutsSchema=z.record(z.string().regex(/^chr-\d+$/),z.object({
     nodes:z.array(z.string().min(1).max(100)).max(1000),
     cards:z.record(z.string().min(1).max(100),z.string().regex(/^card-[a-z\d-]+$/)),
-  })).optional(),
+}));
+export const appProfileSchema = z.object({
+  gameAccountImport:gameAccountImportSchema.optional(),
+  savedBoards:boardLayoutsSchema.optional(),
+  boardEdits:boardLayoutsSchema.optional(),
+  dreamRankManuallySet:z.boolean().optional(),
+  cardOwnership:z.record(z.string().regex(/^card-[a-z\d-]+$/),z.boolean()).optional(),
+  gachaPointEdits:z.record(z.string().regex(/^gacha_point-[a-z0-9_-]{1,100}$/),safeInteger).optional(),
+  achievementEdits:z.record(sourceId,z.object({progress:accountInt64Schema,rewardReceivedThresholds:z.array(accountInt64Schema).max(1000)})).optional(),
   gameInventory:z.record(z.string().refine(isGameInventoryId),nonNegativeInteger).optional(),
   boosts: z.object({minigame:z.object({amount:z.number().int().min(0).max(200),at:z.number().int().nonnegative()}).nullable(),live:z.object({amount:z.number().int().min(0).max(20),at:z.number().int().nonnegative()}).nullable(),holoPassport:z.boolean()}).default({minigame:null,live:null,holoPassport:false}),
   tasks: z.array(z.object({id:z.string().min(1).max(100),title:z.string().min(1).max(200),notes:z.string().max(2000),category:z.enum(['permanent','events','custom']),repeat:z.enum(['none','daily','weekly']),dueAt:z.iso.datetime().nullable(),doneAt:z.iso.datetime().nullable(),snoozedUntil:z.iso.datetime().nullable(),recurrenceDays:z.number().int().min(1).max(7).optional(),recurrenceMode:z.enum(['original','completed']).optional()})).max(1000).default([]),

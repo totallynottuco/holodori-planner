@@ -1,7 +1,8 @@
-import {formatNumber} from './regional-formats.js';
+import {formatNumber,parseNumber} from './regional-formats.js';
 import {achievementProgress,indexAchievementProgress,loadAchievementCatalog} from './achievements';
 import {createAchievementRewardFilter} from './achievement-reward-filter';
 import {accountCharactersById,memberLevelProgression} from '../hololive/vendor/shared/account-data';
+import {currentMemberRank} from './current-account';
 
 const amount = value => value == null ? '—' : formatNumber(BigInt(value));
 const art = icon => `/assets/achievements/groups/${icon}.webp`;
@@ -25,10 +26,10 @@ function memberRank(member) {
   return {rank,earned,needed};
 }
 
-function groupProgress(group,index) {
+function groupProgress(group,index,missingUnknown) {
   let done = index === null ? null : 0, total = 0, ready = 0;
   const missions = group.missions.map(mission => {
-    const {progress,tiers} = achievementProgress(mission,index);
+    const {progress,tiers} = achievementProgress(mission,index,missingUnknown);
     const received = tiers.filter(tier => tier.status === 'received').length;
     const pending = tiers.filter(tier => tier.status === 'claimable').length;
     const target = tiers.findLast(tier => tier.status === 'claimable') ??
@@ -74,21 +75,32 @@ export function createAchievements({h,vnode,resolve,Search,Toggle,Rail,Row,Overl
     props:{account:String},
     data() {
       return {catalog:null,error:false,category:0,allCategories:false,search:'',hideCompleted:false,
-        rewardSelection:[],openGroups:new Set(),openMissions:new Set()};
+        rewardSelection:[],openGroups:new Set(),openMissions:new Set(),editing:null};
     },
     computed:{
-      snapshot() {
-        return window.__seelieApp?.data?.[`${this.account || 'main'}-holodori`]?.gameAccountImport?.snapshot;
+      profile(){return window.__seelieApp?.data?.[`${this.account || 'main'}-holodori`];},
+      snapshot(){return this.profile?.gameAccountImport?.snapshot;},
+      progressIndex(){
+        const imported=indexAchievementProgress(this.snapshot?.tables.missions);
+        const edits=Object.entries(this.profile?.achievementEdits??{});
+        return edits.length?new Map([...imported??[],...edits]):imported;
+      },
+      missionIndex(){
+        return new Map((this.catalog?.categories??[]).flatMap(category=>category.groups.flatMap(group=>group.missions.map(mission=>[mission.id,mission]))));
       },
       categories() {
-        const index = indexAchievementProgress(this.snapshot?.tables.missions);
+        const index=this.progressIndex;
         return (this.catalog?.categories ?? []).map(category => {
-          const groups = category.groups.map(group => groupProgress(group,index));
+          const groups = category.groups.map(group => groupProgress(group,index,this.snapshot?.tables.missions===undefined));
           return {...category,groups,...summarize(groups)};
         });
       },
       members() {
-        return new Map(this.snapshot?.tables.members?.map(member => [member.characterId,member]));
+        const imported=new Map(this.snapshot?.tables.members?.map(member=>[member.characterId,member]));
+        return new Map((this.profile?.account.unlockedCharacterIds??[]).map(characterId=>{
+          const level=currentMemberRank(this.profile,characterId),observed=imported.get(characterId);
+          return [characterId,observed?.level===level?observed:{characterId,level}];
+        }));
       },
       selectedRewardIds() {
         const selected = new Set(this.rewardSelection);
@@ -118,6 +130,7 @@ export function createAchievements({h,vnode,resolve,Search,Toggle,Rail,Row,Overl
     },
     watch:{
       account() {
+        this.editing=null;
         this.search = '';
         this.hideCompleted = false;
         this.rewardSelection = [];
@@ -146,6 +159,19 @@ export function createAchievements({h,vnode,resolve,Search,Toggle,Rail,Row,Overl
       toggle(set,id) {
         if (set.has(id)) set.delete(id);
         else set.add(id);
+      },
+      editProgress(mission){
+        const row=this.progressIndex?.get(mission.id);
+        this.editing={id:mission.id,text:row?amount(row.progress):'0',claimed:[...row?.rewardReceivedThresholds??[]],error:''};
+      },
+      saveProgress(event){
+        event.preventDefault();
+        const edit=this.editing;
+        if(!edit)return;
+        try{
+          window.__holodoriDesktop.setAchievementProgress(this.account||'main',edit.id,parseNumber(edit.text),[...edit.claimed]);
+          this.editing=null;
+        }catch(error){edit.error=error.message;}
       },
     },
     render() {
@@ -183,6 +209,7 @@ export function createAchievements({h,vnode,resolve,Search,Toggle,Rail,Row,Overl
         const open = this.openMissions.has(mission.id);
         const bodyId = `holo-tier-${mission.id}`;
         const current = mission.target;
+        const edit=this.editing?.id===mission.id?this.editing:null;
         const display = current && mission.progress !== null && BigInt(mission.progress) > BigInt(current.target) ? current.target : mission.progress;
         const contents = h('div',{class:'holo-achievement-mission','data-achievement-mission':mission.id},[
           h('button',{type:'button',class:'holo-achievement-mission-button','aria-expanded':open,'aria-controls':bodyId,onClick:()=>this.toggle(this.openMissions,mission.id)},[
@@ -202,6 +229,18 @@ export function createAchievements({h,vnode,resolve,Search,Toggle,Rail,Row,Overl
             rewardList(tier.rewards),
             h('span',{class:tier.status === 'claimable' ? 'holo-achievement-claim' : tier.status === 'received' ? 'holo-achievement-received' : 'text-gray-400'},tierLabels[tier.status]),
           ])) : null),
+          open?edit?h('form',{class:'holo-achievement-edit',onSubmit:this.saveProgress},[
+            h('label',{},['Progress',h('input',{type:'text',inputmode:'numeric',class:'bg-gray-700 rounded',value:edit.text,
+              onInput:event=>{edit.text=event.target.value;}})]),
+            h('fieldset',{},[h('legend',{},'Rewards received'),...this.missionIndex.get(mission.id).tiers.map(tier=>h('label',{key:tier.target},[
+              h('input',{type:'checkbox',checked:edit.claimed.includes(tier.target),onChange:event=>{
+                edit.claimed=event.target.checked?[...edit.claimed,tier.target]:edit.claimed.filter(value=>value!==tier.target);
+              }}),amount(tier.target),
+            ]))]),
+            h('button',{type:'button',class:'bg-gray-700 hover:bg-gray-600 rounded',onClick:()=>{this.editing=null;}},'Cancel'),
+            h('button',{type:'submit',class:'bg-purple-700 hover:bg-purple-600 rounded'},'Save progress'),
+            edit.error?h('p',{role:'alert',class:'text-red-400'},edit.error):null,
+          ]):h('div',{class:'holo-achievement-edit'},[h('button',{type:'button',class:'bg-gray-700 hover:bg-gray-600 rounded',onClick:()=>this.editProgress(mission)},'Edit progress')]):null,
         ]);
         return vnode(Row,{key:mission.id,class:'holo-achievement-row',content:contents,complete:mission.finished});
       };
@@ -244,9 +283,7 @@ export function createAchievements({h,vnode,resolve,Search,Toggle,Rail,Row,Overl
           'The achievement catalog could not load. ',
           h('button',{type:'button',class:'rounded bg-gray-700 px-3 py-2 font-semibold hover:bg-gray-600',onClick:this.load},'Retry'),
         ] : 'Loading achievements…') : [
-          this.snapshot?.tables.missions === undefined ? h('p',{class:'text-sm text-gray-400 mt-3'},[
-            'Import game data in ',vnode(resolve('router-link'),{to:'/settings',class:'text-white underline'},()=> 'Settings'),' to see your progress.',
-          ]) : null,
+          this.progressIndex===null?h('p',{class:'text-sm text-gray-400 mt-3'},'Open an achievement to record progress, or import game data in Settings.'):null,
           h('div',{class:'holo-achievement-layout'},[
             h('nav',{class:'holo-achievement-rail','aria-label':'Achievement categories'},[
               ...(this.rewardSelection.length ? [vnode(Rail,{key:'all',isActive:this.allCategories,categoryName:'All categories',

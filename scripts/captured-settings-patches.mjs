@@ -1,7 +1,6 @@
 import {simple} from 'acorn-walk';
 
-/** Settings stays Tm/y3: source geometry, controls, dialogs and preference setters.
- * These edits only name/lock the existing profile actions and bind the draft. */
+/** Keep the captured Tm/y3 controls and dialogs while adapting their layout and state. */
 export function capturedSettingsPatches(source,ast) {
   const changes=[],bindings=new Map(),functions=new Map();
   const text=node=>source.slice(node.start,node.end);
@@ -26,14 +25,19 @@ export function capturedSettingsPatches(source,ast) {
       if(node.callee.name==='g'&&node.arguments[0]?.name==='u') {
         const visible=prop(props,'visible');
         if(visible&&['a.renameModal','a.deleteModal'].includes(text(visible.value))) {
-          insert(props.start+1,`"aria-label":${JSON.stringify(text(visible.value)==='a.renameModal'?'Rename profile':'Delete profile')},closeOnEscape:!r.profileLocked,`,'Name the original headerless profile dialog');
+          const title=text(visible.value)==='a.renameModal'?'Rename profile':'Delete profile';
+          insert(props.start+1,`header:${JSON.stringify(title)},draggable:false,closable:!r.profileLocked,style:{width:"400px",maxWidth:"calc(100vw - 24px)"},closeOnEscape:!r.profileLocked,`,'Give profile dialogs a compact header and a responsive width');
+          const showHeader=prop(props,'show-header');if(showHeader)patch(showHeader.value,'true','Show the original profile dialog header');
           const mask=prop(props,'dismissable-mask');if(mask)patch(mask.value,'!r.profileLocked','Keep profile confirmation mounted while native work completes');
-          if(node.arguments[4]?.type==='ArrayExpression')insert(node.arguments[4].start+1,'"closeOnEscape","dismissable-mask",','Track original profile dialog interaction locks');
+          if(node.arguments[4]?.type==='ArrayExpression')insert(node.arguments[4].start+1,'"closeOnEscape","dismissable-mask","closable",','Track original profile dialog interaction locks');
           if(text(visible.value)==='a.deleteModal'){
             const slot=prop(node.arguments[2],'default')?.value?.arguments?.[0]?.body;
             if(slot?.type==='ArrayExpression')insert(slot.elements[0].end,',r.profileActionError?(o(),l("p",{class:"mt-2 text-red-400 font-semibold leading-tight",role:"alert"},_(r.profileActionError),1)):C("",true)','Keep native deletion errors inside the captured confirmation');
           }
         }
+      }
+      if(node.callee.name==='i'&&node.arguments[0]?.value==='form'&&text(props).includes('r.saveName')) {
+        patch(prop(props,'class').value,'"desktop-profile-rename"','Align the original rename input and Save button');
       }
       if(node.callee.name==='i'&&node.arguments[0]?.value==='select'&&prop(props,'onChange')&&text(prop(props,'onChange').value).includes('r.setAccount')) {
         insert(props.start+1,'"aria-label":"Profile",disabled:r.profileLocked,','Name and lock the captured profile selector during a native transaction');
@@ -45,7 +49,7 @@ export function capturedSettingsPatches(source,ast) {
         const label=handler.includes('r.addAccount')?'Add profile':handler.includes('a.renameModal = !0')?'Rename profile':handler.includes('a.deleteModal = !0')?'Delete profile':null;
         const profileAction=label||handler.includes('r.download')||handler.includes('r.clickUpload')||handler.includes('e.deleteAccount')||handler.includes('a.deleteModal = !1');
         if(!profileAction)return;
-        if(label)insert(props.start+1,`"aria-label":${JSON.stringify(label)},`,'Name the original icon profile action at narrow widths');
+        if(label)insert(props.start+1,`"aria-label":${JSON.stringify(label)},title:${JSON.stringify(label)},`,'Name the original icon profile action at narrow widths');
         const disabled=prop(props,'disabled');
         if(disabled)patch(disabled.value,'(e.account==="main"||r.profileLocked)','Keep Main protected while locking native profile operations');
         else {

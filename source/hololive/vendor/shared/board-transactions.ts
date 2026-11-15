@@ -18,7 +18,7 @@ export function quoteBoardUnlock(profile: AppProfileV2, characterId: string, tar
   if (!path) return { nodeIds: [], boardPointCost: 0, problems: ['No connected path is available at this Dream Rank.'] }
   const available = boardPointsForMemberLevel(characterId, board.characterLevel) - boardPointsSpent(characterId, board.unlockedNodeIds)
   const problems = path.boardPointCost > available ? [`Need ${path.boardPointCost} Board Pt; ${available} available.`] : []
-  return { ...path, problems }
+  return { nodeIds: path.nodeIds, boardPointCost: path.boardPointCost, problems }
 }
 
 export function unlockBoardNode(profile: AppProfileV2, characterId: string, target: string): AppProfileV2 {

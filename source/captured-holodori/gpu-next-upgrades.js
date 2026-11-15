@@ -1,3 +1,6 @@
+import {boardPlanningBaseline} from './board-protection';
+import {nextAcquisitionFilter} from './acquisition-exchanges.js';
+
 const byScore=(left,right)=>right.value-left.value||
   (right.tieScore??right.score)-(left.tieScore??left.score);
 const pullKey=pulls=>pulls.map(({id,bloom})=>id+':'+bloom).sort().join('|');
@@ -46,7 +49,7 @@ export async function searchGpuNextUpgrades({data,payload,scorer,rank,plan,findO
   const {account,options,extras,boardOpt}=payload;
   const {owned,ranks}=account;
   const optionsOwned={...options,cardPool:'owned'};
-  const boardSaves=boardOpt?.ignoreExisting?{}:account.boards;
+  const boardSaves=boardPlanningBaseline(account.boards,boardOpt);
   const keepBoardBonuses=Object.keys(boardOpt?.keep?.targets??{}).length>0;
   const byId=new Map(data.cards.map(card=>[card.id,card]));
   const locked=new Set(extras.nextDeck??[]);
@@ -55,6 +58,8 @@ export async function searchGpuNextUpgrades({data,payload,scorer,rank,plan,findO
     new Set(fixed.map(card=>card.characterId)).size!==fixed.length)return {results:[],baseline:null};
   const limits=Math.min(29,Math.max(1,Math.trunc(extras.nextCount)||1));
   const cards=data.cards.filter(card=>card.maxLevel>0);
+  const allowsAcquisition=nextAcquisitionFilter(extras.nextAcquisition);
+  const upgradeCards=allowsAcquisition?cards.filter(({id})=>allowsAcquisition([{id,copies:1}])):cards;
   const entries=new Map(cards.map(card=>[card.id,{
     level:Math.min(card.maxLevel,extras.nextLevel>0?Math.max(1,Math.trunc(extras.nextLevel)):card.maxLevel),
     bloom:Math.min(card.maxBloom,Math.max(0,Math.trunc(extras.nextBloom)||0)),
@@ -159,7 +164,7 @@ export async function searchGpuNextUpgrades({data,payload,scorer,rank,plan,findO
     }
     for(const {order,pulls} of pool){
       const upgrades=new Map(pulls.map(pull=>[pull.id,pull]));
-      for(const card of cards){
+      for(const card of upgradeCards){
         const existing=owned[card.id]?.owned?owned[card.id]:null;
         const pull=upgrades.get(card.id);
         const index=order.findIndex(other=>other.id===card.id);
@@ -170,6 +175,7 @@ export async function searchGpuNextUpgrades({data,payload,scorer,rank,plan,findO
         const target=existing||pull?{level:(pull??existing).level,bloom:(pull??existing).bloom+1}:entries.get(card.id);
         const nextPull={id:card.id,new:!existing,copies:(pull?.copies??0)+1,...target};
         const nextPulls=[...pulls.filter(other=>other.id!==card.id),nextPull];
+        if(allowsAcquisition&&!allowsAcquisition(nextPulls))continue;
         if(index>=0){add(order,nextPulls);continue;}
         const member=order.findIndex(other=>other.characterId===card.characterId);
         const slots=member>=0?[member]:order.length<5?[order.length]:order.map((_,slot)=>slot);
@@ -211,9 +217,10 @@ export async function searchGpuNextUpgrades({data,payload,scorer,rank,plan,findO
         const choices=candidate.outfits=priorityOutfits(candidate,scoring);
         for(const order of rotate(candidate.order))for(const [outfitId,{characterId}] of choices)
           proposals.push({candidate,order,outfitId,characterId,
-            trial:scoring.gpuTrial(order,outfitId,characterId)});
+            trial:rank?scoring.gpuTrial(order,outfitId,characterId):scoring.score(order,outfitId,characterId)});
       }
-      const scores=await rank(payload,proposals.map(({trial})=>trial));
+      const scores=rank?await rank(payload,proposals.map(({trial})=>trial)):
+        proposals.map(({trial})=>({value:trial.value,tie:trial.tieScore??trial.score}));
       evaluated+=proposals.length;
       if(scores===null)throw Error('The GPU could not score these upgrade candidates.');
       const ranked=new Map();

@@ -1,5 +1,6 @@
 import {evaluateReferenceTeam,withReferenceChart} from './reference-rating-math';
 import {boardFrontierPaths,boardPointsAtRank} from './unit-score-board-search';
+import {boardProtection} from './board-protection';
 
 const workgroupSize=64;
 
@@ -434,10 +435,12 @@ function projectedActiveBoards(data,payload,context,cards){
   const board=new Map(context.board);
   const branches=new Set(boardOpt.branches);
   for(const owner of new Set(cards.map(card=>card.characterId))){
+    const protection=boardProtection(boardOpt,owner);
+    if(protection==='locked')continue;
     const nodes=data.boards[owner];
     const rank=boardOpt.maxBoardPoints?data.boardPointLadder.length-1:account.ranks[owner]??(boardOpt.allInvited?1:0);
     if(!rank||!nodes)continue;
-    let save=boardOpt.ignoreExisting?{nodes:[],cards:{}}:account.boards[owner]??{nodes:[],cards:{}};
+    let save=(boardOpt.ignoreExisting&&protection==='flexible'?null:account.boards[owner])??{nodes:[],cards:{}};
     const budget=boardPointsAtRank(data.boardPointLadder,rank);
     const stats={};
     const awarded=new Set(save.nodes);

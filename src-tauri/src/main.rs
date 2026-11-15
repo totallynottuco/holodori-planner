@@ -2,10 +2,13 @@
 mod store;
 mod game_import;
 mod catalog_update;
+mod exchange_catalog;
 mod catalog_preloads;
 mod optimizer_catalog;
 mod outfit_assets;
 mod reset_data;
+mod app_update;
+mod media_packs;
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
@@ -97,6 +100,7 @@ struct Bootstrap {
     animation_dir: String,
     catalog: Option<catalog_update::Bootstrap>,
     catalog_preloads: Option<catalog_preloads::Status>,
+    app_updates: bool,
 }
 #[tauri::command]
 async fn desktop_bootstrap(app: tauri::AppHandle) -> Result<Bootstrap> {
@@ -120,6 +124,7 @@ async fn desktop_bootstrap(app: tauri::AppHandle) -> Result<Bootstrap> {
                 smoke: state.smoke.as_ref().map(|_| state.stage.clone()),
                 catalog: None,
                 catalog_preloads: None,
+                app_updates: state.smoke.is_none() && app_update::supported(),
             })
         })?;
         boot.catalog = catalog_update::bootstrap(&state.root).ok();
@@ -419,6 +424,7 @@ fn main() {
     )));
     context.set_assets(Box::new(outfit_assets::OutfitAssets { embedded, directory }));
     tauri::Builder::default()
+        .manage(app_update::AppUpdater::default())
         .plugin(tauri_plugin_single_instance::init(|app, _, _| {
             if let Some(w) = app.get_webview_window("main").filter(|w| w.is_visible().unwrap_or(false)) {
                 let _ = w.unminimize();
@@ -487,6 +493,11 @@ fn main() {
             }
         })
         .invoke_handler(tauri::generate_handler![
+            app_update::desktop_app_update_check,
+            app_update::desktop_app_update_notes,
+            app_update::desktop_app_update_acknowledge,
+            app_update::desktop_app_update_download,
+            app_update::desktop_app_update_install,
             game_import::desktop_capture_game_account,
             desktop_catalog_check,
             desktop_catalog_preloads_check,
@@ -500,6 +511,12 @@ fn main() {
             optimizer_catalog::desktop_mobile_scoring_read,
             optimizer_catalog::desktop_mobile_scoring_stage,
             optimizer_catalog::desktop_mobile_scoring_commit,
+            exchange_catalog::desktop_optimizer_exchange_catalog_read,
+            exchange_catalog::desktop_optimizer_exchange_catalog_refresh,
+            media_packs::desktop_media_packs_status,
+            media_packs::desktop_media_packs_choose_folder,
+            media_packs::desktop_media_pack_install,
+            media_packs::desktop_media_pack_remove,
             desktop_catalog_asset,
             desktop_catalog_write_derived,
             desktop_catalog_commit,
