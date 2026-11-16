@@ -1,5 +1,5 @@
-import {createGpuSearchKernels,shortlistGpuTeams} from './gpu-search-kernels';
-import {boardFrontierPaths,boardPointsAtRank,boardReachability} from './unit-score-board-search';
+import {createGpuSearchKernels,eligibleGpuOutfits,shortlistGpuTeams} from './gpu-search-kernels';
+import {boardFrontierPaths,boardPointsAtRank,boardReachability,boardResetCuts} from './unit-score-board-search';
 import {createReferenceScoreContext,evaluateReferenceTeam,referenceBoardSongMatches,referenceCardStats,withReferenceChart} from './reference-rating-math';
 import {evaluateUnitScore,referenceUnitScoreInput,unitScoreContext} from './unit-score-search';
 import {createGpuObjectiveScorer,createGpuTradeScorer} from './gpu-trade-scoring';
@@ -7,13 +7,16 @@ import {refineBoardExchanges} from './gpu-board-exchanges';
 import {hasGpuBoardBonusTargets,improveGpuBoardBonuses} from './gpu-board-bonus-targets';
 import {searchGpuNextUpgrades} from './gpu-next-upgrades';
 import * as cpuBoardKernels from './cpu-board-kernels';
-import {boardPlanningBaseline,boardProtection,hasBoardProtection,preservesBoard,preservesBoardProtection} from './board-protection';
+import {boardPlanningBaseline,boardProtection,pinsBoardConnects,preservesBoard,preservesBoardProtection} from './board-protection';
+import {isTeamCardEligible} from './team-card-pool';
 
 const float=new Float32Array(1),bits=new Uint32Array(float.buffer);
 const scoreBits=value=>{float[0]=Math.max(0,value);return bits[0];};
 const cap=value=>Math.min(0xffffffff,Math.max(0,value));
 const emptyMove={path:[],points:0,materials:{}};
 const priorityWeights={paramGroup:3,param:3,activeChance:100,activeFreq:90,activeEffect:32};
+const arrangements=(fixed,remaining)=>remaining.length?remaining.flatMap((card,index)=>
+  arrangements([...fixed,card],remaining.filter((_,position)=>position!==index))):[fixed];
 const nonScoringKinds=new Set(['workReward','miniGameReward','rewardExp','rewardQty','life','leaderActiveAdd','leaderActiveLevel']);
 const keepPrefixes={workReward:'holowork',leaderActiveAdd:'holomemSkill',leaderActiveLevel:'holomemSkillUp',
   miniGameReward:'minigame'};
@@ -25,28 +28,57 @@ const protectedNode=(node,targets)=>{
     (Object.hasOwn(targets,prefix)||Object.hasOwn(targets,prefix+':'+node.variant));
 };
 
-export const createGpuTeamOptimizer=(data,objective)=>createTeamOptimizer(data,objective,false);
+export const createGpuTeamOptimizer=(data,objective,dispatcher)=>createTeamOptimizer(data,objective,false,dispatcher);
 export const createCpuBoardPlanner=(data,objective)=>createTeamOptimizer(data,objective,true);
 
-async function createTeamOptimizer(data,objective,cpu){
-  const kernels=cpu?cpuBoardKernels:await createGpuSearchKernels();
+async function createTeamOptimizer(data,objective,cpu,dispatcher){
+  const kernels=cpu?cpuBoardKernels:await createGpuSearchKernels(undefined,dispatcher);
   const scoreTradeTimelines=cpu?null:createGpuTradeScorer(kernels);
   const scoreObjectives=cpu?null:createGpuObjectiveScorer(kernels,scoreTradeTimelines);
+  const sweepCache=new Map();
+  let cachedTeams=0;
+  const lineupKernels={...kernels,async searchTeams(cards,slots,metric){
+    if(metric?.retainAll)return kernels.searchTeams(cards,slots,metric);
+    const key=JSON.stringify([cards,slots,metric]);
+    if(sweepCache.has(key)){
+      const result=sweepCache.get(key);
+      sweepCache.delete(key);
+      sweepCache.set(key,result);
+      return result;
+    }
+    const result=await kernels.searchTeams(cards,slots,metric);
+    if(result.teams.length<=12000&&!sweepCache.has(key)){
+      sweepCache.set(key,result);
+      cachedTeams+=result.teams.length;
+      while(cachedTeams>48000||sweepCache.size>32){
+        const oldest=sweepCache.keys().next().value;
+        cachedTeams-=sweepCache.get(oldest).teams.length;
+        sweepCache.delete(oldest);
+      }
+    }
+    return result;
+  }};
   const boardCache=new WeakMap();
+  const frontierCache=new WeakMap();
+  const effectsByLayout=new Map();
   const noBoardEffects=new Map();
   const statCache=new WeakMap();
-  const scoringData={...data,boardEffects(owner,save,roster,dreamRank,read){
+  const scoringData={...data,boardOwners:Object.keys(data.boards),boardEffects(owner,save,roster,dreamRank,read){
     if(!save){
       if(!noBoardEffects.has(owner))noBoardEffects.set(owner,[read('always'),read('leader'),read('song')]);
       return noBoardEffects.get(owner);
     }
     let contexts=boardCache.get(save);
-    if(!contexts){contexts={states:new Map(),byRoster:new WeakMap()};boardCache.set(save,contexts);}
+    if(!contexts){contexts={byRoster:new WeakMap()};boardCache.set(save,contexts);}
     let cached=contexts.byRoster.get(roster);
     if(cached?.owner===owner&&cached.rank===dreamRank)return cached.effects;
-    const key=JSON.stringify([owner,dreamRank,Object.values(save.cards).map(id=>roster[id]?.bloom??-1)]);
-    if(!contexts.states.has(key))contexts.states.set(key,[read('always'),read('leader'),read('song')]);
-    const effects=contexts.states.get(key);
+    const key=JSON.stringify([owner,dreamRank,save.nodes,Object.entries(save.cards)
+      .map(([socket,id])=>[socket,id,roster[id]?.owned?roster[id].bloom:-1])]);
+    let effects=effectsByLayout.get(key);
+    if(effects)effectsByLayout.delete(key);
+    else effects=[read('always'),read('leader'),read('song')];
+    effectsByLayout.set(key,effects);
+    if(effectsByLayout.size>4096)effectsByLayout.delete(effectsByLayout.keys().next().value);
     contexts.byRoster.set(roster,{owner,rank:dreamRank,effects});
     return effects;
   },cardStats(card,level,bloom){
@@ -58,23 +90,23 @@ async function createTeamOptimizer(data,objective,cpu){
   }};
   const cards=new Map(data.cards.map(card=>[card.id,card]));
   const songs=new Map(data.songs.map(song=>[song.id,song]));
+  const nodeMaps=new Map(Object.entries(data.boards).map(([owner,nodes])=>
+    [owner,new Map(nodes.map(node=>[node.id,node]))]));
+  const socketNodes=new Map(Object.entries(data.boards).map(([owner,nodes])=>[owner,nodes.filter(node=>node.socket)]));
   const unit=objective==='unitScore';
-  let examined=0,boardMoves=0,projectedBest=0,plannedBest=0,boardProjections=0,connectMatches=0,frequencyPairs=0;
-  let sameBoardTrades=0,crossBoardTrades=0,tradeCandidates=0;
+  let examined=0,boardMoves=0;
   const tradeTiming={topology:0,candidates:0,gpu:0,scoring:0,timelineGpu:0};
-  let tradeTimelines=0;
   let objectiveTrials=0;
-  const shortlistPlans=[];
   const timings={screen:0,projection:0,lite:0,full:0,seeded:0,exchangeOnly:0,
     purchases:0,connect:0,paths:0,exchanges:0,order:0};
   const referenceContexts=new WeakMap();
+  const layoutScorers=new WeakMap();
   const timelineScenarios=new WeakMap();
   const timelineOrders=new WeakMap();
   const skillCache=new Map();
   const skillIds=new WeakMap();
   let skillId=0;
   let skillHits=0,skillMisses=0;
-  let shortlistTiming={};
   const identity=value=>{
     if(!skillIds.has(value))skillIds.set(value,++skillId);
     return skillIds.get(value);
@@ -101,10 +133,14 @@ async function createTeamOptimizer(data,objective,cpu){
     return value;
   }
 
-  function scorer(payload,boards=payload.account.boards,ranks=payload.account.ranks){
+  function scorer(payload,boards=payload.account.boards,ranks=payload.account.ranks,base){
+    let cachedLayouts=layoutScorers.get(payload);
+    if(!cachedLayouts){cachedLayouts=new WeakMap();layoutScorers.set(payload,cachedLayouts);}
+    const cached=cachedLayouts.get(boards);
+    if(cached?.ranks===ranks)return cached.scorer;
     const {account,options}=payload;
     const previous=referenceContexts.get(payload);
-    const prepared=previous?.ranks===ranks?previous:undefined;
+    const prepared=base??(previous?.ranks===ranks?previous:undefined);
     const context=unit?unitScoreContext(scoringData,payload,boards,ranks,prepared):
       createReferenceScoreContext(scoringData,account.owned,boards,ranks,options,account.dreamRank,prepared);
     if(!prepared)referenceContexts.set(payload,context);
@@ -149,7 +185,9 @@ async function createTeamOptimizer(data,objective,cpu){
       const row=evaluate(context,order,outfit,leader,(skill,base)=>windows.push({...skill,base}));
       return {windows,eventBonus:row.breakdown.eventBonus,epPermil:row.epPermil};
     };
-    return {context,score,timeline,gpuTrial};
+    const result={context,score,timeline,gpuTrial};
+    cachedLayouts.set(boards,{ranks,scorer:result});
+    return result;
   }
 
   async function rankObjective(payload,trials){
@@ -192,8 +230,139 @@ async function createTeamOptimizer(data,objective,cpu){
         (b.tieScore??b.score)-(a.tieScore??a.score));
   }
 
+  async function rankFundedTeams(payload,rows,contenders,explorePairs=false,pinnedCards=[]){
+    const rotate=team=>team.map((_,i)=>[...team.slice(i),...team.slice(0,i)]);
+    const arranged=rows.flatMap((row,index)=>{
+      const team=row.order.map(id=>cards.get(id));
+      if(team.some(card=>!card))return [];
+      const context=scorer(payload,row.plan?.saves??row.boards??payload.account.boards,row.plan?.ranks);
+      return rotate(team).map(order=>({index,row,order,context}));
+    });
+    if(!arranged.length)return {neighbors:[],best:null};
+    const anchors=new Map();
+    const finalists=new Map();
+    const layouts=new Map();
+    const composition=({context,row,order})=>{
+      if(!layouts.has(context))layouts.set(context,layouts.size);
+      return layouts.get(context)+'|'+row.outfitId+'|'+order.map(card=>card.id).sort().join('|');
+    };
+    let best;
+    async function check(candidates,retainLayouts=false){
+      if(!candidates.length)return;
+      const scored=await rankObjective(payload,candidates.map(({row,order,context})=>
+        context.gpuTrial(order,row.outfitId,row.leaderChar)));
+      const ranked=scored?.map((rating,index)=>({rating,candidate:candidates[index]}))
+        .sort((a,b)=>b.rating.value-a.rating.value||b.rating.tie-a.rating.tie);
+      const shortlist=ranked?new Set(ranked.slice(0,16).map(({candidate})=>candidate)):candidates;
+      if(explorePairs&&ranked){
+        const compositions=new Set();
+        for(const {candidate} of ranked){
+          const key=composition(candidate);
+          if(compositions.has(key))continue;
+          compositions.add(key);
+          shortlist.add(candidate);
+          if(compositions.size===6)break;
+        }
+      }
+      if(retainLayouts&&ranked){
+        const seen=new Set();
+        for(const {candidate} of ranked){
+          if(seen.has(candidate.index))continue;
+          seen.add(candidate.index);
+          shortlist.add(candidate);
+        }
+      }
+      for(const candidate of shortlist){
+        const {row,order,context}=candidate;
+        const after=context.score(order,row.outfitId,row.leaderChar);
+        const scored={...candidate,after};
+        if(!best||byValue(after,best.after)>0)best=scored;
+        if(explorePairs){
+          const key=composition(candidate),previous=finalists.get(key);
+          if(!previous||byValue(after,previous.after)>0)finalists.set(key,scored);
+        }
+        const {index}=candidate;
+        if(retainLayouts&&(!anchors.has(index)||byValue(after,anchors.get(index).after)>0))
+          anchors.set(index,scored);
+        if(after.outfitId!==rows[index].outfitId||after.order.some(id=>!rows[index].order.includes(id))){
+          const key=after.outfitId+'|'+after.order.slice().sort().join('|');
+          const previous=neighbors.get(key);
+          if(!previous||byValue(after,previous.after)>0)neighbors.set(key,{index:candidate.index,after});
+        }
+      }
+      return ranked;
+    }
+    const byValue=(a,b)=>a.value-b.value||(a.tieScore??a.score)-(b.tieScore??b.score);
+    const neighbors=new Map();
+    await check(arranged,true);
+    const {options,account}=payload;
+    const pool=data.cards.filter(card=>account.owned[card.id]?.owned&&isTeamCardEligible(card,options));
+    const locked=new Set([...(options.focusCardIds??[]),...pinnedCards]);
+    // Find cards that improve a funded layout even if they screened poorly
+    // against the imported Boards. The Board assignments and cost stay fixed.
+    const topLayouts=()=>[...anchors.values()].sort((a,b)=>byValue(b.after,a.after)).slice(0,3);
+    // Recheck outfits and other complete lineups against retained layouts.
+    const outfits=eligibleGpuOutfits(data,payload);
+    const lineups=contenders.map(row=>({row,order:row.order.map(id=>cards.get(id))}));
+    await check(topLayouts().flatMap(start=>[
+      ...outfits.flatMap(([outfitId,{characterId}])=>
+        outfitId===start.row.outfitId||options.leaderNoOverlap&&start.order.some(card=>card.characterId===characterId)?[]:
+          [{...start,row:{...start.row,outfitId,leaderChar:characterId}}]),
+      ...lineups.map(candidate=>({...start,...candidate})),
+    ]),true);
+    const bases=topLayouts();
+    const swaps=bases.flatMap(starter=>starter.order.flatMap((card,slot)=>{
+      if(locked.has(card.id))return [];
+      const otherMembers=new Set(starter.order.filter((_,i)=>i!==slot).map(card=>card.characterId));
+      return pool.filter(candidate=>candidate!==card&&!otherMembers.has(candidate.characterId)&&
+        (!options.leaderNoOverlap||candidate.characterId!==starter.row.leaderChar)).map(candidate=>{
+        const order=starter.order.slice();
+        order[slot]=candidate;
+        return {...starter,order,slot};
+      });
+    }));
+    const rankedSwaps=await check(swaps);
+    await check(arrangements([],best.order).map(order=>({...best,order})));
+    if(explorePairs&&rankedSwaps?.length){
+      // A pair can meet an outfit or support threshold that neither
+      // replacement reaches alone. Score the full pair on the same Board.
+      const replacements=new Map();
+      for(const {candidate} of rankedSwaps){
+        const {index,slot,order}=candidate;
+        if(!replacements.has(index))replacements.set(index,Array.from({length:5},()=>[]));
+        const choices=replacements.get(index)[slot],card=order[slot];
+        if(choices.length<4||choices.length<7&&!choices.some(option=>option.attribute===card.attribute))
+          choices.push(card);
+      }
+      const pairs=[];
+      for(const base of bases){
+        const choices=replacements.get(base.index);
+        if(!choices)continue;
+        for(let left=0;left<5;left++)for(let right=left+1;right<5;right++){
+          for(const first of choices[left])for(const second of choices[right]){
+            if(first.characterId===second.characterId)continue;
+            const order=base.order.slice();
+            order[left]=first;
+            order[right]=second;
+            pairs.push({...base,order});
+          }
+        }
+      }
+      const incumbent=best;
+      await check(pairs);
+      if(best!==incumbent)await check(arrangements([],best.order).map(order=>({...best,order})));
+    }
+    const winner={index:best.index,after:best.after};
+    const lineup=best.after.order.slice().sort().join('|');
+    const alternate=[...finalists.values()].filter(row=>row.context!==best.context&&row.after.outfitId===best.after.outfitId&&
+      row.after.value>=best.after.value*.99&&row.after.order.slice().sort().join('|')===lineup)
+      .sort((a,b)=>byValue(b.after,a.after))[0];
+    return {best:winner,alternate:alternate&&{index:alternate.index,after:alternate.after},neighbors:[...neighbors.values()]
+      .sort((a,b)=>byValue(b.after,a.after)).slice(0,12)};
+  }
+
   const solveNext=(payload,findOwnedTeams)=>searchGpuNextUpgrades({
-    data,payload,scorer,rank:cpu?null:rankObjective,plan,findOwnedTeams,
+    data,payload,scorer,rank:cpu?null:rankObjective,plan,findOwnedTeams,refine:cpu?null:rankFundedTeams,
   });
 
   async function solve(payload){
@@ -206,13 +375,21 @@ async function createTeamOptimizer(data,objective,cpu){
     }
     const boards=boardPlanningBaseline(payload.account.boards,payload.boardOpt);
     const {context,score}=scorer(payload,boards);
+    if(payload.ratingScout){
+      const started=performance.now();
+      const {teams,examined:scoutExamined}=await shortlistGpuTeams(lineupKernels,data,payload,context,score,
+        {limit:8,width:12,rounds:1,activeProjection:false});
+      timings.screen+=performance.now()-started;
+      examined+=scoutExamined;
+      return {results:teams};
+    }
     const boardScores=[];
     if(payload.boardOpt&&(payload.options.lbCharts?.length||objective!=='holomemLb')){
       // Build legal representative Board layouts before ranking lineups.
       // These estimates guide selection. Each finalist is planned again
       // after its exact training bill and remaining reset gold are known.
       const start=performance.now();
-      const preliminary=await shortlistGpuTeams(kernels,data,payload,context,score,{limit:8,width:12,rounds:0,activeProjection:false});
+      const preliminary=await shortlistGpuTeams(lineupKernels,data,payload,context,score,{limit:8,width:12,rounds:0,activeProjection:false});
       examined+=preliminary.examined;
       const representatives=[];
       const chosenOutfits=new Set();
@@ -228,48 +405,43 @@ async function createTeamOptimizer(data,objective,cpu){
           boardOpt:{...payload.boardOpt,litePlan:true}})));
       for(const projected of projections){
         if(projected.plan?.changes.length){
-          boardProjections++;
           boardScores.push(scorer(payload,projected.plan.saves,projected.plan.ranks).score);
         }
       }
       timings.projection+=performance.now()-start;
     }
     const start=performance.now();
-    const result=await shortlistGpuTeams(kernels,data,payload,context,score,{
+    const result=await shortlistGpuTeams(lineupKernels,data,payload,context,score,{
       limit:Math.max(32,payload.options.topN*3),width:24,boardScores,rounds:boardScores.length?2:3,
     });
-    shortlistTiming=result.timing;
     timings.screen+=performance.now()-start;
     examined+=result.examined;
-    if(payload.options.lbCharts?.length)projectedBest=Math.max(projectedBest,...result.teams.map(row=>row.value));
-    // Reserve finalists for both current score and reachable Board upside.
     if(boardScores.length){
-      const byOutfit=new Map();
+      const candidates=new Map();
+      const bestOutfits=new Map();
       for(const row of result.teams){
-        const current=byOutfit.get(row.outfitId);
-        if(!current||row.potential>current.potential)byOutfit.set(row.outfitId,row);
+        const key=row.outfitId+'|'+row.order.slice().sort().join('|');
+        const potential=Math.max(row.potential,row.activePotential??0);
+        if(!candidates.has(key))candidates.set(key,{row,potential});
+        const best=bestOutfits.get(row.outfitId);
+        if(!best||potential>best.potential)bestOutfits.set(row.outfitId,{row,potential});
       }
-      const priority=[...byOutfit.values()].sort((a,b)=>b.potential-a.potential);
-      const active=result.teams.filter(row=>row.activePotential!==undefined)
-        .sort((a,b)=>b.activePotential-a.activePotential||b.activeTieScore-a.activeTieScore);
-      const ranked=[...result.teams].sort((a,b)=>b.potential-a.potential||b.value-a.value);
-      const growth=active.filter(row=>row.activePotential>=active[0].activePotential*.94)
-        .sort((a,b)=>(b.activePotential-b.value)-(a.activePotential-a.value)||
-        b.activeTieScore-a.activeTieScore);
-      const synergy=[...active].sort((a,b)=>(b.activePotential-a.activePotential)+
-        (b.activeSynergy-a.activeSynergy)/25);
-      const boardGain=active.filter(row=>row.activeBoardGain>0).sort((a,b)=>(b.activePotential-a.activePotential)+
-        (b.activeBoardGain-a.activeBoardGain)/8);
-      const seenLineups=new Set();
-      const specialists=[...boardGain.slice(0,1),...active.slice(0,1),...synergy.slice(0,1),...growth.slice(0,1)];
-      const specialistKeys=new Set(specialists.map(row=>row.order.slice().sort().join(',')));
-      const unique=[...ranked.slice(0,3),...specialists,...priority,...ranked].flatMap(row=>{
-        const key=row.order.slice().sort().join(',');
-        if(seenLineups.has(key))return [];
-        seenLineups.add(key);
-        return [specialistKeys.has(key)?{...row,activeSpecialist:true}:row];
-      });
-      return {results:unique};
+      const ranked=[...candidates.values()].sort((a,b)=>b.potential-a.potential||b.row.value-a.row.value);
+      return {results:[...new Set([...ranked.slice(0,3),...bestOutfits.values(),...ranked]
+        .map(({row})=>row))].slice(0,Math.max(32,payload.options.topN*3))};
+    }
+    if(!cpu&&!payload.boardOpt&&!payload.reviewedFinals&&result.teams.length){
+      const {best,neighbors}=await rankFundedTeams(payload,result.teams.slice(0,3),result.teams.slice(0,12),true);
+      const key=row=>row.outfitId+'|'+row.order.slice().sort().join('|');
+      const teams=new Map(result.teams.map(row=>[key(row),row]));
+      for(const proposal of [best,...neighbors]){
+        if(!proposal)continue;
+        const row=proposal.after,id=key(row),previous=teams.get(id);
+        if(!previous||row.value>previous.value||row.value===previous.value&&
+          (row.tieScore??row.score)>(previous.tieScore??previous.score))teams.set(id,row);
+      }
+      return {results:[...teams.values()].sort((a,b)=>b.value-a.value||
+        (b.tieScore??b.score)-(a.tieScore??a.score)).slice(0,result.teams.length)};
     }
     return {results:result.teams};
   }
@@ -286,27 +458,37 @@ async function createTeamOptimizer(data,objective,cpu){
   async function planBoards(payload){
     const {account,boardOpt,team,leaderChar}=payload;
     if(!boardOpt)return {plan:null};
+    const maximumOnly=!unit&&payload.options.sortBy==='max';
+    const deepen=!!payload.generalist&&!boardOpt.litePlan&&!!payload.seedBoards;
     const refineBranches=payload.seedBoards&&payload.refineBranches?.length?payload.refineBranches:null;
     let order=team.map(id=>cards.get(id));
     if(order.length!==5||!order.every(Boolean))return {plan:null};
     const ranks={...account.ranks},branches=new Set(boardOpt.branches);
     if(boardOpt.allInvited)for(const id of Object.keys(data.boards))ranks[id]??=1;
     if(boardOpt.maxBoardPoints)for(const id of Object.keys(ranks))ranks[id]=data.boardPointLadder.length-1;
-    const outfits=Object.entries(data.costumes).filter(([id,outfit])=>outfit.characterId===leaderChar&&
-      (outfit.isDefault||account.owned[outfit.cardId]?.owned||account.ownedCostumeIds?.includes(id)));
     let saves=boardPlanningBaseline(account.boards,boardOpt);
     const originalBoards=saves;
     const canReset=owner=>boardProtection(boardOpt,owner)==='flexible';
-    const pinnedSlot=(owner,socket)=>!canReset(owner)&&Object.hasOwn(originalBoards[owner]?.cards??{},socket);
+    const pinnedSlot=(owner,socket)=>pinsBoardConnects(boardOpt,owner)&&Object.hasOwn(originalBoards[owner]?.cards??{},socket);
     const allCharts=payload.targetCharts?undefined:payload.options.lbCharts;
     const baseScorer=scorer(payload,saves,ranks).score;
-    const eligibleOutfits=payload.options.leaderMode==='fixed'&&payload.outfitId?[payload.outfitId]:outfits.map(([id])=>id);
-    const bestOutfit=(score,orders=[order])=>eligibleOutfits.flatMap(id=>orders.map(lineup=>score(lineup,id,leaderChar)))
-      .sort((a,b)=>b.value-a.value||(b.tieScore??b.score)-(a.tieScore??a.score))[0];
-    const outfitId=bestOutfit(baseScorer)?.outfitId;
+    const eligibleOutfits=payload.options.leaderMode==='fixed'&&payload.outfitId?[payload.outfitId]:
+      Object.keys(data.costumes).filter(id=>{
+        const outfit=data.costumes[id];
+        return outfit.characterId===leaderChar&&(outfit.isDefault||account.owned[outfit.cardId]?.owned||account.ownedCostumeIds?.includes(id));
+      });
+    const bestOutfit=(score,orders=[order])=>{
+      let best;
+      for(const id of eligibleOutfits)for(const lineup of orders){
+        const row=score(lineup,id,leaderChar);
+        if(!best||row.value>best.value||row.value===best.value&&(row.tieScore??row.score)>(best.tieScore??best.score))
+          best=row;
+      }
+      return best;
+    };
+    let before=bestOutfit(baseScorer);
+    const outfitId=before?.outfitId;
     if(!outfitId)return {plan:null};
-    const before=baseScorer(order,outfitId,leaderChar);
-    if(!before)return {plan:null};
     if(payload.trio&&allCharts?.length>3&&before.chartScores){
       const chartScores=payload.trio==='current'&&payload.seedBoards?
         scorer(payload,payload.seedBoards,ranks).score(order,outfitId,leaderChar).chartScores:before.chartScores;
@@ -317,16 +499,6 @@ async function createTeamOptimizer(data,objective,cpu){
     const score=payload.targetCharts?scorer(payload,saves,ranks).score:baseScorer;
     let after=score(order,outfitId,leaderChar);
     const screenedOrder=order;
-    if(payload.activeSpecialist&&!boardOpt.litePlan&&!payload.seedBoards){
-      const trialOrders=[order];
-      for(let i=0;i<order.length;i++)for(let j=i+1;j<order.length;j++){
-        const swap=order.slice();
-        [swap[i],swap[j]]=[swap[j],swap[i]];
-        trialOrders.push(swap);
-      }
-      after=bestOutfit(score,trialOrders);
-      order=after.order.map(id=>cards.get(id));
-    }
     const bought={},refunded={},changes=new Map();
     const materials=Object.keys(data.boardItems);
     const owners=Object.keys(ranks).filter(id=>data.boards[id]&&boardProtection(boardOpt,id)!=='locked');
@@ -334,16 +506,15 @@ async function createTeamOptimizer(data,objective,cpu){
     const charts=(payload.options.lbCharts??[{songId:payload.options.songId}]).map(({songId})=>
       data.songs.find(song=>song.id===songId));
     const teamMembers=new Set(order.map(card=>card.characterId));
-    const blueDonorPriority=payload.activeSpecialist&&branches.has('blue');
     const canDetachInactiveSocket=(node,owner,save)=>{
-      if(!node?.socket||!node.pts||!payload.activeSpecialist||teamMembers.has(owner))return false;
-      if(!payload.rebuildBlue&&(node.x>=0||!branches.has('blue')))return false;
+      if(!node?.socket||!node.pts||!deepen||teamMembers.has(owner))return false;
+      if(pinnedSlot(owner,node.id))return false;
       const id=save.cards[node.id];
       if(!id)return true;
       const connect=data.connects[id];
       const unlocked=new Set(save.nodes);
       return !!connect&&!data.boards[owner].some(other=>unlocked.has(other.id)&&
-        (protectedNode(other,keep)||payload.rebuildBlue&&priorityFor(other,owner)>0)&&
+        (protectedNode(other,keep)||priorityFor(other,owner)>0)&&
         connect.extent.some(([x,y])=>node.x+x===other.x&&node.y+y===other.y));
     };
     const chartMatches=new WeakMap();
@@ -358,15 +529,30 @@ async function createTeamOptimizer(data,objective,cpu){
       for(const [owner,saved] of Object.entries(account.boards)){
         if(!canReset(owner))continue;
         const nodes=new Map((data.boards[owner]??[]).map(node=>[node.id,node]));
-        for(const id of saved.nodes)for(const item of nodes.get(id)?.items??[])
+        const retained=new Set(saves[owner]?.nodes);
+        for(const id of saved.nodes)if(!retained.has(id))for(const item of nodes.get(id)?.items??[])
           refunded[item.id]=(refunded[item.id]??0)+item.qty;
       }
     }
     let resetCount=0;
     const reclaimable=[];
     const staticPriorities=new WeakMap();
-    let lastSongPriority;
+    let lastSongPriority,songHeadroom;
     let songPriorities=new WeakMap();
+    function remainingSongBonuses(){
+      if(lastSongPriority!==after){
+        lastSongPriority=after;
+        songPriorities=new WeakMap();
+        const ceiling=data.boardLimits?.songBonus??Infinity;
+        const threshold=deepen&&after.chartScores?[...after.chartScores].sort((a,b)=>b-a)[2]??0:0;
+        songHeadroom=charts.map((_,index)=>{
+          if(payload.targetCharts&&!payload.targetCharts.includes(index)||
+            !payload.targetCharts&&threshold&&(after.chartScores[index]??0)*(1+ceiling/1000)<threshold)return 0;
+          return Math.max(0,ceiling-(after.songBonuses?.[index]??after.breakdown?.songBonus??0));
+        });
+      }
+      return songHeadroom;
+    }
     // Reserve refunds from connected removable branches for candidate moves.
     if(!boardOpt.ignoreExisting&&boardOpt.maxResets!==0&&!payload.seedBoards){
       const sourceSaves=saves;
@@ -403,15 +589,9 @@ async function createTeamOptimizer(data,objective,cpu){
         const removedItems={};
         for(const id of resets)for(const item of byId.get(id).items)
           removedItems[item.id]=(removedItems[item.id]??0)+item.qty;
-        const blueRefund=blueDonorPriority?resets.reduce((sum,id)=>{
-          const node=byId.get(id);
-          return node.branch==='blue'?sum+node.items.reduce((count,item)=>count+item.qty,0):sum;
-        },0):0;
-        reclaimable.push({owner,next,resets,removedItems,blueRefund});
+        reclaimable.push({owner,next,resets,removedItems});
       }
       const maxResets=boardOpt.maxResets;
-      if(blueDonorPriority&&maxResets>=0)
-        reclaimable.sort((a,b)=>b.blueRefund/b.resets.length-a.blueRefund/a.resets.length);
       for(const {owner,next,resets,removedItems} of reclaimable){
         if(maxResets>=0&&resetCount+resets.length>maxResets)continue;
         saves={...saves,[owner]:next};
@@ -423,34 +603,35 @@ async function createTeamOptimizer(data,objective,cpu){
       }
       after=bestOutfit(scorer(payload,saves,ranks).score);
     }
-    const rankedConnects=Object.keys(account.owned).filter(id=>account.owned[id].owned&&data.connects[id])
+    const pinnedCards=new Set(Object.entries(originalBoards).flatMap(([owner,board])=>
+      pinsBoardConnects(boardOpt,owner)?Object.values(board.cards):[]));
+    const rankedConnects=Object.keys(account.owned).filter(id=>account.owned[id].owned&&data.connects[id]&&
+      (!boardOpt.preserveConnects||!pinnedCards.has(id)))
       .sort((a,b)=>connectValue(b)-connectValue(a));
     const connectPatternsById=new Map(rankedConnects.map(id=>[id,JSON.stringify([data.connects[id].extent,connectPermil(id)])]));
+    function connectorEntry(id){
+      return account.owned[id]??payload.options.pinnedConnectEntries?.[id];
+    }
     function connectValue(id){
       const card=data.connects[id];
       return card.extent.length*connectPermil(id);
     }
     function connectPermil(id){
       const card=data.connects[id];
-      return card.levels[card.level2Bloom&&account.owned[id].bloom>=card.level2Bloom?1:0]?.permil??0;
+      const entry=connectorEntry(id);
+      return card.levels[card.level2Bloom&&entry?.owned&&entry.bloom>=card.level2Bloom?1:0]?.permil??0;
     }
     function priorityFor(node,owner){
       if(!node.kind)return 0;
+      if(maximumOnly&&node.kind==='activeChance')return 0;
       if(node.charTrigger==='SET_LIVE_LEADER'&&owner!==leaderChar)return 0;
       if(node.songTrigger&&!matchingCharts(node,owner).length)return 0;
       if(node.charTrigger==='WORK')return protectedNode(node,keep)?node.value:0;
       if(node.kind==='songBonus'){
         if(unit)return 0;
-        if(lastSongPriority!==after){lastSongPriority=after;songPriorities=new WeakMap();}
+        const headroom=remainingSongBonuses();
         if(songPriorities.has(node))return songPriorities.get(node);
-        const ceiling=data.boardLimits?.songBonus??Infinity;
-        const threshold=payload.activeSpecialist&&after.chartScores?[...after.chartScores].sort((a,b)=>b-a)[2]??0:0;
-        const priority=matchingCharts(node,owner).reduce((gain,index)=>{
-          if(payload.targetCharts&&!payload.targetCharts.includes(index))return gain;
-          const bonus=Math.max(0,Math.min(node.value,ceiling-(after.songBonuses?.[index]??after.breakdown?.songBonus??0)));
-          if(!payload.targetCharts&&threshold&&(after.chartScores[index]??0)*(1+ceiling/1000)<threshold)return gain;
-          return gain+bonus;
-        },0)*150;
+        const priority=matchingCharts(node,owner).reduce((gain,index)=>gain+Math.max(0,Math.min(node.value,headroom[index])),0)*150;
         songPriorities.set(node,priority);
         return priority;
       }
@@ -469,24 +650,27 @@ async function createTeamOptimizer(data,objective,cpu){
       staticPriorities.set(node,value);
       return value;
     }
+    const timingBoosts=new WeakMap();
     const affectedPriority=(node,owner,save)=>{
-      let priority=priorityFor(node,owner);
+      const priority=priorityFor(node,owner);
       if(!priority||node.kind!=='activeChance'&&node.kind!=='activeFreq')return priority;
-      const topology=data.boards[owner];
-      const base=priority;
-      for(const [id,cardId] of Object.entries(save.cards)){
-        const card=data.connects[cardId];
-        const socket=topology.find(candidate=>candidate.id===id);
-        if(socket&&card&&account.owned[cardId]?.owned&&card.extent.some(([x,y])=>socket.x+x===node.x&&socket.y+y===node.y))
-          priority=base*(1+connectPermil(cardId)/1000);
+      let boosts=timingBoosts.get(save);
+      if(!boosts){
+        boosts=new Map();
+        for(const [id,cardId] of Object.entries(save.cards)){
+          const socket=nodeMaps.get(owner).get(id);
+          if(!socket||!data.connects[cardId]||!connectorEntry(cardId)?.owned)continue;
+          const boost=1+connectPermil(cardId)/1000;
+          for(const cell of socketFootprint(socket,cardId))boosts.set(cell,boost);
+        }
+        timingBoosts.set(save,boosts);
       }
-      return priority;
+      return priority*(boosts.get(position(node.x,node.y))??1);
     };
     const frontiers=new Map();
     const budgets=new Map(owners.map(owner=>[owner,boardPointsAtRank(data.boardPointLadder,ranks[owner])]));
     const emptyBoard={nodes:[],cards:{}};
     const originalNodes=new Map(owners.map(owner=>[owner,new Set(originalBoards[owner]?.nodes??[])]));
-    const nodeMaps=new Map(owners.map(owner=>[owner,new Map(data.boards[owner].map(node=>[node.id,node]))]));
     const compare=(a,b)=>a.value-b.value||(a.tieScore??a.score)-(b.tieScore??b.score);
     const donorTopology=new WeakMap();
     const recipientBoards=new WeakMap();
@@ -500,9 +684,15 @@ async function createTeamOptimizer(data,objective,cpu){
       if(!paths.has(path))paths.set(path,next[move.owner]);
       return {...next,[move.owner]:paths.get(path)};
     }
+    const frontierScope=account.dreamRank+':'+[...branches].sort().join('|');
     const frontierFor=(owner,save)=>{
-      if(frontiers.get(owner)?.save!==save)frontiers.set(owner,{save,
-        frontier:boardFrontierPaths(data.boards[owner],save,account.dreamRank,branches,8)});
+      if(frontiers.get(owner)?.save!==save){
+        const cached=frontierCache.get(save);
+        const frontier=cached?.owner===owner&&cached.scope===frontierScope?cached.frontier:
+          boardFrontierPaths(data.boards[owner],save,account.dreamRank,branches,8);
+        frontierCache.set(save,{owner,scope:frontierScope,frontier});
+        frontiers.set(owner,{save,frontier});
+      }
       return frontiers.get(owner).frontier;
     };
     const position=(x,y)=>x+','+y;
@@ -527,8 +717,7 @@ async function createTeamOptimizer(data,objective,cpu){
       if(!minimum.size)return minimum;
       for(const [socket,cardId] of Object.entries(board.cards)){
         if(!active.has(socket)||!data.connects[cardId])continue;
-        const card=data.connects[cardId],entry=account.owned[cardId];
-        const permil=card.levels[card.level2Bloom&&entry?.owned&&entry.bloom>=card.level2Bloom?1:0]?.permil??0;
+        const permil=connectPermil(cardId);
         for(const key of socketFootprint(nodes.get(socket),cardId))if(minimum.has(key))minimum.set(key,permil);
       }
       return minimum;
@@ -631,7 +820,8 @@ async function createTeamOptimizer(data,objective,cpu){
       finally{timings.connect+=performance.now()-start;}
     }
     async function assignConnects(){
-      const slots=[],reserved=new Set();
+      const slots=[],reserved=new Set(pinnedCards);
+      if(!rankedConnects.length)return false;
       for(const [owner,board] of Object.entries(saves)){
         if(!budgets.has(owner))for(const id of Object.values(board.cards))reserved.add(id);
       }
@@ -664,19 +854,24 @@ async function createTeamOptimizer(data,objective,cpu){
       // Exact marginal weight for each distinct footprint and Bloom tier.
       // Identical effects share a score, but each physical card keeps its
       // own column so no card can be placed in two sockets.
+      const baseline=scorer(payload,saves,ranks).context;
       const weights=slots.map(({owner,socket,board,incumbent,estimate})=>{
         const cards={...board.cards};
         delete cards[socket];
         const without={...board,cards};
-        const empty=scoreValue(scorer(payload,{...saves,[owner]:without},ranks).score(order,outfit,leaderChar));
+        const empty=scoreValue(scorer(payload,{...saves,[owner]:without},ranks,baseline).score(order,outfit,leaderChar));
+        const socketNode=nodeMaps.get(owner).get(socket);
+        const active=connectField(owner,board,after).weights;
         const gains=new Map();
         return rankedConnects.map((id,index)=>{
           if(reserved.has(id))return 0;
           if(!estimate[index]&&id!==incumbent)return 0;
-          const key=connectPatternsById.get(id);
+          // Footprint cells outside the active layout cannot change the
+          // marginal effect. Reuse the exact score for equivalent coverage.
+          const key=connectPermil(id)+':'+socketFootprint(socketNode,id).filter(key=>active.has(key)).sort().join('|');
           if(!gains.has(key)){
-            const next={...board,cards:{...cards,[socket]:id}};
-            const value=scoreValue(scorer(payload,{...saves,[owner]:next},ranks).score(order,outfit,leaderChar));
+            const next={...board,cards:{...board.cards,[socket]:id}};
+            const value=scoreValue(scorer(payload,{...saves,[owner]:next},ranks,baseline).score(order,outfit,leaderChar));
             gains.set(key,Math.max(0,Math.min(9999999,Math.round(value-empty))));
           }
           return gains.get(key)+(id===incumbent?1:0);
@@ -689,7 +884,7 @@ async function createTeamOptimizer(data,objective,cpu){
       const destinations=new Map(moved.flatMap((id,index)=>id?[[id,index]]:[]));
       const columnByCard=new Map(rankedConnects.map((id,index)=>[id,index]));
       const marginal=(index,id)=>id?(weights[index][columnByCard.get(id)]??0):0;
-      const orderAware=!!(payload.options.lbCharts?.length&&(payload.seedBoards||payload.rebuildBlue));
+      const orderAware=!!payload.seedBoards;
       const orderTrials=[];
       let best={boards:saves,row:after};
       function evaluate(edits,base=best.boards){
@@ -737,7 +932,7 @@ async function createTeamOptimizer(data,objective,cpu){
         for(const {indices} of components.slice(0,24))
           evaluate(indices.map(index=>[index,moved[index]]));
       }
-      if(payload.activeSpecialist||orderAware){
+      if(orderAware){
         // Covered windows overlap, and the winning global match can hide a
         // better direct swap. Refine high-impact alternatives against the
         // actual current assignment, preserving uniqueness at both ends.
@@ -800,7 +995,6 @@ async function createTeamOptimizer(data,objective,cpu){
         if(best.boards!==saves)order=best.row.order.map(id=>cards.get(id));
       }
       if(best.boards===saves)return false;
-      connectMatches++;
       const originalSaves=saves;
       saves=best.boards;
       after=best.row;
@@ -843,6 +1037,22 @@ async function createTeamOptimizer(data,objective,cpu){
     }
     const fitsInventory=()=> (boardOpt.maxResets<0||resetCount<=boardOpt.maxResets)&&
       (boardOpt.infiniteMaterials||materials.every(id=>(bought[id]??0)<=(boardOpt.materials[id]??0)+(refunded[id]??0)));
+    const editTerms=(owner,next)=>{
+      const original=originalNodes.get(owner);
+      const current=new Set((saves[owner]??emptyBoard).nodes),future=new Set(next.nodes);
+      const delta=materials.map(()=>0);
+      let resets=0;
+      const add=(id,sign)=>{
+        if(original.has(id))resets-=sign;
+        for(const {id:item,qty} of nodeMaps.get(owner).get(id).items){
+          const idx=materials.indexOf(item);
+          if(idx>=0)delta[idx]+=sign*qty;
+        }
+      };
+      for(const id of current)if(!future.has(id))add(id,-1);
+      for(const id of future)if(!current.has(id))add(id,1);
+      return {owner,board:next,delta,resets};
+    };
     if(payload.seedBoards){
       if(!preservesBoardProtection(boardOpt,originalBoards,payload.seedBoards))return {plan:null};
       const used=new Set();
@@ -887,7 +1097,7 @@ async function createTeamOptimizer(data,objective,cpu){
       finally{timings.paths+=performance.now()-start;}
     }
     async function rebuildBranch(color){
-      const yellow=color==='yellow',red=color==='red';
+      const yellow=color==='yellow',red=color==='red',green=color==='green';
       const scoringOwners=red?[leaderChar]:yellow?owners.filter(owner=>
         data.boards[owner].some(node=>node.branch===color&&node.kind==='songBonus'&&
           matchingCharts(node,owner).some(index=>!payload.targetCharts||payload.targetCharts.includes(index)))):teamMembers;
@@ -899,7 +1109,7 @@ async function createTeamOptimizer(data,objective,cpu){
         const base=saves[owner]??emptyBoard;
         const all=data.boards[owner];
         if(!all||!budgets.has(owner))continue;
-        const targetedYellow=yellow&&refineBranches&&payload.targetCharts;
+        const targetedYellow=yellow&&(deepen||refineBranches&&payload.targetCharts);
         const matching=node=>matchingCharts(node,owner).filter(index=>!payload.targetCharts||payload.targetCharts.includes(index));
         const routes=targetedYellow?boardFrontierPaths(all,base,account.dreamRank,new Set(['yellow']),12)?.paths:undefined;
         const focusedRoute=routes&&new Set(routes.filter(move=>move.path.at(-1).kind==='songBonus'&&
@@ -923,22 +1133,24 @@ async function createTeamOptimizer(data,objective,cpu){
             .map(node=>[position(node.x,node.y),priorityFor(node,owner)]));
           for(const node of all.filter(node=>node.socket&&node.pts)){
             const id=base.cards[node.id];
-            const weight=id&&data.connects[id]&&account.owned[id]?.owned?
+            const weight=id&&data.connects[id]&&connectorEntry(id)?.owned?
               socketFootprint(node,id).reduce((sum,key)=>sum+(target.get(key)??0),0)*connectPermil(id)/1000:0;
             redWeights.set(node.id,weight);
           }
         }
-        const canDetach=(node,save)=>canDetachInactiveSocket(node,owner,save)||red&&
-          node?.socket&&node.pts&&(!save.cards[node.id]||account.owned[save.cards[node.id]]?.owned);
+        const canDetach=(node,save)=>!!node?.socket&&!pinnedSlot(owner,node.id)&&
+          (canDetachInactiveSocket(node,owner,save)||red&&node.pts&&(!save.cards[node.id]||account.owned[save.cards[node.id]]?.owned));
         const mustKeep=node=>node.branch&&!branches.has(node.branch)||protectedNode(node,keep)||
           boardOpt.maxResets===0&&originalNodes.get(owner).has(node.id);
         const variants=new Map();
-        const sizes=red?[1,.5,1.75,3]:targetedYellow?[1,.5,1.75]:[1];
-        for(const size of sizes)for(const [chance,frequency,parameters] of red?[[1,1,1],[1,1,2]]:yellow?[[1,1,1]]:[
+        const sizes=red?[1,.5,1.75,3]:targetedYellow?
+          (payload.seedBoards?[1,.5,1.75,6]:[1,.5,1.75]):green?[1,.5,1.75]:[1];
+        for(const size of sizes)for(const [chance,frequency,parameters] of red?[[1,1,1],[1,1,2]]:yellow||green?[[1,1,1]]:[
           [1.6,.1,1],[1.8,.7,.6],[1,1.6,1],[1,0,1.6],[1,1,1],[.65,.65,2],[1.3,.5,2.4],
         ]){
           let next=full;
           const bias=node=>{
+            if(green)return node.branch===color?size:1;
             if(red){
               if(node.branch!=='red')return 1;
               if(node.kind==='activeEffect')return parameters*size;
@@ -961,92 +1173,86 @@ async function createTeamOptimizer(data,objective,cpu){
               if(!variants.has(key)&&next.nodes.some(id=>!source.has(id)))variants.set(key,next);
               break;
             }
-            const cuts=[];
+            const cuts=boardResetCuts(all,next,account.dreamRank);
+            let bestCut;
             for(const id of next.nodes){
               const node=nodeMaps.get(owner).get(id);
               if(mustKeep(node)||
                 Object.hasOwn(next.cards,id)&&!canDetach(node,next))continue;
-              const trimmed={...next,nodes:next.nodes.filter(other=>other!==id)};
-              const kept=reachable(owner,trimmed);
-              if(!kept)continue;
-              const removed=next.nodes.filter(other=>!kept.active.has(other));
+              const removed=cuts?.get(id)??[];
               if(removed.some(other=>Object.hasOwn(next.cards,other)&&
                 !canDetach(nodeMaps.get(owner).get(other),next)||mustKeep(nodeMaps.get(owner).get(other))))continue;
               const removedNodes=removed.map(other=>nodeMaps.get(owner).get(other));
               const points=removedNodes.reduce((sum,node)=>sum+node.pts,0);
               if(!points)continue;
               if(red&&hasProtectedTargets&&removedNodes.some(node=>next.cards[node.id])){
+                const trimmed={...next,nodes:next.nodes.filter(other=>other!==id)};
+                const kept=reachable(owner,trimmed);
                 const cards=Object.fromEntries(Object.entries(next.cards).filter(([socket])=>kept.active.has(socket)));
                 if(!preservesCoverage(owner,base,{...trimmed,cards},connected.active,kept.active))continue;
               }
               const loss=removedNodes.reduce((sum,node)=>sum+
                 (canDetachInactiveSocket(node,owner,next)?0:value(node)),0);
-              cuts.push({loss:loss/Math.min(points,front.spent-budgets.get(owner)),kept:kept.active});
+              const perPoint=loss/Math.min(points,front.spent-budgets.get(owner));
+              if(!bestCut||perPoint<bestCut.loss)bestCut={id,loss:perPoint};
             }
-            cuts.sort((a,b)=>a.loss-b.loss);
-            if(!cuts.length)break;
-            const {kept}=cuts[0];
+            if(!bestCut)break;
+            const {active:kept}=reachable(owner,{...next,nodes:next.nodes.filter(id=>id!==bestCut.id)});
             next={nodes:next.nodes.filter(id=>kept.has(id)),
               cards:Object.fromEntries(Object.entries(next.cards).filter(([id])=>kept.has(id)))};
           }
         }
-        if(red&&refineBranches){
-          const fullScore=bestOutfit(scorer(payload,{...saves,[owner]:full},ranks).score);
-          const starting=fullScore.tieScore??fullScore.score;
+        const baseline=scorer(payload,saves,ranks).context;
+        const contextFor=board=>scorer(payload,{...saves,[owner]:board},ranks,baseline);
+        const value=row=>row.tieScore??row.value;
+        async function scoreCuts(trials,orders){
+          if(!trials.length)return;
+          const contexts=trials.map(({board})=>contextFor(board));
+          const ranked=cpu?null:await batchLayoutScores(contexts,orders);
+          if(ranked)for(const {index,tie} of ranked)trials[index].score=tie;
+          else for(const [index,context] of contexts.entries())trials[index].score=value(bestOutfit(context.score,orders));
+        }
+        if(red&&(refineBranches||payload.seedBoards&&deepen&&!payload.options.lbCharts?.length)){
+          const starting=value(bestOutfit(contextFor(full).score));
           const visited=new Set(),faces=new Map();
           let beam=[{board:full,score:starting,spent:reachable(owner,full).spent}];
           const available=exactAvailable();
-          const originals=originalNodes.get(owner);
-          const costBase=new Set(base.nodes);
-          const materialIndices=new Map(materials.map((id,index)=>[id,index]));
           const maxResets=boardOpt.maxResets<0?Infinity:boardOpt.maxResets-resetCount;
-          const weightPath=board=>{
-            const delta=materials.map(()=>0);
-            const added=new Set(board.nodes);
-            let resets=0;
-            for(const [ids,other,sign] of [[added,costBase,1],[costBase,added,-1]])for(const id of ids){
-              if(other.has(id))continue;
-              if(originals.has(id))resets-=sign;
-              for(const item of nodeMaps.get(owner).get(id).items){
-                const index=materialIndices.get(item.id);
-                if(index!==undefined)delta[index]+=item.qty*sign;
-              }
-            }
-            return {resets,short:boardOpt.infiniteMaterials?0:delta.reduce((sum,n,i)=>sum+Math.max(0,n-available[i]),0)};
-          };
           for(let depth=0;beam.length&&depth<8;depth++){
-            const next=[];
+            const next=[],trials=[];
             for(const {board,score,spent} of beam){
               const overflow=spent-budgets.get(owner);
+              const cuts=boardResetCuts(all,board,account.dreamRank);
               for(const id of board.nodes){
                 const node=nodeMaps.get(owner).get(id);
                 if(mustKeep(node)||board.cards[id]&&!canDetach(node,board))continue;
-                const trimmed={...board,nodes:board.nodes.filter(other=>other!==id)};
-                const state=reachable(owner,trimmed);
-                if(!state)continue;
-                const removed=board.nodes.filter(other=>!state.active.has(other));
+                const removed=cuts?.get(id)??[];
                 if(removed.some(other=>{
                   const node=nodeMaps.get(owner).get(other);
                   return mustKeep(node)||board.cards[other]&&!canDetach(node,board);
                 }))continue;
-                trimmed.nodes=trimmed.nodes.filter(other=>state.active.has(other));
-                trimmed.cards=Object.fromEntries(Object.entries(board.cards).filter(([socket])=>state.active.has(socket)));
+                if(!removed.length)continue;
+                const cut=new Set(removed);
+                const trimmed={nodes:board.nodes.filter(other=>!cut.has(other)),
+                  cards:Object.fromEntries(Object.entries(board.cards).filter(([socket])=>!cut.has(socket)))};
                 const key=trimmed.nodes.slice().sort().join('|');
                 if(visited.has(key))continue;
                 visited.add(key);
-                if(hasProtectedTargets&&!preservesCoverage(owner,base,trimmed,connected.active,state.active))continue;
+                if(hasProtectedTargets&&!preservesCoverage(owner,base,trimmed,connected.active,reachable(owner,trimmed).active))continue;
                 const points=spent-removed.reduce((sum,id)=>sum+nodeMaps.get(owner).get(id).pts,0);
                 if(points>=spent)continue;
-                const {resets,short}=weightPath(trimmed);
+                const {resets,delta}=editTerms(owner,trimmed);
                 if(resets>maxResets)continue;
-                const trial=bestOutfit(scorer(payload,{...saves,[owner]:trimmed},ranks).score);
-                const exact=trial.tieScore??trial.score;
-                const loss=(score-exact)/Math.min(Math.max(1,overflow),spent-points);
-                if(points<=budgets.get(owner)&&trimmed.nodes.some(id=>!source.has(id)))
-                  faces.set(key,{board:trimmed,score:exact,short});
-                if(points>budgets.get(owner)||short&&faces.size<12)next.push({board:trimmed,score:exact,spent:points,
-                  loss:loss+short,weighted:exact-13000*Math.max(0,points-budgets.get(owner))-short*150});
+                const short=boardOpt.infiniteMaterials?0:delta.reduce((sum,n,i)=>sum+Math.max(0,n-available[i]),0);
+                trials.push({board:trimmed,key,spent:points,short,parent:score,cut:Math.min(Math.max(1,overflow),spent-points)});
               }
+            }
+            await scoreCuts(trials,[order]);
+            for(const trial of trials){
+              const {board,key,spent,score,short,parent,cut}=trial;
+              if(spent<=budgets.get(owner)&&board.nodes.some(id=>!source.has(id)))faces.set(key,trial);
+              if(spent>budgets.get(owner)||short&&faces.size<12)next.push({...trial,
+                loss:(parent-score)/cut+short,weighted:score-13000*Math.max(0,spent-budgets.get(owner))-short*150});
             }
             const efficient=next.sort((a,b)=>a.loss-b.loss).slice(0,4);
             const absolute=next.sort((a,b)=>b.weighted-a.weighted).slice(0,4);
@@ -1056,7 +1262,7 @@ async function createTeamOptimizer(data,objective,cpu){
           for(const [key,{board}] of new Set([...ranked.sort((a,b)=>b[1].score-a[1].score).slice(0,6),
             ...ranked.sort((a,b)=>b[1].score-a[1].score+(a[1].short-b[1].short)*150).slice(0,6)]))variants.set(key,board);
         }
-        if(!yellow&&!red&&payload.seedBoards){
+        if(color==='blue'&&payload.seedBoards){
           // Trial cuts are scored against the actual chart timing. Keep
           // both the smallest score loss per reclaimed point and the best
           // absolute intermediate shape while trimming a complete branch.
@@ -1065,36 +1271,38 @@ async function createTeamOptimizer(data,objective,cpu){
             return Object.hasOwn(base.cards,id)||protectedNode(node,keep)||
               node.branch&&(!branches.has(node.branch)||!['blue','green'].includes(node.branch));
           }));
-          const rank=board=>bestOutfit(scorer(payload,{...saves,[owner]:board},ranks).score,
-            order===screenedOrder?[order]:[order,screenedOrder]).tieScore;
-          let beams=[{board:full,score:rank(full)}];
+          const orders=order===screenedOrder?[order]:[order,screenedOrder];
+          const rank=board=>value(bestOutfit(contextFor(board).score,orders));
+          let beams=[{board:full,score:rank(full),spent:reachable(owner,full).spent}];
           const visited=new Set();
           const finished=[];
           for(let depth=0;beams.length&&depth<14;depth++){
             const next=[];
-            for(const {board,score} of beams){
-              const spent=reachable(owner,board).spent;
+            for(const {board,score,spent} of beams){
               const overflow=spent-budgets.get(owner);
               if(overflow<=0){
                 finished.push({board,score});
                 continue;
               }
+              const cuts=boardResetCuts(all,board,account.dreamRank);
               for(const id of board.nodes){
                 if(fixed.has(id))continue;
-                const tested={...board,nodes:board.nodes.filter(other=>other!==id)};
-                const state=reachable(owner,tested);
-                if(!state||[...fixed].some(other=>!state.active.has(other)))continue;
-                tested.nodes=tested.nodes.filter(other=>state.active.has(other));
+                const removed=cuts?.get(id)??[];
+                if(!removed.length||removed.some(other=>fixed.has(other)))continue;
+                const rejected=new Set(removed);
+                const tested={...board,nodes:board.nodes.filter(other=>!rejected.has(other))};
                 const key=tested.nodes.slice().sort().join('|');
                 if(visited.has(key))continue;
                 visited.add(key);
-                const used=tested.nodes.reduce((sum,other)=>sum+nodeMaps.get(owner).get(other).pts,0);
+                const used=spent-removed.reduce((sum,other)=>sum+nodeMaps.get(owner).get(other).pts,0);
                 if(used>=spent)continue;
-                const value=rank(tested);
-                next.push({board:tested,score:value,
-                  loss:(score-value)/Math.min(overflow,spent-used),
-                  weighted:value-500*Math.max(0,used-budgets.get(owner))});
+                next.push({board:tested,spent:used,previous:score,cut:Math.min(overflow,spent-used)});
               }
+            }
+            await scoreCuts(next,orders);
+            for(const trial of next){
+              trial.loss=(trial.previous-trial.score)/trial.cut;
+              trial.weighted=trial.score-500*Math.max(0,trial.spent-budgets.get(owner));
             }
             const byLoss=next.sort((a,b)=>a.loss-b.loss).slice(0,5);
             const byScore=next.sort((a,b)=>b.weighted-a.weighted).slice(0,5);
@@ -1157,22 +1365,6 @@ async function createTeamOptimizer(data,objective,cpu){
           }
         }
       }
-      const editTerms=(owner,next)=>{
-        const original=originalNodes.get(owner);
-        const current=new Set((saves[owner]??emptyBoard).nodes),future=new Set(next.nodes);
-        const delta=materials.map(()=>0);
-        let resets=0;
-        const add=(id,sign)=>{
-          if(original.has(id))resets-=sign;
-          for(const {id:item,qty} of nodeMaps.get(owner).get(id).items){
-            const idx=materials.indexOf(item);
-            if(idx>=0)delta[idx]+=sign*qty;
-          }
-        };
-        for(const id of current)if(!future.has(id))add(id,-1);
-        for(const id of future)if(!current.has(id))add(id,1);
-        return {owner,board:next,delta,resets};
-      };
       const activeDonors=donorCuts.map(({owner,board})=>editTerms(owner,board))
         .sort((a,b)=>a.delta.reduce((sum,n)=>sum+n,0)/Math.max(1,a.resets)-
           b.delta.reduce((sum,n)=>sum+n,0)/Math.max(1,b.resets));
@@ -1220,8 +1412,16 @@ async function createTeamOptimizer(data,objective,cpu){
       const orders=order.every((card,i)=>card===alternativeOrder[i])?
         (order===screenedOrder?[order]:[order,screenedOrder]):[order,alternativeOrder,screenedOrder];
       const ranked=await rankLayouts(layouts,orders);
-      const forConnect=yellow?[...new Set([...ranked.slice(0,4),
-        ...layouts.filter(({edits})=>edits.some(edit=>edit.owner===leaderChar)).slice(0,2)])]:ranked.slice(0,4);
+      const leaderRoutes=new Map();
+      if(yellow)for(const layout of layouts){
+        const leaderEdit=layout.edits.find(edit=>edit.owner===leaderChar);
+        if(!leaderEdit)continue;
+        const key=leaderEdit.board.nodes.slice().sort().join('|');
+        if(!leaderRoutes.has(key))leaderRoutes.set(key,layout);
+      }
+      // A yellow route can be weak until its outer socket covers the new
+      // nodes. Retain distinct leader routes before choosing their Connect.
+      const forConnect=[...new Set([...ranked.slice(0,4),...leaderRoutes.values()])];
       for(const {boards,edits} of forConnect){
         for(const {owner,board} of edits){
           if(!proposals.has(owner))continue;
@@ -1243,49 +1443,99 @@ async function createTeamOptimizer(data,objective,cpu){
       order=after.order.map(id=>cards.get(id));
       return true;
     }
+    async function batchLayoutScores(contexts,orders){
+      const trials=contexts.flatMap(({gpuTrial})=>
+        eligibleOutfits.flatMap(outfit=>orders.map(lineup=>gpuTrial(lineup,outfit,leaderChar))));
+      const started=performance.now();
+      const scores=await rankObjective(payload,trials);
+      tradeTiming.timelineGpu+=performance.now()-started;
+      if(!scores?.length)return null;
+      const stride=eligibleOutfits.length*orders.length;
+      const winners=[];
+      for(let i=0;i<scores.length;i++){
+        const index=Math.floor(i/stride),row=scores[i],best=winners[index];
+        if(!best||row.value>best.value||row.value===best.value&&row.tie>best.tie)winners[index]={index,...row};
+      }
+      return winners.sort((a,b)=>b.value-a.value||b.tie-a.tie);
+    }
     async function rankLayouts(layouts,orders=[order],limit=8){
       if(layouts.length<=limit)return layouts;
-      if(cpu)return layouts.map(layout=>({layout,row:bestOutfit(scorer(payload,layout.boards,ranks).score,orders)}))
-        .sort((a,b)=>compare(b.row,a.row)).slice(0,limit).map(({layout})=>layout);
-      if(unit||payload.options.eventBonus||payload.options.eventPoints||!payload.options.lbCharts?.length){
-        const trials=layouts.flatMap(({boards},index)=>{
-          const {gpuTrial}=scorer(payload,boards,ranks);
-          return eligibleOutfits.flatMap(outfit=>orders.map(lineup=>({index,trial:gpuTrial(lineup,outfit,leaderChar)})));
-        });
-        const scores=await rankObjective(payload,trials.map(({trial})=>trial));
-        if(!scores?.length)return layouts;
-        const chosen=new Set();
-        for(const {index} of trials.map((trial,i)=>({...trial,...scores[i]}))
-          .sort((a,b)=>b.value-a.value||b.tie-a.tie)){
-          chosen.add(index);
-          if(chosen.size>=limit)break;
-        }
-        return [...chosen].map(index=>layouts[index]);
+      const baseline=scorer(payload,saves,ranks).context;
+      const contexts=layouts.map(({boards})=>scorer(payload,boards,ranks,baseline));
+      if(cpu)return contexts.map(({score},index)=>({index,row:bestOutfit(score,orders)}))
+        .sort((a,b)=>compare(b.row,a.row)).slice(0,limit).map(({index})=>layouts[index]);
+      const rows=await batchLayoutScores(contexts,orders);
+      return rows?rows.slice(0,limit).map(({index})=>layouts[index]):layouts;
+    }
+    async function mixFundedBoards(){
+      if(!payload.donorLayouts?.length)return false;
+      const stock=exactAvailable(),seen=new Set(),proposals=[];
+      for(const layout of payload.donorLayouts)for(const owner of owners){
+        const board=layout[owner],current=saves[owner]??emptyBoard;
+        if(!board||!preservesBoard(boardOpt,owner,originalBoards[owner],board))continue;
+        const key=owner+JSON.stringify([board.nodes.slice().sort(),board.cards]);
+        if(seen.has(key)||key===owner+JSON.stringify([current.nodes.slice().sort(),current.cards]))continue;
+        const reachable=boardReachability(data.boards[owner],board,account.dreamRank);
+        if(!reachable||reachable.spent>budgets.get(owner)||board.nodes.some(id=>!reachable.active.has(id)))continue;
+        seen.add(key);
+        proposals.push({...editTerms(owner,board),relevant:teamMembers.has(owner)||owner===leaderChar});
       }
-      const trials=layouts.flatMap(({boards},index)=>{
-        const {timeline}=scorer(payload,boards,ranks);
-        return eligibleOutfits.flatMap(outfit=>orders.map(lineup=>({index,windows:timeline(lineup,outfit,leaderChar)})));
-      });
-      const started=performance.now();
-      const scores=await scoreTradeTimelines(trials.map(trial=>trial.windows));
-      tradeTiming.timelineGpu+=performance.now()-started;
-      if(scores?.length){
-        tradeTimelines+=scores.length;
-        const field=payload.options.sortBy==='max'?1:0;
-        const bestByLayout=new Map();
-        for(const [index,row] of scores.entries()){
-          const {index:layout}=trials[index];
-          const scores=row.map(values=>values[field]).sort((a,b)=>b-a);
-          const value=payload.options.lbCharts?.length?scores.slice(0,3).reduce((sum,score)=>sum+Math.ceil(score/5000),0):
-            scores.reduce((sum,score)=>sum+score,0);
-          const tie=scores.slice(0,3).reduce((sum,score)=>sum+score,0);
-          const previous=bestByLayout.get(layout);
-          if(!previous||value>previous.value||value===previous.value&&tie>previous.tie)bestByLayout.set(layout,{layout,value,tie});
+      const candidates=proposals.map(edit=>({edits:[edit],delta:edit.delta,resets:edit.resets}));
+      for(const edit of proposals.filter(edit=>edit.relevant)){
+        const donors=proposals.filter(other=>other.owner!==edit.owner&&edit.delta.some((qty,i)=>qty>stock[i]&&other.delta[i]<0));
+        for(const other of donors.slice(0,16)){
+          const delta=edit.delta.map((qty,i)=>qty+other.delta[i]);
+          if(delta.every((qty,i)=>qty<=stock[i]))candidates.push({edits:[edit,other],delta,resets:edit.resets+other.resets});
         }
-        return [...bestByLayout.values()].sort((a,b)=>b.value-a.value||b.tie-a.tie).slice(0,limit)
-          .map(({layout})=>layouts[layout]);
       }
-      return layouts;
+      async function findLayouts(candidates){
+        const allowed=await kernels.checkTrades(candidates.map(({delta,resets})=>[0,0,Math.max(0,resets),1,
+          ...delta.map(n=>Math.max(0,n)),...delta.map(n=>Math.max(0,-n))]),
+          [boardOpt.maxResets<0?0xffffffff:boardOpt.maxResets-resetCount,...stock],{unlimited:boardOpt.infiniteMaterials});
+        return candidates.flatMap(({edits},index)=>allowed[index]?assemble(edits):[]);
+      }
+      function assemble(edits){
+        const boards={...saves};
+        const edited=new Set(edits.map(({owner})=>owner));
+        const assigned=new Map();
+        for(const [owner,board] of Object.entries(saves))if(!edited.has(owner)){
+          for(const [socket,id] of Object.entries(board.cards))assigned.set(id,{owner,socket});
+        }
+        for(const {owner,board} of edits){
+          const cards={...board.cards};
+          for(const [socket,id] of Object.entries(cards)){
+            const previous=assigned.get(id);
+            if(previous){
+              if(pinnedSlot(previous.owner,previous.socket)||!budgets.has(previous.owner)){delete cards[socket];continue;}
+              const other={...boards[previous.owner].cards};
+              delete other[previous.socket];
+              boards[previous.owner]={...boards[previous.owner],cards:other};
+            }
+            assigned.set(id,{owner,socket});
+          }
+          boards[owner]={...board,cards};
+        }
+        return preservesBoardProtection(boardOpt,originalBoards,boards)?[{boards,edits}]:[];
+      }
+      const ranked=await rankLayouts(await findLayouts(candidates));
+      const singles=ranked.filter(layout=>layout.edits.length===1).map(layout=>layout.edits[0]);
+      const combinations=[];
+      for(const [i,left] of singles.entries())for(const right of singles.slice(i+1)){
+        if(left.owner===right.owner)continue;
+        combinations.push({edits:[left,right],delta:left.delta.map((qty,i)=>qty+right.delta[i]),resets:left.resets+right.resets});
+      }
+      const pairs=await rankLayouts(await findLayouts(combinations));
+      let best={boards:saves,row:after};
+      for(const {boards} of [...ranked,...pairs]){
+        const row=bestOutfit(scorer(payload,boards,ranks).score);
+        if(compare(row,best.row)>0)best={boards,row};
+      }
+      if(best.boards===saves)return false;
+      for(const [owner,board] of Object.entries(best.boards))if(board!==saves[owner])recordTrade(owner,board);
+      if(!fitsInventory())throw Error('The combined Board plan exceeds the shared budget.');
+      saves=best.boards;
+      after=best.row;
+      return true;
     }
     async function rebalance(){
       let tick=performance.now();
@@ -1313,14 +1563,12 @@ async function createTeamOptimizer(data,objective,cpu){
         if(!removable){
           removable=[];
           const known=new Set();
+          const cuts=boardResetCuts(board,save,account.dreamRank);
           for(const id of save.nodes){
             const node=byId.get(id);
             if(!node?.pts||protectedNode(node,keep)||
               !canDetachInactiveSocket(node,owner,save)&&(!branches.has(node.branch)||Object.hasOwn(save.cards,id)))continue;
-            const without={...save,nodes:save.nodes.filter(other=>other!==id)};
-            const reachable=boardReachability(board,without,account.dreamRank);
-            if(!reachable)continue;
-            const removed=save.nodes.filter(other=>!reachable.active.has(other));
+            const removed=cuts?.get(id)??[];
             if(!removed.length||removed.some(other=>{
               const node=byId.get(other);
               return !canDetachInactiveSocket(node,owner,save)&&(Object.hasOwn(save.cards,other)||
@@ -1399,7 +1647,7 @@ async function createTeamOptimizer(data,objective,cpu){
       }
       const localCuts=[...localDonors.values()].flatMap(entries=>{
         entries.sort((a,b)=>a.loss-b.loss||b.donor.spent-a.donor.spent);
-        if(!payload.activeSpecialist)return entries.slice(0,7);
+        if(!deepen)return entries.slice(0,7);
         const cuts=new Set(entries.slice(0,5));
         // A cheap cut can free too few Board Points for a timing node.
         // Keep the cheapest cuts that reach a range of route lengths.
@@ -1421,14 +1669,13 @@ async function createTeamOptimizer(data,objective,cpu){
           paths.push({...move,priority:(priority-loss)/(1+move.points)});
         }
         paths.sort((a,b)=>b.priority-a.priority);
-        const timingPaths=payload.activeSpecialist?
+        const timingPaths=deepen?
           paths.filter(move=>move.path.some(node=>node.kind==='activeFreq')).slice(0,4):[];
         for(const move of new Set([...paths.slice(0,12),...timingPaths])){
           addCandidate({...move,owner:donor.owner,save:donor.next,spent:donor.spent,budget:donor.budget},
             [donor],move.priority);
         }
       }
-      tradeCandidates+=candidates.length;
       const resetsFor=({resetCost,move})=>resetCost-
         move.path.filter(node=>originalNodes.get(move.owner).has(node.id)).length;
       const packed=candidates.map(candidate=>{
@@ -1457,7 +1704,7 @@ async function createTeamOptimizer(data,objective,cpu){
           skillTargets.add(key);
           skill.push(candidate);
         }
-        if(payload.activeSpecialist&&frequency.length<12&&!frequencyTargets.has(key)&&
+        if(deepen&&frequency.length<12&&!frequencyTargets.has(key)&&
           move.path.some(node=>node.kind==='activeFreq')){
           frequencyTargets.add(key);
           frequency.push(candidate);
@@ -1469,7 +1716,7 @@ async function createTeamOptimizer(data,objective,cpu){
         else if(local)same++;
         else cross++;
         if(same>=24&&cross>=28&&buys>=16&&skill.length>=24&&
-          (!payload.activeSpecialist||frequency.length>=12))break;
+          (!deepen||frequency.length>=12))break;
       }
       const layouts=[];
       for(const {move,donors} of new Set([...selected,...skill,...frequency])){
@@ -1484,15 +1731,13 @@ async function createTeamOptimizer(data,objective,cpu){
           variants.push({...layout,boards});
       }
       let best;
-      for(const {move,donors,boards} of variants){
+      for(const {boards} of variants){
         const row=bestOutfit(scorer(payload,boards,ranks).score);
-        if(compare(row,best?.row??after)>0)best={move,donors,boards,row};
+        if(compare(row,best?.row??after)>0)best={boards,row};
       }
       tradeTiming.scoring+=performance.now()-tick;
       if(!best)return false;
-      const {move,donors:used,boards,row}=best;
-      if(used.length&&move.owner!==used[0].owner)crossBoardTrades++;
-      else if(used.length)sameBoardTrades++;
+      const {boards,row}=best;
       for(const [owner,board] of Object.entries(boards))if(board!==saves[owner])recordTrade(owner,board);
       saves=boards;
       after=row;
@@ -1503,100 +1748,147 @@ async function createTeamOptimizer(data,objective,cpu){
     }
     if(refineBranches&&!boardOpt.litePlan){
       for(const branch of refineBranches)await rebuildPaths(branch);
-    }else if(payload.rebuildBlue&&!boardOpt.litePlan&&!payload.exchangeOnly){
-      if(payload.seedBoards&&payload.targetCharts)await rebuildPaths('yellow');
-      await rebuildPaths('blue');
     }
     const buyStart=performance.now();
-    const purchaseFields=new WeakMap();
-    const socketNodes=new Map(owners.map(owner=>[owner,data.boards[owner].filter(node=>node.socket)]));
+    if(await mixFundedBoards())await matchConnects();
+    if(deepen&&payload.expandPaths){
+      // A preview leaves some of the Board open. Try whole routes before
+      // greedy buys fill it, and keep only funded, objective-improving edits.
+      for(const branch of branches)if(await rebuildPaths(branch))await matchConnects();
+    }
+    const purchaseFields=new Map();
+    const relevantCharts=new Map(owners.map(owner=>[owner,[...new Set(data.boards[owner]
+      .filter(node=>node.kind==='songBonus').flatMap(node=>matchingCharts(node,owner)))]]));
+    const moveWords=new WeakMap();
+    const unaffordable=new WeakSet();
+    let distinctConnects,connectKey;
+    async function affordable(moves,stock){
+      const pack=move=>[move.spent+move.points,move.budget,0,0,
+        ...materials.map(id=>move.materials[id]??0),scoreBits(move.priority)];
+      const limits={unlimited:boardOpt.infiniteMaterials};
+      if(cpu)return kernels.checkBoards(moves.map(pack),stock,limits);
+      const width=stock.length+3;
+      const batch=new Uint32Array(moves.length*width);
+      for(const [index,move] of moves.entries()){
+        let row=moveWords.get(move);
+        if(!row){row=Uint32Array.from(pack(move));moveWords.set(move,row);}
+        batch.set(row,index*width);
+      }
+      return kernels.checkBoardBatch(batch,stock,limits);
+    }
     for(let step=0;step<(refineBranches||payload.exchangeOnly?0:boardOpt.litePlan?18:payload.seedBoards?40:140);step++){
       const available=[0,0,...exactAvailable()];
-      const assigned=new Set(Object.values(saves).flatMap(board=>Object.values(board.cards)));
-      const connects=rankedConnects.filter(id=>!assigned.has(id));
-      const connectPatterns=new Set();
-      const distinctConnects=connects.filter(id=>{
-        const key=connectPatternsById.get(id);
-        if(connectPatterns.has(key))return false;
-        connectPatterns.add(key);return true;
-      });
-      const chartKey=JSON.stringify(payload.activeSpecialist?[after.songBonuses,after.chartScores]:after.songBonuses);
-      const connectKey=distinctConnects.join('|');
+      if(!distinctConnects){
+        const assigned=new Set(Object.values(saves).flatMap(board=>Object.values(board.cards)));
+        const patterns=new Set();
+        distinctConnects=rankedConnects.filter(id=>{
+          const key=connectPatternsById.get(id);
+          if(assigned.has(id)||patterns.has(key))return false;
+          patterns.add(key);return true;
+        });
+        connectKey=distinctConnects.join('|');
+      }
+      const headroom=remainingSongBonuses();
       const candidates=[];
+      const collect=moves=>{
+        for(const move of moves)if(!unaffordable.has(move))candidates.push(move);
+      };
       for(const owner of owners){
         const save=saves[owner]??emptyBoard;
-        const frontier=frontierFor(owner,save);
-        if(!frontier)continue;
-        const budget=budgets.get(owner);
-        const cacheable=save!==emptyBoard;
-        const cached=cacheable?purchaseFields.get(save):undefined;
-        if(cached&&cached.chartKey===chartKey&&cached.connectKey===connectKey){
-          candidates.push(...cached.moves);
-          continue;
-        }
-        const boardMoves=[];
-        const keepCoverage=protectedCoverage(owner,save,frontier.active);
-        const socketPaths=new Map(frontier.sockets.map(socket=>[socket.id,emptyMove]));
-        for(const move of frontier.paths){
-          const node=move.path.at(-1);
-          if(Object.keys(move.materials).some(id=>!materialKnown.has(id)))continue;
-          if(node.socket&&move.points<=budget-frontier.spent)socketPaths.set(node.id,move);
-          if(!node.kind||node.charTrigger==='WORK')continue;
-          const priority=move.path.reduce((total,node)=>total+priorityFor(node,owner),0)/(1+move.points);
-          if(!priority)continue;
-          boardMoves.push({...move,owner,save,budget,spent:frontier.spent,priority});
-        }
-        const affected=new Map(data.boards[owner].filter(node=>frontier.active.has(node.id))
-          .map(node=>[node.x+','+node.y,priorityFor(node,owner)]));
-        const socketsOnBoard=new Set(Object.values(save.cards));
-        for(const socket of socketNodes.get(owner).filter(node=>
-          (socketPaths.has(node.id)||frontier.active.has(node.id)))){
-          if(pinnedSlot(owner,socket.id))continue;
-          const path=socketPaths.get(socket.id)??emptyMove;
-          const active=keepCoverage.size&&!frontier.active.has(socket.id)?
-            new Set([...frontier.active,socket.id]):frontier.active;
-          const newNodes=new Map(path.path.map(node=>[node.x+','+node.y,priorityFor(node,owner)]));
-          const incumbent=save.cards[socket.id];
-          const moves=[];
-          const boost=id=>id&&data.connects[id]&&account.owned[id]?socketFootprint(socket,id).reduce((sum,key)=>
-            sum+(newNodes.get(key)??affected.get(key)??0),0)*connectPermil(id)/1000:0;
-          const current=boost(incumbent);
-          for(const cardId of distinctConnects){
-            if(socketsOnBoard.has(cardId))continue;
-            const priority=(boost(cardId)-current)/(1+path.points);
-            if(priority>0&&keepCoverage.size){
-              const next={...save,cards:{...save.cards,[socket.id]:cardId}};
-              if(!preservesCoverage(owner,save,next,frontier.active,active))continue;
-            }
-            if(priority>0)moves.push({...path,owner,save,budget,spent:frontier.spent,
-              socket:socket.id,cardId,priority});
+        const chartKey=unit?'':relevantCharts.get(owner).map(index=>headroom[index]).join('|');
+        let field=purchaseFields.get(owner);
+        if(field?.save!==save||field.chartKey!==chartKey){
+          const frontier=frontierFor(owner,save);
+          if(!frontier)continue;
+          const budget=budgets.get(owner);
+          const paths=[],sockets=[];
+          const keepCoverage=protectedCoverage(owner,save,frontier.active);
+          const socketPaths=new Map(frontier.sockets.map(socket=>[socket.id,emptyMove]));
+          for(const move of frontier.paths){
+            if(frontier.spent+move.points>budget)continue;
+            const node=move.path.at(-1);
+            if(Object.keys(move.materials).some(id=>!materialKnown.has(id)))continue;
+            if(node.socket)socketPaths.set(node.id,move);
+            if(!node.kind||node.charTrigger==='WORK')continue;
+            const priority=move.path.reduce((total,node)=>total+priorityFor(node,owner),0)/(1+move.points);
+            if(!priority)continue;
+            paths.push({...move,owner,save,budget,spent:frontier.spent,priority});
           }
-          boardMoves.push(...moves.sort((a,b)=>b.priority-a.priority).slice(0,3));
+          const affected=new Map(data.boards[owner].filter(node=>frontier.active.has(node.id))
+            .map(node=>[node.x+','+node.y,priorityFor(node,owner)]));
+          for(const socket of socketNodes.get(owner)){
+            if(pinnedSlot(owner,socket.id)||!socketPaths.has(socket.id)&&!frontier.active.has(socket.id))continue;
+            const path=socketPaths.get(socket.id)??emptyMove;
+            const active=keepCoverage.size&&!frontier.active.has(socket.id)?
+              new Set([...frontier.active,socket.id]):frontier.active;
+            const newNodes=new Map(path.path.map(node=>[node.x+','+node.y,priorityFor(node,owner)]));
+            const boost=id=>id&&data.connects[id]&&account.owned[id]?socketFootprint(socket,id).reduce((sum,key)=>
+              sum+(newNodes.get(key)??affected.get(key)??0),0)*connectPermil(id)/1000:0;
+            const current=boost(save.cards[socket.id]),priorities=new Map(),offers=new Map();
+            sockets.push({offer(cardId){
+              if(offers.has(cardId))return offers.get(cardId);
+              const pattern=connectPatternsById.get(cardId);
+              if(!priorities.has(pattern))priorities.set(pattern,(boost(cardId)-current)/(1+path.points));
+              const priority=priorities.get(pattern);
+              let move;
+              if(priority>0){
+                const legal=!keepCoverage.size||preservesCoverage(owner,save,
+                  {...save,cards:{...save.cards,[socket.id]:cardId}},frontier.active,active);
+                if(legal)move={...path,owner,save,budget,spent:frontier.spent,socket:socket.id,cardId,priority};
+              }
+              offers.set(cardId,move);
+              return move;
+            }});
+          }
+          field={save,chartKey,paths,sockets,socketsOnBoard:new Set(Object.values(save.cards))};
+          purchaseFields.set(owner,field);
         }
-        if(cacheable)purchaseFields.set(save,{chartKey,connectKey,moves:boardMoves});
-        candidates.push(...boardMoves);
+        collect(field.paths);
+        if(field.connectKey!==connectKey){
+          field.connectKey=connectKey;
+          field.connectMoves=[];
+          for(const {offer} of field.sockets){
+            const moves=[];
+            for(const cardId of distinctConnects){
+              if(field.socketsOnBoard.has(cardId))continue;
+              const move=offer(cardId);
+              if(move)moves.push(move);
+            }
+            field.connectMoves.push(...moves.sort((a,b)=>b.priority-a.priority).slice(0,3));
+          }
+        }
+        collect(field.connectMoves);
       }
       boardMoves+=candidates.length;
-      const legal=await kernels.checkBoards(candidates.map(move=>[
-        move.spent+move.points,move.budget,0,0,...materials.map(id=>move.materials[id]??0),scoreBits(move.priority),
-      ]),available,{unlimited:boardOpt.infiniteMaterials});
-      const ordered=candidates.flatMap((move,index)=>legal[index]?[{move,key:legal[index]}]:[])
-        .sort((a,b)=>b.key-a.key);
-      const seenOwners=new Set();
-      const diverse=ordered.filter(({move})=>{
-        if(seenOwners.has(move.owner))return false;
-        seenOwners.add(move.owner);
-        return true;
-      });
-      const selected=[...new Set([...ordered.filter(({move})=>!move.socket).slice(0,10),
-        ...ordered.filter(({move})=>move.socket).slice(0,8),
-        ...ordered.filter(({move})=>move.path.some(node=>node.kind==='param'&&node.targetType==='ALL')).slice(0,8),
-        ...ordered.filter(({move})=>move.path.some(node=>node.kind==='activeChance'||node.kind==='activeFreq')).slice(0,8),
-        ...(payload.activeSpecialist?ordered.filter(({move})=>move.path.some(node=>node.kind==='activeFreq')).slice(0,6):[]),
-        ...diverse.slice(0,12)])];
-      let best,neutral,blueOpening;
-      const openingKind=payload.activeSpecialist&&step<(payload.rebuildBlue?8:16)?
-        (step<8?'activeChance':'activeFreq'):null;
+      const legal=await affordable(candidates,available);
+      const allowed=[],perOwner=new Map();
+      const paths=[],sockets=[],parameters=[],skill=[],timing=[];
+      const comparePriority=(a,b)=>b.key-a.key||a.index-b.index;
+      function keep(pool,entry,limit){
+        if(pool.length===limit&&comparePriority(pool.at(-1),entry)<=0)return;
+        const at=pool.findIndex(row=>comparePriority(row,entry)>0);
+        if(at<0)pool.push(entry);
+        else pool.splice(at,0,entry);
+        if(pool.length>limit)pool.pop();
+      }
+      for(let index=0;index<candidates.length;index++){
+        const key=legal[index];
+        const move=candidates[index];
+        // Each buy can only reduce stock. Moves on an edited Board get a
+        // new frontier, while unchanged moves keep their Board Point cost.
+        if(!key){unaffordable.add(move);continue;}
+        const entry={move,key,index};
+        allowed.push(entry);
+        keep(move.socket?sockets:paths,entry,move.socket?8:10);
+        if(move.path.some(node=>node.kind==='param'&&node.targetType==='ALL'))keep(parameters,entry,8);
+        const frequency=move.path.some(node=>node.kind==='activeFreq');
+        if(frequency||move.path.some(node=>node.kind==='activeChance'))keep(skill,entry,8);
+        if(frequency&&deepen)keep(timing,entry,6);
+        if((perOwner.get(move.owner)?.key??0)<key)perOwner.set(move.owner,entry);
+      }
+      const diverse=[...perOwner.values()].sort(comparePriority).slice(0,12);
+      const selected=[...new Set([...paths,...sockets,...parameters,...skill,...timing,...diverse])];
+      let best,neutral;
       function moveLayout(move){
         const nodes=move.path.filter(node=>node.pts>0).map(node=>node.id);
         const next={nodes:[...move.save.nodes,...nodes],cards:move.socket?
@@ -1604,31 +1896,41 @@ async function createTeamOptimizer(data,objective,cpu){
         const boards={...saves,[move.owner]:next};
         return {move,nodes,boards};
       }
-      function evaluateMove({move,nodes,boards}){
-        const row=bestOutfit(scorer(payload,boards,ranks).score);
+      function evaluateMove({move,nodes,boards},scoring=scorer(payload,boards,ranks)){
+        const row=bestOutfit(scoring.score);
         const reference=best?.row??after;
         const tie=row.tieScore??row.score,referenceTie=reference.tieScore??reference.score;
-        if(row.value>reference.value||row.value===reference.value&&tie>referenceTie)
-          best={move,nodes,boards,row};
+        const improvement=row.value-after.value,current=best?.improvement??0;
+        if(improvement>current||improvement===current&&tie>referenceTie)
+          best={move,nodes,boards,row,improvement};
         else if(!neutral&&nodes.length&&row.value===after.value&&tie===(after.tieScore??after.score))
           neutral={move,nodes,boards,row};
-        if(openingKind&&move.path.some(node=>node.kind===openingKind)&&
-          compare(row,after)>0&&(!blueOpening||compare(row,blueOpening.row)>0))
-          blueOpening={move,nodes,boards,row};
       }
-      for(const {move} of selected)evaluateMove(moveLayout(move));
-      if(blueOpening)best=blueOpening;
+      async function evaluateMoves(moves){
+        const layouts=moves.map(moveLayout);
+        if(cpu||layouts.length<=8){for(const layout of layouts)evaluateMove(layout);return;}
+        const baseline=scorer(payload,saves,ranks).context;
+        const contexts=layouts.map(({boards})=>scorer(payload,boards,ranks,baseline));
+        const ranked=await batchLayoutScores(contexts,[order]);
+        if(!ranked){layouts.forEach((layout,index)=>evaluateMove(layout,contexts[index]));return;}
+        const near=(a,b)=>Math.abs(a-b)<=Math.max(8,Math.abs(b)*.00005);
+        const top=ranked[0],keep=new Set(ranked.slice(0,6).map(row=>row.index));
+        for(const row of ranked)if(near(row.tie,top.tie)&&row.value>=top.value-3||
+          near(row.tie,after.tieScore??after.value))keep.add(row.index);
+        for(const index of [...keep].sort((a,b)=>a-b))evaluateMove(layouts[index],contexts[index]);
+      }
+      await evaluateMoves(selected.map(({move})=>move));
       if(!best&&!boardOpt.litePlan){
         // A shallow ranking can be saturated by branches that have hit
         // chart or skill caps. Refine unused legal paths before stopping.
         const tested=new Set(selected);
-        const refine=ordered.filter(entry=>!tested.has(entry)&&!entry.move.socket);
-        for(const {move} of refine.slice(0,36))evaluateMove(moveLayout(move));
+        const refine=allowed.sort(comparePriority).filter(entry=>!tested.has(entry)&&!entry.move.socket);
+        await evaluateMoves(refine.slice(0,36).map(({move})=>move));
       }
       if(!best&&!boardOpt.litePlan){
         // Active Frequency changes a discrete cooldown schedule. A pair
         // can cross a timing threshold even when neither single move does.
-        const frequency=ordered.filter(({move})=>!move.socket&&move.path.some(node=>node.kind==='activeFreq')).slice(0,10);
+        const frequency=allowed.filter(({move})=>!move.socket&&move.path.some(node=>node.kind==='activeFreq')).slice(0,10);
         const compound=[];
         for(const {move:first} of frequency){
           const purchased=new Set(first.path.filter(node=>node.pts).map(node=>node.id));
@@ -1644,11 +1946,8 @@ async function createTeamOptimizer(data,objective,cpu){
             compound.push({...first,path:[...first.path,...second.path],points:first.points+second.points,materials:costs});
           }
         }
-        const legalPairs=await kernels.checkBoards(compound.map(move=>[
-          move.spent+move.points,move.budget,0,0,...materials.map(id=>move.materials[id]??0),scoreBits(move.priority),
-        ]),available,{unlimited:boardOpt.infiniteMaterials});
-        for(const [index,move] of compound.entries())if(legalPairs[index])evaluateMove(moveLayout(move));
-        if(best)frequencyPairs++;
+        const legalPairs=await affordable(compound,available);
+        await evaluateMoves(compound.filter((_,index)=>legalPairs[index]));
       }
       if(!best){
         if(neutral&&step<32)best=neutral;
@@ -1664,6 +1963,7 @@ async function createTeamOptimizer(data,objective,cpu){
       const change=changes.get(move.owner)??{owner:move.owner,buys:[],resets:[],connects:[]};
       change.buys.push(...nodes);
       if(move.socket){
+        distinctConnects=undefined;
         change.connects=change.connects.filter(connection=>connection.socket!==move.socket);
         change.connects.push({socket:move.socket,cardId:move.cardId});
       }
@@ -1741,13 +2041,21 @@ async function createTeamOptimizer(data,objective,cpu){
         }
       }
       let traded=false;
-      for(let step=0;step<(refineBranches||payload.exchangeOnly?0:payload.seedBoards?8:payload.activeSpecialist?18:12);step++){
+      for(let step=0;step<(refineBranches||payload.exchangeOnly?0:payload.seedBoards?8:12);step++){
         if(!await rebalance())break;
         traded=true;
       }
       if(traded)await matchConnects();
-      if(!refineBranches&&payload.seedBoards&&payload.rebuildBlue){
-        if(!payload.exchangeOnly){
+      if(deepen&&!payload.expandPaths){
+        if(await rebuildPaths('red'))await matchConnects();
+        if((after.breakdown.songBonus??0)<(data.boardLimits?.songBonus??Infinity)&&await rebuildPaths('yellow'))
+          await matchConnects();
+        if(payload.qualityRefine&&await rebuildPaths('green'))await matchConnects();
+        const refined=bestOutfit(scorer(payload,saves,ranks).score);
+        if(compare(refined,after)>0)after=refined;
+      }
+      if(!refineBranches&&payload.seedBoards&&deepen){
+        if(!payload.exchangeOnly&&!payload.expandPaths){
           if(await rebuildPaths('blue'))await matchConnects();
           if(payload.targetCharts&&await rebuildPaths('yellow'))await matchConnects();
         }
@@ -1771,14 +2079,17 @@ async function createTeamOptimizer(data,objective,cpu){
         }).slice(0,3);
         const baseline=saves;
         const exchangeStart=performance.now();
+        const includeSong=payload.exchangeOnly||deepen&&!payload.options.lbCharts?.length?
+          (node,owner)=>matchingCharts(node,owner).some(index=>
+            (!payload.targetCharts||payload.targetCharts.includes(index))&&
+            (after.songBonuses?.[index]??after.breakdown.songBonus)<(data.boardLimits?.songBonus??Infinity)):undefined;
         const exchange=await refineBoardExchanges({boards:saves,owners,topology:data.boards,
           allowed:branches,dreamRank:account.dreamRank,budgets,order,leader:leaderChar,
           materials,stock:exactAvailable(),maxResets:boardOpt.maxResets,resetCount,original:originalNodes,
           protectedNode:node=>protectedNode(node,keep),canReset,rankLayouts:(rows,_,limit)=>rankLayouts(rows,orders,limit),
           checkTrades:kernels.checkTrades,
-          includeSong:payload.exchangeOnly?(node,owner)=>matchingCharts(node,owner).some(index=>
-            (!payload.targetCharts||payload.targetCharts.includes(index))&&
-            (after.songBonuses[index]??0)<(data.boardLimits?.songBonus??Infinity)):undefined,
+          explore:payload.qualityRefine,
+          includeSong,rematchSockets:!!includeSong&&!hasProtectedTargets,pinnedSlot,
           score:boards=>bestOutfit(scorer(payload,boards,ranks).score,orders),infinite:boardOpt.infiniteMaterials,
         });
         timings.exchanges+=performance.now()-exchangeStart;
@@ -1809,9 +2120,7 @@ async function createTeamOptimizer(data,objective,cpu){
       }
       after=bestOutfit(scorer(payload,saves,ranks).score,rotations);
     }else{
-      const permute=(fixed,remaining)=>remaining.length?remaining.flatMap((card,index)=>
-        permute([...fixed,card],remaining.filter((_,position)=>position!==index))):[fixed];
-      after=bestOutfit(scorer(finalPayload,saves,ranks).score,permute([],order));
+      after=bestOutfit(scorer(finalPayload,saves,ranks).score,arrangements([],order));
     }
     timings.order+=performance.now()-orderStart;
     if(after.value<before.value||after.value===before.value&&
@@ -1854,27 +2163,16 @@ async function createTeamOptimizer(data,objective,cpu){
         .map(socket=>({socket,cardId:final[socket]??null}));
       if(!change.buys.length&&!change.resets.length&&!change.connects.length)changes.delete(owner);
     }
-    if(payload.options.lbCharts?.length){
-      plannedBest=Math.max(plannedBest,after.value);
-      if(!boardOpt.litePlan){
-        const boughtChance=[...changes.values()].reduce((sum,{owner,buys})=>
-          sum+buys.filter(id=>nodeMaps.get(owner).get(id)?.kind==='activeChance').length,0);
-        if(shortlistPlans.length<32)shortlistPlans.push({before:before.value,after:after.value,boughtChance,
-          specialist:!!payload.activeSpecialist,...(payload.seedBoards?{seeded:true}:{}),
-          ...(payload.targetCharts?{targetCharts:payload.targetCharts}:{}),
-          ...(payload.options.debugGpuPlans?{order:after.order}:{}),
-        });
-      }
-    }
-    if(hasBoardProtection(boardOpt)&&(!preservesBoardProtection(boardOpt,originalBoards,saves)||!fitsInventory()))
+    if(!fitsInventory()||!preservesBoardProtection(boardOpt,originalBoards,saves))
       throw Error('The Board plan violates a protection or shared inventory limit.');
+    if(after.outfitId!==outfitId)before=baseScorer(screenedOrder,after.outfitId,leaderChar);
     return {plan:{changes:[...changes.values()],bought,refunded,resetCount,saves,ranks,orderExhaustive:!boardOpt.litePlan,
       ...(rewardGains?{rewardGains}:{}),
       ignoredExisting:boardOpt.ignoreExisting,before,after,leaderChar,outfitId:after.outfitId}};
   }
 
-    return {solve,solveNext,plan,rankResults,
-    close:kernels.close,metrics:()=>({examined,boardMoves,projectedBest,plannedBest,boardProjections,
-    connectMatches,frequencyPairs,sameBoardTrades,crossBoardTrades,tradeCandidates,tradeTimelines,tradeTiming,
-    shortlistPlans,timings,shortlistTiming,kernelTiming:kernels.timings,timelineCache:{skillHits,skillMisses},objectiveTrials})};
+    return {solve,solveNext,plan,rankResults,rankFundedTeams,
+    close:kernels.close,metrics:()=>({examined,boardMoves,
+    tradeTiming,
+    timings,kernelTiming:kernels.timings,timelineCache:{skillHits,skillMisses},objectiveTrials})};
 }

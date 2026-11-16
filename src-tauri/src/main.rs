@@ -1,6 +1,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 mod store;
 mod game_import;
+mod holomem_leaderboard;
 mod catalog_update;
 mod exchange_catalog;
 mod catalog_preloads;
@@ -416,6 +417,9 @@ fn desktop_show_ready(app: tauri::AppHandle) -> Result<()> {
     Ok(())
 }
 fn main() {
+    if let Some(result) = holomem_leaderboard::collect_from_cli() {
+        std::process::exit(i32::from(result.is_err()));
+    }
     let mut context = tauri::generate_context!();
     let exe = std::env::current_exe().expect("Could not locate Hololive Dreams Planner");
     let directory = exe.parent().unwrap().join("outfits");
@@ -499,6 +503,9 @@ fn main() {
             app_update::desktop_app_update_download,
             app_update::desktop_app_update_install,
             game_import::desktop_capture_game_account,
+            holomem_leaderboard::desktop_holomem_leaderboard,
+            holomem_leaderboard::desktop_holomem_rating_standings,
+            holomem_leaderboard::desktop_refresh_holomem_rankings,
             desktop_catalog_check,
             desktop_catalog_preloads_check,
             optimizer_catalog::desktop_optimizer_catalog_read,

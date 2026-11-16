@@ -1,5 +1,4 @@
 /** GPU player for the baked Cubism deformation samples and source texture atlases. */
-import waistAnchors from './outfit-waist-anchors.json';
 
 const assets = '/assets/outfits/';
 // Lower-midriff landmarks in exported mesh units below the rig's head anchor.
@@ -65,7 +64,7 @@ void main() {
   color = vec4(rgb * a, a);
 }`;
 
-function makeRenderer(canvas, model, bitmaps, asset) {
+function makeRenderer(canvas, model, bitmaps, waistAnchor) {
   const gl = canvas.getContext('webgl2', {alpha:true, premultipliedAlpha:true, depth:false, stencil:false});
   if (!gl) throw new Error('WebGL2 unavailable');
   const dispose = [];
@@ -175,7 +174,7 @@ function makeRenderer(canvas, model, bitmaps, asset) {
           height = canvas.height = h;
           gl.viewport(0, 0, w, h);
           gl.uniform2f(uniform.resolution, w, h);
-          const scale = (1 - headMargin) / (waistAnchors[asset] ?? defaultWaist);
+          const scale = (1 - headMargin) / (waistAnchor ?? defaultWaist);
           gl.uniform2f(uniform.viewScale, 2 * h / w * scale, 2 * scale);
           gl.uniform1f(uniform.viewTop, 1 - 2 * headMargin);
           gl.activeTexture(gl.TEXTURE1);
@@ -249,7 +248,7 @@ async function loadAtlases(atlases, signal, bitmaps, directory) {
 export function createOutfitPreview(h) {
   const sessions = new WeakMap();
   return {
-    props: {asset:String,costume:String,atlases:Array,reactions:Array,updated:Boolean},
+    props: {asset:String,waistAnchor:Number,atlases:Array,reactions:Array,updated:Boolean},
     data() { return {ready:false,reacting:false}; },
     methods:{
       async react() {
@@ -298,7 +297,7 @@ export function createOutfitPreview(h) {
           if(textures.status==='rejected')throw textures.reason;
           const model=session.model=mesh.value;
           if (signal.aborted) return;
-          session.renderer = makeRenderer(canvas, model, bitmaps, this.costume??this.asset);
+          session.renderer = makeRenderer(canvas, model, bitmaps, this.waistAnchor);
           let startTime = performance.now();
           const paint = now => {
             const elapsed = Math.max(0, (now - session.started) / 1000);

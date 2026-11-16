@@ -1,6 +1,7 @@
 import {evaluateReferenceTeam,withReferenceChart} from './reference-rating-math';
 import {boardFrontierPaths,boardPointsAtRank} from './unit-score-board-search';
-import {boardProtection} from './board-protection';
+import {boardPlanningBaseline,boardProtection} from './board-protection';
+import {isTeamCardEligible} from './team-card-pool';
 
 const workgroupSize=64;
 
@@ -176,6 +177,7 @@ fn matchConnects() {
   var distance: array<i32, 769>;
   var used: array<bool, 769>;
   for (var row = 1u; row <= size.rows; row++) {
+    result[row-1u] = 0u;
     claim[0] = row;
     var column = 0u;
     for (var j = 0u; j <= size.columns; j++) {
@@ -234,7 +236,7 @@ export class OptimizerGpuError extends Error {
   constructor(message,cause){super(message,{cause});this.name='OptimizerGpuError';}
 }
 
-export async function createGpuSearchKernels(gpu=globalThis.navigator?.gpu) {
+export async function createGpuDispatcher(gpu=globalThis.navigator?.gpu) {
   let device;
   try{
     const adapter=await gpu?.requestAdapter({powerPreference:'high-performance'});
@@ -253,8 +255,9 @@ export async function createGpuSearchKernels(gpu=globalThis.navigator?.gpu) {
     if(errors.length)throw Error(errors.map(error=>error.message).join('\n'));
     return device.createComputePipelineAsync({layout:'auto',compute:{module,entryPoint}});
   };
-  let team,teamRanges,board,connect,trade;
-  const timings={teamDispatch:0,teamRead:0,teamPasses:0};
+  const available=new Map();
+  let cachedBytes=0;
+  const cacheLimit=64*1024*1024;
 
   async function dispatch(compute,inputs,words,groups){
     if(lost)throw lostError();
@@ -263,10 +266,16 @@ export async function createGpuSearchKernels(gpu=globalThis.navigator?.gpu) {
       throw Error('The GPU search batch exceeds the adapter limits.');
     const buffers=[];
     function buffer(words,usage){
-      const next=device.createBuffer({size:words*4,usage});
-      buffers.push(next);
+      const size=Math.min(device.limits.maxBufferSize,2**Math.ceil(Math.log2(words*4)));
+      const key=usage+':'+size;
+      const free=available.get(key),reused=free?.pop();
+      if(free?.length===0)available.delete(key);
+      if(reused)cachedBytes-=reused.size;
+      const next=reused??device.createBuffer({size,usage});
+      buffers.push({next,key});
       return next;
     }
+    let complete=false;
     try{
       const uploaded=inputs.map((data,index)=>{
         const usage=index===2?GPUBufferUsage.UNIFORM:GPUBufferUsage.STORAGE;
@@ -277,8 +286,10 @@ export async function createGpuSearchKernels(gpu=globalThis.navigator?.gpu) {
       const output=buffer(words,GPUBufferUsage.STORAGE|GPUBufferUsage.COPY_SRC);
       const readback=buffer(words,GPUBufferUsage.MAP_READ|GPUBufferUsage.COPY_DST);
       const bindGroup=device.createBindGroup({layout:compute.getBindGroupLayout(0),
-        entries:[...uploaded,output].map((buffer,binding)=>({binding,resource:{buffer}}))});
+        entries:[...uploaded,output].map((buffer,binding)=>({binding,resource:{buffer,
+          size:(inputs[binding]?.length??words)*4}}))});
       const encoder=device.createCommandEncoder();
+      // Each kernel writes every output word, including unassigned slots.
       const pass=encoder.beginComputePass();
       pass.setPipeline(compute);
       pass.setBindGroup(0,bindGroup);
@@ -286,16 +297,40 @@ export async function createGpuSearchKernels(gpu=globalThis.navigator?.gpu) {
       pass.end();
       encoder.copyBufferToBuffer(output,0,readback,0,words*4);
       device.queue.submit([encoder.finish()]);
-      await readback.mapAsync(GPUMapMode.READ);
-      return new Uint32Array(readback.getMappedRange()).slice();
+      await readback.mapAsync(GPUMapMode.READ,0,words*4);
+      const result=new Uint32Array(readback.getMappedRange(0,words*4)).slice();
+      readback.unmap();
+      complete=true;
+      return result;
     }catch(error){
       if(lost)throw lostError(error);
       throw error;
     }finally{
-      for(const buffer of buffers)buffer.destroy();
+      for(const {next,key} of buffers){
+        if(complete&&!lost&&cachedBytes+next.size<=cacheLimit){
+          if(!available.has(key))available.set(key,[]);
+          available.get(key).push(next);
+          cachedBytes+=next.size;
+        }else next.destroy();
+      }
     }
   }
+  return {pipeline,dispatch,close(){device.destroy();}};
+}
 
+export async function createGpuSearchKernels(gpu,dispatcher) {
+  const {pipeline,dispatch,close}=dispatcher??await createGpuDispatcher(gpu);
+  let team,teamRanges,board,connect,trade;
+  const timings={teamDispatch:0,teamRead:0,teamPasses:0};
+  async function checkBoardBatch(moves,available,{unlimited=false}={}){
+    const width=available.length+3,count=moves.length/width;
+    if(!count)return new Uint32Array();
+    if(available.length<2||!available.every(uint)||!uint(count))
+      throw Error('The Board search inputs exceed the GPU kernel range.');
+    board??=pipeline(boardShader,'checkBoards');
+    return dispatch(await board,[moves,available,[count,available.length-2,Number(unlimited),0]],
+      count,[Math.ceil(count/workgroupSize)]);
+  }
   return {
     timings,
     pipeline,dispatch,
@@ -377,13 +412,11 @@ export async function createGpuSearchKernels(gpu=globalThis.navigator?.gpu) {
     },
     async checkBoards(moves,available,{unlimited=false}={}){
       if(!moves.length)return new Uint32Array();
-      if(available.length<2||!available.every(uint)||
-        moves.some(move=>move.length!==available.length+3||!move.every(uint)))
+      if(moves.some(move=>move.length!==available.length+3||!move.every(uint)))
         throw Error('The Board search inputs exceed the GPU kernel range.');
-      board??=pipeline(boardShader,'checkBoards');
-      return dispatch(await board,[moves.flat(),available,[moves.length,available.length-2,Number(unlimited),0]],
-        moves.length,[Math.ceil(moves.length/workgroupSize)]);
+      return checkBoardBatch(Uint32Array.from(moves.flat()),available,{unlimited});
     },
+    checkBoardBatch,
     async matchConnects(weights,reserved){
       const rows=weights.length,cards=reserved.length;
       if(!rows||!cards)return new Uint32Array(rows);
@@ -408,7 +441,7 @@ export async function createGpuSearchKernels(gpu=globalThis.navigator?.gpu) {
       }
       return result;
     },
-    close(){device.destroy();},
+    close,
   };
 }
 
@@ -429,10 +462,19 @@ function fitsOutfit(outfit,lineup){
   });
 }
 
+export function eligibleGpuOutfits(data,{account,options},leader=options.leaderChar){
+  return Object.entries(data.costumes).filter(([id,outfit])=>
+    (!leader||outfit.characterId===leader)&&
+    (!options.leaderInvitedOnly||options.leaderAllHolomems||Object.hasOwn(account.ranks,outfit.characterId))&&
+    (options.leaderMode==='fixed'?id===options.outfitId:
+      options.leaderMode==='holomem'?(options.focusCardIds??[]).includes(outfit.cardId):
+      outfit.isDefault||account.owned[outfit.cardId]?.owned||account.ownedCostumeIds?.includes(id)));
+}
 function projectedActiveBoards(data,payload,context,cards){
   const {account,boardOpt}=payload;
   if(!boardOpt?.branches?.includes('blue'))return null;
   const board=new Map(context.board);
+  const startingBoards=boardPlanningBaseline(account.boards,boardOpt);
   const branches=new Set(boardOpt.branches);
   for(const owner of new Set(cards.map(card=>card.characterId))){
     const protection=boardProtection(boardOpt,owner);
@@ -440,7 +482,7 @@ function projectedActiveBoards(data,payload,context,cards){
     const nodes=data.boards[owner];
     const rank=boardOpt.maxBoardPoints?data.boardPointLadder.length-1:account.ranks[owner]??(boardOpt.allInvited?1:0);
     if(!rank||!nodes)continue;
-    let save=(boardOpt.ignoreExisting&&protection==='flexible'?null:account.boards[owner])??{nodes:[],cards:{}};
+    let save=startingBoards[owner]??{nodes:[],cards:{}};
     const budget=boardPointsAtRank(data.boardPointLadder,rank);
     const stats={};
     const awarded=new Set(save.nodes);
@@ -487,7 +529,7 @@ export async function shortlistGpuTeams(kernels,data,payload,context,score,{limi
   const timing={sweep:0,initialScore:0,swapScore:0,activeScore:0};
   let started=performance.now();
   const {account,options}=payload;
-  const cards=data.cards.filter(card=>account.owned[card.id]?.owned);
+  const cards=data.cards.filter(card=>account.owned[card.id]?.owned&&isTeamCardEligible(card,options));
   const members=new Map(),attributes=new Map();
   const index=(map,value)=>{
     if(value==null)return 0;
@@ -510,12 +552,7 @@ export async function shortlistGpuTeams(kernels,data,payload,context,score,{limi
   const locked=(options.focusCardIds??[]).map(id=>byId.get(id));
   if(locked.length>5||locked.some(id=>id==null)||new Set(locked.map(id=>stats[id][0])).size!==locked.length)
     return {examined:0,teams:[]};
-  const eligibleOutfits=Object.entries(data.costumes).filter(([id,outfit])=>
-    (!options.leaderChar||outfit.characterId===options.leaderChar)&&
-    (!options.leaderInvitedOnly||options.leaderAllHolomems||Object.hasOwn(account.ranks,outfit.characterId))&&
-    (options.leaderMode==='fixed'?id===options.outfitId:
-      options.leaderMode==='holomem'?(options.focusCardIds??[]).includes(outfit.cardId):
-      outfit.isDefault||account.owned[outfit.cardId]?.owned||account.ownedCostumeIds?.includes(id)));
+  const eligibleOutfits=eligibleGpuOutfits(data,payload);
   if(!eligibleOutfits.length)return {examined:0,teams:[]};
   const broadOutfits=!options.leaderChar&&eligibleOutfits.length>12;
   function screenOutfits(){
@@ -615,7 +652,7 @@ export async function shortlistGpuTeams(kernels,data,payload,context,score,{limi
     const result={...row,potential};
     evaluated.set(key,result);
     const best=bestByOutfit.get(outfitId);
-    if(!best||compare(result,best)<0)bestByOutfit.set(outfitId,result);
+    if((!best||compare(result,best)<0)&&fitsOutfit(data.costumes[outfitId],lineup))bestByOutfit.set(outfitId,result);
     return result;
   }
   function evaluateActive(key,lineup,outfitId,leader,team){
@@ -680,25 +717,38 @@ export async function shortlistGpuTeams(kernels,data,payload,context,score,{limi
     for(const row of result.teams)skillOrders.set(row.order.slice().sort((a,b)=>a-b).join(','),
       {order:row.lastOrder??row.order,power:row.power});
     outfitOrders.set('skill',skillOrders);
-    if(boardScores.length){
+    if(boardScores.length||payload.boardOpt&&!payload.ratingScout){
       // Explore lineups without requiring each skill to look strong in
       // isolation. Attribute- and generation-gated skills need partners.
       const groups=new Map();
+      const outfitPerformance=new Map();
+      for(const [,outfit] of outfits){
+        const performance=Math.max(0,...outfit.effects.filter(effect=>effect.type==='PERFORMANCE_UP_PERMIL_UP')
+          .map(effect=>Math.min(500,Math.round(effect.permil/10))));
+        for(const trigger of outfit.triggers??[]){
+          const key=trigger.type==='DECK_CARD_ATTRIBUTE'?'attribute:'+trigger.attr:
+            trigger.type==='DECK_CARD_CHARACTER_GROUPING'?'group:'+trigger.grouping:null;
+          if(key)outfitPerformance.set(key,Math.max(performance,outfitPerformance.get(key)??0));
+        }
+      }
       for(const [i,card] of cards.entries()){
         for(const key of ['attribute:'+card.attribute,...card.groupingIds.map(id=>'group:'+id)]){
+          if(!boardScores.length&&!outfitPerformance.has(key))continue;
           const ids=groups.get(key)??[];
           ids.push(i);
           groups.set(key,ids);
         }
       }
-      const core=pool.slice(0,12);
       for(const [key,ids] of groups){
+        const performance=outfitPerformance.get(key)??0;
+        const strength=id=>weighted[id][1]+weighted[id][3]*performance/100;
+        const core=performance?pool.slice().sort((a,b)=>strength(b)-strength(a)).slice(0,16):pool.slice(0,12);
         const partners=ids.filter(id=>!locked.some(fixed=>stats[id][0]===stats[fixed][0]))
-          .sort((a,b)=>weighted[b][1]-weighted[a][1]).slice(0,10);
+          .sort((a,b)=>strength(b)-strength(a)).slice(0,10);
         if(new Set(partners.map(id=>stats[id][0])).size<2||locked.length>3)continue;
         const slots=Array.from({length:5},(_,slot)=>locked[slot]===undefined?
           (slot-locked.length<2?partners:core):[locked[slot]]);
-        const result=await kernels.searchTeams(weighted,slots,{deduplicate:true});
+        const result=await kernels.searchTeams(weighted,slots,{deduplicate:true,performance});
         examined+=result.examined;
         const compositions=new Map();
         for(const row of result.teams)compositions.set(row.order.slice().sort((a,b)=>a-b).join(','),
@@ -712,10 +762,23 @@ export async function shortlistGpuTeams(kernels,data,payload,context,score,{limi
   const selectedOrders=new Map();
   for(const {order} of [...orders.values()].sort((a,b)=>b.power-a.power).slice(0,limit*12))
     selectedOrders.set(order.slice().sort((a,b)=>a-b).join(','),order);
-  for(const [lens,candidates] of outfitOrders)
-    for(const {order} of [...candidates.values()].sort((a,b)=>b.power-a.power)
-      .slice(0,lens.startsWith('attribute:')||lens.startsWith('group:')?16:limit*4))
+  for(const [lens,candidates] of outfitOrders){
+    const gated=lens.startsWith('attribute:')||lens.startsWith('group:');
+    const ordered=[...candidates.values()].sort((a,b)=>b.power-a.power);
+    const keep=ordered.slice(0,gated?24:limit*4);
+    if(lens.startsWith('group:')&&!merged){
+      const pair=({order})=>order.slice(0,2).map(id=>stats[id][0]).sort((a,b)=>a-b).join('|');
+      const seen=new Set(keep.map(pair));
+      for(const entry of ordered){
+        const key=pair(entry);
+        if(seen.has(key))continue;
+        keep.push(entry);seen.add(key);
+        if(keep.length>=36)break;
+      }
+    }
+    for(const {order} of keep)
       selectedOrders.set(order.slice().sort((a,b)=>a-b).join(','),order);
+  }
   for(const order of selectedOrders.values()){
     const lineup=order.map(id=>cards[id]);
     const key=order.slice().sort((a,b)=>a-b).join(',');
@@ -733,7 +796,12 @@ export async function shortlistGpuTeams(kernels,data,payload,context,score,{limi
   for(let round=0;round<rounds;round++){
     const ranked=[...scored.values()].sort(compare);
     const leadingOutfits=new Set(ranked.slice(0,6).map(row=>row.outfitId));
-    const leaders=ranked.filter(row=>!expanded.has(row.order.join(','))).slice(0,6);
+    const untested=row=>!expanded.has(row.order.join(','));
+    const specialist=payload.boardOpt&&!merged&&options.scoringMode==='chart'?
+      [...bestByOutfit.values()].filter(row=>row.outfitId!==ranked[0]?.outfitId&&
+        data.costumes[row.outfitId]?.triggers?.length&&row.value>=ranked[0].value*.9&&untested(row))
+        .sort(compare)[0]:undefined;
+    const leaders=[...new Set([...ranked.filter(untested).slice(0,specialist?5:6),...(specialist?[specialist]:[])])];
     for(const leader of leaders){
       expanded.add(leader.order.join(','));
       const order=leader.order.map(id=>byId.get(id));
@@ -878,6 +946,19 @@ export async function shortlistGpuTeams(kernels,data,payload,context,score,{limi
   // Preserve outfit diversity even if one outfit wins most base-board
   // comparisons. A full Board rebuild can change which outfit leads.
   for(const best of bestByOutfit.values())add(best);
+  if(payload.boardOpt&&!merged&&options.scoringMode==='chart'){
+    for(const [outfit,best] of bestByOutfit){
+      if(!data.costumes[outfit]?.triggers?.length||best.value<ranked[0]?.value*.9)continue;
+      const distinct=new Set([lineupKey(best)]);
+      for(const row of [...evaluated.values()].filter(row=>row.outfitId===outfit).sort(compare)){
+        const key=lineupKey(row);
+        if(distinct.has(key)||!fitsOutfit(data.costumes[outfit],row.order.map(id=>cards[byId.get(id)])))continue;
+        add(row);
+        distinct.add(key);
+        if(distinct.size===3)break;
+      }
+    }
+  }
   const active=[...activeOrders.values()];
   for(const row of active.sort(compareActive).slice(0,8))add(row);
   const grounded=active.filter(row=>row.activeBoardGain).sort((a,b)=>

@@ -46,20 +46,6 @@ function e0(e, a, o) {
 function rh(e, a) {
   return e != null && e.level2Bloom && a != null && a.owned && a.bloom >= e.level2Bloom ? 2 : 1;
 }
-function lh(e, a, o, n) {
-  const r = new Map();
-  for (const [l, d] of Object.entries(a ?? {})) {
-    const m = e(l),
-      u = d ? o(d) : void 0;
-    if (!(!m || !u || !n(l, m)))
-      for (const [p, g] of u) {
-        const b = nn(m.x + p, m.y + g),
-          v = r.get(b);
-        v ? v.push({ socket: l, card: d }) : r.set(b, [{ socket: l, card: d }]);
-      }
-  }
-  return r;
-}
 function ZT(e, a, o) {
   if (e.rateTarget === !1 || (e.startTime ?? 0) > o) return !1;
   const n = e.characterIds ?? [];
@@ -183,6 +169,7 @@ const e3 = new Set([
 ]);
 
 const referenceBoardGeometry = new WeakMap();
+const referenceActiveNodes = new WeakMap();
 function referenceBoardGraph(nodes, rank) {
   const previous = referenceBoardGeometry.get(nodes);
   if (previous && previous.rank === rank) return previous.graph;
@@ -196,35 +183,28 @@ function referenceBoardGraph(nodes, rank) {
   return graph;
 }
 function oD(e, a, o, n, r) {
-  var j;
-  const l = a.boards[e],
-    d = o[e];
-  if (!l || !d) return [];
-  const u = referenceBoardGraph(l, r),
-    m = u.nodes,
-    { byId: p } = u,
-    g = nn,
-    b = e0(u, Zk(u, d.nodes)),
-    v = new Map();
-  for (const [k, S] of lh(
-    (C) => p.get(C),
-    d.cards,
-    (C) => {
-      var D;
-      return (D = a.connects[C]) == null ? void 0 : D.extent;
-    },
-    (C) => b.has(C),
-  )) {
-    const { card: C } = S[S.length - 1],
-      D = a.connects[C];
-    v.set(k, ((j = D.levels[rh(D, n[C]) - 1]) == null ? void 0 : j.permil) ?? 0);
+  const nodes = a.boards[e], save = o[e];
+  if (!nodes || !save) return [];
+  const graph = referenceBoardGraph(nodes, r);
+  let layout = referenceActiveNodes.get(save.nodes);
+  if (layout?.graph !== graph) {
+    const active = e0(graph, Zk(graph, save.nodes));
+    layout = { graph, active, scoring: graph.nodes.filter(node => node.kind && active.has(node.id)) };
+    referenceActiveNodes.set(save.nodes, layout);
   }
-  const x = [];
-  for (const k of m)
-    !b.has(k.id) ||
-      !k.kind ||
-      x.push({ node: k, value: qp(k.value, v.get(g(k.x, k.y)) ?? 0, e3.has(k.kind)) });
-  return x;
+  const coverage = new Map();
+  for (const [socket, id] of Object.entries(save.cards ?? {})) {
+    if (!layout.active.has(socket)) continue;
+    const card = a.connects[id];
+    if (!card?.extent) continue;
+    const { x, y } = graph.byId.get(socket);
+    const permil = card.levels[rh(card, n[id]) - 1]?.permil ?? 0;
+    // A later socket still takes precedence anywhere footprints overlap.
+    for (const [dx, dy] of card.extent) coverage.set(nn(x + dx, y + dy), permil);
+  }
+  return layout.scoring.map(node => ({
+    node, value: qp(node.value, coverage.get(nn(node.x, node.y)) ?? 0, e3.has(node.kind)),
+  }));
 }
 const t3 = new Set([
   "param",
@@ -329,18 +309,27 @@ function gu(e, a) {
 }
 function Rc(e, a, o, n, r, l, prepared) {
   var I, te, q;
+  const prior = e.boardEffects && prepared?.perOwnerSongs && prepared.owned === a &&
+    prepared.ranks === n && prepared.boardDreamRank === l && prepared.options.pinnedConnectEntries === r.pinnedConnectEntries
+    ? prepared
+    : undefined;
   const d = prepared?.stats ?? new Map(),
     m = prepared?.entry ?? new Map(),
-    u = new Map(),
-    p = new Map();
+    u = new Map(prior?.board),
+    p = new Map(prior?.boardLeader);
   if (!prepared)
     for (const H of e.cards) {
       const Z = eD(H, a, r.cardPool);
       (m.set(H.id, Z), d.set(H.id, e.cardStats ? e.cardStats(H, Z.level, Z.bloom) : Sm(H, Z.level, Z.bloom)));
     }
   const g = [];
-  const connectRoster = r.pinnedConnectEntries ? {...r.pinnedConnectEntries,...a} : a;
-  for (const H of Object.keys(e.boards)) {
+  const perOwnerSongs = e.boardEffects ? new Map(prior?.perOwnerSongs) : null;
+  const connectRoster = prior?.connectRoster ?? (r.pinnedConnectEntries ? {...r.pinnedConnectEntries,...a} : a);
+  for (const H of e.boardOwners ?? Object.keys(e.boards)) {
+    if (prior && prior.boards[H] === o[H]) {
+      g.push(...perOwnerSongs.get(H));
+      continue;
+    }
     let decoded;
     const read = (mode) => mm(H, e, o, a, l, mode, (decoded ??= o[H] ? oD(H, e, o, connectRoster, l) : []));
     const [always, leader, song] = e.boardEffects
@@ -349,6 +338,7 @@ function Rc(e, a, o, n, r, l, prepared) {
     u.set(H, always);
     p.set(H, leader);
     g.push(...song.songEffects);
+    perOwnerSongs?.set(H,song.songEffects);
   }
   let b = prepared?.scenarios ?? [],
     v = prepared?.song.singerType ?? "",
@@ -519,6 +509,7 @@ function Rc(e, a, o, n, r, l, prepared) {
     stats: d,
     board: u,
     boardLeader: p,
+    ...(perOwnerSongs && {perOwnerSongs,connectRoster,boardDreamRank:l}),
     globalBoard: S,
     entry: m,
     costumesByChar: M,

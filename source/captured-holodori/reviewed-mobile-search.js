@@ -40,12 +40,14 @@ function* substitutions(team,roster,memberOf,locked,noOverlap) {
   }
 }
 
-export async function searchReviewedMobile(responses,{options,roster,memberOf,score,buildRow,planRows,keepBoardBonuses=false,progress,rankScore,compareScores,scenarioKey}) {
+export async function searchReviewedMobile(responses,{options,roster,memberOf,score,buildRow,planRows,deepen,keepBoardBonuses=false,progress,rankScore,compareScores,scenarioKey}) {
   const metric=options.sortBy==='max'?'maximum':'average';
   const value=row=>rankScore?rankScore(row.reviewedScore):row.reviewedScore[metric];
   const compare=compareScores?(a,b)=>compareScores(a.reviewedScore,b.reviewedScore):(a,b)=>value(b)-value(a);
   const distinct=rows=>distinctLineups(rows,scenarioKey);
   const evaluated=new Map();
+  const unverified=new Set();
+  let firstUnverified;
   let scored=0;
   function inspect(row) {
     let reviewedScore;
@@ -59,8 +61,18 @@ export async function searchReviewedMobile(responses,{options,roster,memberOf,sc
   }
   function consider(row,generated=false) {
     const key=scenarioKey?JSON.stringify([scenarioKey(row),orderKey(row),row.boards]):orderKey(row);
-    if(evaluated.has(key))return false;
-    evaluated.set(key,inspect(generated?buildRow(row):row));
+    if(evaluated.has(key)||unverified.has(key))return false;
+    try{
+      evaluated.set(key,inspect(generated?buildRow(row):row));
+    }catch(error){
+      // Automatic outfit selection can propose an unverified combination
+      // of otherwise verified effects. The other outfits can still compete.
+      if(!deepen||options.leaderMode==='fixed'||!(error instanceof MobileCoverageError)||
+        !error.message.split('; ').every(reason=>reason.startsWith('static-modifier-composition:')))throw error;
+      firstUnverified??=error;
+      unverified.add(key);
+      return false;
+    }
     return true;
   }
   const ranked=()=>[...evaluated.values()].sort(compare);
@@ -74,7 +86,10 @@ export async function searchReviewedMobile(responses,{options,roster,memberOf,sc
       if(evaluated.size>=seedLimit)break;
     }
   }
-  if(!evaluated.size)return null;
+  if(!evaluated.size){
+    if(firstUnverified)throw firstUnverified;
+    return null;
+  }
   progress(evaluated.size,seedLimit,1,'Scoring Mobile teams');
   const locked=new Set(options.focusCardIds);
   const roundBudget=32;
@@ -119,6 +134,27 @@ export async function searchReviewedMobile(responses,{options,roster,memberOf,sc
       const refined=finalists.map(({seed},index)=>applyPlan(seed,full[index]?.plan));
       rows=distinct([...refined,...planned.map(({best})=>best),...rows].sort(compare));
     }
+  }
+  if(deepen&&!keepBoardBonuses){
+    progress(0,1,.99,'Refining final teams');
+    const candidates=await deepen(rows.slice(0,3));
+    const refined=candidates.flatMap(candidate=>{
+      try {
+        const row=inspect(candidate);
+        if(row.plan){
+          const original=inspect({...row,plan:undefined,boards:undefined});
+          row.plan={...row.plan,before:{...row.plan.before,reviewedScore:original.reviewedScore},
+            after:{...row.plan.after,reviewedScore:row.reviewedScore}};
+        }
+        return [row];
+      }catch(error){
+        // A speculative refinement may introduce an unverified skill
+        // combination. Keep that proposal out of this verified search.
+        if(error instanceof MobileCoverageError)return [];
+        throw error;
+      }
+    });
+    rows=distinct([...rows,...refined].sort(compare));
   }
   return {rows:rows.slice(0,options.topN),scored};
 }

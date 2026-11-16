@@ -1,11 +1,12 @@
-import {boardFrontierPaths,boardReachability} from './unit-score-board-search';
+import {boardFrontierPaths,boardResetCuts} from './unit-score-board-search';
 
 const sumCost=(a,b)=>a.map((value,index)=>value+b[index]);
 const compare=(a,b)=>a.value-b.value||(a.tieScore??a.score)-(b.tieScore??b.score);
 const amount=(materials,values)=>materials.map(id=>values[id]??0);
 
 export async function refineBoardExchanges({boards,owners,topology,allowed,dreamRank,budgets,order,leader,
-  materials,stock,maxResets,resetCount,original,protectedNode,canReset,rankLayouts,checkTrades,score,includeSong,infinite=false}){
+  materials,stock,maxResets,resetCount,original,protectedNode,canReset,rankLayouts,checkTrades,score,includeSong,pinnedSlot,
+  rematchSockets=false,infinite=false,explore=false}){
   const members=new Set(order.map(card=>card.characterId));
   const branches=new Set(includeSong?['blue','green','yellow','red']:['blue','green']);
   const targets=node=>order.some(card=>node.targetType==='ALL'||
@@ -53,7 +54,7 @@ export async function refineBoardExchanges({boards,owners,topology,allowed,dream
     const byId=indices.get(owner),pointCap=budgets.get(owner),out=[];
     const preserve=new Set(board.nodes.filter(id=>{
       const node=byId.get(id);
-      return Object.hasOwn(board.cards,id)||protectedNode(node)||
+      return Object.hasOwn(board.cards,id)&&(!rematchSockets||pinnedSlot(owner,id))||protectedNode(node)||
         node.branch&&!allowed.has(node.branch);
     }));
     const graph=frontier(owner,board);
@@ -86,18 +87,17 @@ export async function refineBoardExchanges({boards,owners,topology,allowed,dream
     addPaths(board,graph,[],0,12);
     if(!canReset(owner))return out;
     const cuts=new Set();
+    const removals=boardResetCuts(topology[owner],board,dreamRank);
     for(const id of board.nodes){
       if(preserve.has(id)||!branches.has(byId.get(id).branch))continue;
       if(!members.has(owner)&&byId.get(id).branch!=='green'&&
         (!includeSong||byId.get(id).branch!=='yellow'&&owner!==leader))continue;
-      const pruned={...board,nodes:board.nodes.filter(other=>other!==id)};
-      const direct=boardReachability(topology[owner],pruned,dreamRank);
-      if(!direct||[...preserve].some(other=>!direct.active.has(other)))continue;
-      const removed=board.nodes.filter(other=>!direct.active.has(other));
+      const removed=removals?.get(id)??[];
       const key=removed.slice().sort().join('|');
-      if(!removed.length||cuts.has(key))continue;
+      if(!removed.length||cuts.has(key)||removed.some(other=>preserve.has(other)))continue;
       cuts.add(key);
-      const clean={...board,nodes:board.nodes.filter(other=>direct.active.has(other))};
+      const clean={nodes:board.nodes.filter(other=>!removed.includes(other)),
+        cards:rematchSockets?Object.fromEntries(Object.entries(board.cards).filter(([socket])=>!removed.includes(socket))):board.cards};
       const loss=removed.reduce((sum,other)=>sum+weights.get(other),0);
       const cut=variant(owner,clean,removed,[],-loss,null,clean.nodes.slice().sort().join(','));
       if(cut)out.push(cut);
@@ -106,7 +106,9 @@ export async function refineBoardExchanges({boards,owners,topology,allowed,dream
     cached.set(board,out);
     return out;
   }
-  for(let step=0;step<6;step++){
+  let widened=false;
+  for(let step=0;step<(explore?8:6);step++){
+    const wide=widened||step>=6;
     const rows=owners.flatMap(owner=>boards[owner]?layoutVariants(owner,boards[owner]):[]);
     const cuts=rows.filter(row=>!row.receiver);
     const recipients=rows.filter(row=>row.receiver);
@@ -155,7 +157,45 @@ export async function refineBoardExchanges({boards,owners,topology,allowed,dream
     }
     for(const row of cuts.filter(row=>members.has(row.owner)&&row.resets<=remaining)
       .sort((a,b)=>b.est-a.est).slice(0,14))remember([row],row.delta,row.resets);
-    if(!candidates.length)break;
+    if(wide){
+      // Test combined upgrades even when neither move refunds materials.
+      const rivals=diversify(single,18);
+      const pairs=[];
+      for(const [index,first] of rivals.entries())for(const second of rivals.slice(index+1)){
+        if(first.owner===second.owner)continue;
+        const delta=sumCost(first.delta,second.delta),resets=first.resets+second.resets;
+        if(resets<=remaining&&permitted(delta))pairs.push({first,second,delta,resets,estimate:first.est+second.est});
+      }
+      pairs.sort((a,b)=>b.estimate-a.estimate);
+      for(const {first,second,delta,resets} of pairs.slice(0,60))remember([first,second],delta,resets);
+      // One donor may cover only part of a path's material bill.
+      for(const row of diversify(underfunded,20)){
+        const deficit=row.delta.map((quantity,index)=>Math.max(0,quantity-uses[index]));
+        const donors=cuts.flatMap(donor=>{
+          if(donor.owner===row.owner||donor.resets+row.resets>remaining)return [];
+          const coverage=deficit.reduce((sum,need,index)=>sum+
+            (need?Math.min(need,Math.max(0,-donor.delta[index]))/need:0),0);
+          return coverage>0?[{donor,coverage}]:[];
+        }).sort((a,b)=>b.coverage-a.coverage||b.donor.est-a.donor.est);
+        const funded=[];
+        for(const [index,{donor:first}] of donors.slice(0,8).entries()){
+          const partial=sumCost(row.delta,first.delta);
+          for(const {donor:second} of donors.slice(index+1)){
+            if(first.owner===second.owner)continue;
+            const resets=row.resets+first.resets+second.resets;
+            if(resets>remaining)continue;
+            const delta=sumCost(partial,second.delta);
+            if(permitted(delta))funded.push({first,second,delta,resets,estimate:first.est+second.est});
+          }
+        }
+        funded.sort((a,b)=>b.estimate-a.estimate||a.resets-b.resets);
+        for(const {first,second,delta,resets} of funded.slice(0,3))remember([row,first,second],delta,resets);
+      }
+    }
+    if(!candidates.length){
+      if(explore&&!wide){widened=true;continue;}
+      break;
+    }
     const checks=await checkTrades(candidates.map(({delta,resets})=>[0,0,Math.max(0,resets),1,
       ...delta.map(n=>Math.max(0,n)),...delta.map(n=>Math.max(0,-n))]),
     [remaining,...uses.map(count=>Math.min(count,0xffffffff))],{unlimited:infinite});
@@ -166,7 +206,10 @@ export async function refineBoardExchanges({boards,owners,topology,allowed,dream
       const row=score(layout.boards);
       if(compare(row,best?.row??current)>0)best={layout,row};
     }
-    if(!best)break;
+    if(!best){
+      if(explore&&!wide){widened=true;continue;}
+      break;
+    }
     boards=best.layout.boards;
     current=best.row;
     uses=uses.map((stock,index)=>stock-best.layout.delta[index]);

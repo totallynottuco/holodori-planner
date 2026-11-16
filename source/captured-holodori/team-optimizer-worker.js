@@ -1,7 +1,7 @@
 import {buildOptimizerWorkspace} from './optimizer-workspace-data';
 import {collectBoardFinalists,hasBoardBonusTargets,loadReferenceData,measuredMemoryEffect,mergeReferenceResults,prepareReferenceSearch,referenceEventPointBase,referenceEventPoints,runReferenceJob,unresolvedBoardEntries} from './reference-team-solver';
 import {optimizeReferenceBoards} from './reference-board-search';
-import {searchReferenceRating} from './reference-holomem-rating';
+import {forecastRating,referenceRatingCandidates,searchReferenceRating,shortlistRatingLeaders} from './reference-holomem-rating';
 import {createReferenceScoreContext,evaluateReferenceTeam,referenceCardStats,referenceRangeCharts,referenceTeamScoreBonus,referenceUnitScore,withReferenceChart} from './reference-rating-math';
 import {compareUnitScore,evaluateUnitScore,searchUnitScore,unitScoreContext} from './unit-score-search';
 import {boardPointsAtRank,boardReachability,improveUnitScoreBoards} from './unit-score-board-search';
@@ -12,7 +12,7 @@ import {overlayGameOptimizerCards} from './game-optimizer-cards';
 import {hasGpuBoardBonusTargets} from './gpu-board-bonus-targets';
 import {decodeChartGeometry} from './optimizer-chart-hit-events.js';
 import {boardPlanningBaseline,hasBoardProtection} from './board-protection';
-import bundledChartGeometry from '../hololive/scoring-reviewed/optimizer-preview-geometry.json';
+import {isTeamCardEligible,teamRarityFilter} from './team-card-pool';
 
 let source=null;
 let lastReview=null;
@@ -23,7 +23,7 @@ const gpuSearches=new WeakMap();
 const cpuBoardPlanners=new WeakMap();
 async function runCpuJob(data,operation,payload,onProgress){
   const {account,boardOpt,options}=payload;
-  const filtered=operation==='_hd_solve'&&options.goal==='next'&&payload.extras.nextAcquisition;
+  const filtered=operation==='_hd_solve'&&options.goal==='next'&&(payload.extras.nextAcquisition||teamRarityFilter(options));
   if(!filtered&&!hasBoardProtection(boardOpt))return runReferenceJob(data,operation,payload,onProgress);
   const lineupJob=(query,progress)=>runReferenceJob(data,'_hd_solve',{
     ...query,boardOpt:null,limits:{...query.limits,jointBoards:false},
@@ -173,6 +173,14 @@ function sendJob(port,job,onProgress) {
 async function runJobs(jobs,selection,onProgress,ports,completionOrder=false) {
   const gpuSearch=gpuSearches.get(selection);
   if(gpuSearch){
+    if(gpuSearch.shared){
+      let done=0;
+      return Promise.all(jobs.map(async({operation,payload})=>{
+        const response=await (operation==='_hd_solve'?gpuSearch.solve(payload):gpuSearch.plan(payload));
+        onProgress(++done,jobs.length,done/jobs.length);
+        return response;
+      }));
+    }
     const results=new Array(jobs.length);
     const lanes=jobs.every(job=>job.operation==='_hd_plan')?ports.slice(0,Math.max(0,jobs.length-1)):[];
     let next=0,done=0;
@@ -212,8 +220,22 @@ async function runJobs(jobs,selection,onProgress,ports,completionOrder=false) {
   }));
   return completionOrder?completedResponses:responses;
 }
+
+async function eachLeader(rows,concurrency,run){
+  let next=0,failed=false;
+  const lanes=Array.from({length:Math.min(concurrency,rows.length)},async()=>{
+    try{
+      while(!failed&&next<rows.length){
+        const index=next++;
+        await run(rows[index],index);
+      }
+    }catch(error){failed=true;throw error;}
+  });
+  const failure=(await Promise.allSettled(lanes)).find(result=>result.status==='rejected');
+  if(failure)throw failure.reason;
+}
 function solveShards(payload,selection,onProgress,ports) {
-  const singleNext=payload.options.goal==='next'&&(payload.extras.nextAcquisition||hasBoardProtection(payload.boardOpt));
+  const singleNext=payload.options.goal==='next'&&(payload.extras.nextAcquisition||teamRarityFilter(payload.options)||hasBoardProtection(payload.boardOpt));
   const count=gpuSearches.has(selection)||singleNext?1:logicalShardCount();
   const jobs=Array.from({length:count},(_,shardIndex)=>({operation:'_hd_solve',payload:{
     ...payload,limits:{...payload.limits,shardIndex,shardCount:count},
@@ -230,48 +252,135 @@ async function searchUnitScoreRows(data,payload,selection,progress,ports) {
   const proposals=mergeReferenceResults(responses,query.options).results;
   return searchUnitScore(data,payload,proposals,{progress});
 }
-async function planReferenceRows(payload,rows,selection,onProgress,ports,fullCount) {
-  const {options,account,boardOpt}=payload;
-  const gpu=gpuSearches.has(selection);
-  const scoreKey=options.sortBy==='max'?'maxScore':'score';
-  const jobs=(indices,lite,previews)=>indices.map(index=>{
-    const row=rows[index];
-    const fixed=(gpu||hasBoardProtection(boardOpt))&&row.outfitId;
-    const order=(row.activeSpecialist?previews?.[index]?.plan?.after?.order:null)??row.order;
-    return {operation:'_hd_plan',payload:{
-      account,options:fixed?{...options,leaderMode:'fixed'}:options,
-      team:order,leaderChar:row.leaderChar,
-      ...(gpu&&row.activeSpecialist?{activeSpecialist:true}:{}),
-      outfitId:fixed||(options.leaderMode==='fixed'?options.outfitId:null),
-      boardOpt:{...boardOpt,litePlan:lite},
-    }};
-  });
-  const progress=(done,total,fraction)=>onProgress(done,total,fraction,'Planning Boards');
-  const indices=rows.map((_,index)=>index);
-  if(gpu?hasGpuBoardBonusTargets(boardOpt.keep?.targets??{}):hasBoardBonusTargets(boardOpt)){
-    const full=await runJobs(jobs(indices,false),selection,progress,ports);
-    return full.map(response=>response.plan??null);
+const compareGpuPlans=(a,b)=>(a?.after.value??-Infinity)-(b?.after.value??-Infinity)||
+  (a?.after.tieScore??a?.after.score??0)-(b?.after.tieScore??b?.after.score??0);
+const gpuTeamKey=row=>row.outfitId+'|'+row.order.slice().sort().join('|');
+
+async function planGpuFrontier(payload,rows,selection,progress,ports,fullCount,liteOnly){
+  const gpu=gpuSearches.get(selection),{options,boardOpt}=payload;
+  const jobs=(entries,lite)=>entries.map(({row,seed,donors,quality})=>({
+    operation:'_hd_plan',payload:{...payload,options:{...options,leaderMode:'fixed'},
+      team:row.order,leaderChar:row.leaderChar,outfitId:row.outfitId,
+      boardOpt:{...boardOpt,litePlan:lite},...(seed&&{seedBoards:seed.saves,donorLayouts:donors,
+        generalist:true,expandPaths:!seed.orderExhaustive,qualityRefine:quality})},
+  }));
+  const run=(entries,lite)=>runJobs(jobs(entries,lite),selection,progress,ports);
+  const keep=hasGpuBoardBonusTargets(boardOpt.keep?.targets??{});
+  const candidates=rows.map((row,index)=>({row,index}));
+  if(liteOnly||keep)return (await run(candidates,liteOnly)).map(result=>result.plan??null);
+  const lite=await run(candidates,true);
+  const plans=lite.map(result=>result.plan??null);
+  const ranked=candidates.slice().sort((a,b)=>compareGpuPlans(plans[b.index],plans[a.index])||
+    (b.row.potential??b.row.value)-(a.row.potential??a.row.value));
+  const count=Math.min(ranked.length,fullCount??Math.max(6,options.topN));
+  const funded=[],attempted=new Set(),attemptedSeeds=new WeakMap(),outfits=new Set();
+  async function complete(entries){
+    for(const {row,seed} of entries){
+      const key=gpuTeamKey(row);
+      if(!seed)attempted.add(key);
+      else{
+        if(!attemptedSeeds.has(seed))attemptedSeeds.set(seed,new Set());
+        attemptedSeeds.get(seed).add(key);
+      }
+    }
+    const results=await run(entries,false);
+    for(const [i,{plan}] of results.entries()){
+      if(!plan)continue;
+      const {index}=entries[i];
+      funded.push({...plan.after,index,plan});
+      if(compareGpuPlans(plan,plans[index])>=0)plans[index]=plan;
+    }
+    funded.sort((a,b)=>compareGpuPlans(b.plan,a.plan));
   }
-  const lite=await runJobs(jobs(indices,true),selection,progress,ports);
-  const gpuRating=gpu&&options.lbCharts?.length;
-  const score=plan=>(gpu?plan?.after?.value:plan?.after?.[scoreKey])??-1;
-  const refine=lite.map((response,index)=>({index,value:score(response.plan)}))
-    .filter(row=>row.value>=0).sort((a,b)=>b.value-a.value).slice(0,fullCount??Math.max(12,options.topN));
-  if(gpuRating){
-    const active=rows.flatMap((row,index)=>row.activeSpecialist&&score(lite[index]?.plan)>=0?[{row,index}]:[]);
-    // The short Board pass cannot realize deeper Active Chance branches.
-    // Give nominated lineups a full pass even if their preview ranks lower.
-    const slots=Math.min(2,active.length,refine.length);
-    for(const {index} of active.slice(0,slots)){
-      if(refine.some(row=>row.index===index))continue;
-      const replace=refine.findLastIndex(({index})=>!rows[index].activeSpecialist);
-      if(replace>=0)refine[replace]={index};
+  const initial=ranked.slice(0,Math.min(count,Math.max(3,count-2)));
+  for(const {row} of initial)outfits.add(row.outfitId);
+  const distinct=ranked.find(({row,index})=>!outfits.has(row.outfitId)&&plans[index]&&
+    plans[index].after.value>=(plans[initial[0]?.index]?.after.value??Infinity)*.96);
+  if(distinct&&initial.length>2)initial[initial.length-1]=distinct;
+  await complete(initial);
+  if(!funded.length){
+    await complete(ranked.filter(({row})=>!attempted.has(gpuTeamKey(row))).slice(0,count-initial.length));
+    return plans;
+  }
+  // Every funded state can propose a different lineup or outfit. A new
+  // finalist inherits the same shared-budget layout and can trade it again.
+  let remaining=count-initial.length;
+  if(remaining>1&&boardOpt.maxResets!==0){
+    const eligible=ranked.filter(({index})=>lite[index]?.plan&&lite[index].plan.after.value>=funded[0].value*.94);
+    const candidate=eligible.find(({row})=>!attempted.has(gpuTeamKey(row)))??eligible[0];
+    if(candidate){
+      const seed=lite[candidate.index].plan;
+      await complete([{...candidate,row:seed.after,seed,donors:funded.slice(0,2).map(({plan})=>plan.saves)}]);
+      remaining--;
     }
   }
-  const full=await runJobs(jobs(refine.map(row=>row.index),false,lite),selection,progress,ports);
+  const indices=new Map(candidates.map(({row,index})=>[gpuTeamKey(row),index]));
+  while(remaining>0){
+    const unique=new Map();
+    for(const row of funded){
+      const key=gpuTeamKey(row);
+      if(!unique.has(key))unique.set(key,row);
+      if(unique.size===3)break;
+    }
+    const frontier=[...unique.values()];
+    const {neighbors}=await gpu.rankFundedTeams(payload,frontier,ranked.slice(0,16).map(({row})=>row));
+    const best=neighbors.find(({after,index})=>
+      !attemptedSeeds.get(frontier[index].plan)?.has(gpuTeamKey(after))&&after.value>=frontier[index].value*.985);
+    const nextKey=best&&gpuTeamKey(best.after);
+    const next=ranked.find(({row})=>!attempted.has(gpuTeamKey(row))&&gpuTeamKey(row)!==nextKey);
+    const wave=[];
+    if(best){
+      const {plan:seed,index}=frontier[best.index];
+      wave.push({row:best.after,index:indices.get(nextKey)??index,seed,
+        donors:frontier.filter(row=>row.plan!==seed).map(row=>row.plan.saves)});
+    }
+    if(next&&wave.length<remaining)wave.push(next);
+    if(!wave.length)break;
+    await complete(wave);
+    remaining-=wave.length;
+  }
+  if(selection.objective!=='holomemLb'||options.lbCharts?.length){
+    const frontier=funded.slice(0,3);
+    const {best,alternate,neighbors}=await gpu.rankFundedTeams(payload,frontier,ranked.slice(0,16).map(({row})=>row),true);
+    const leader=frontier[0];
+    const finalists=[{row:leader,index:leader.index,seed:leader.plan,quality:true}];
+    const rival=[best,...neighbors].find(candidate=>candidate&&candidate.after.value>=leader.value*.97&&
+      gpuTeamKey(candidate.after)!==gpuTeamKey(leader));
+    for(const pick of [rival,alternate].filter(Boolean)){
+      const {plan:seed,index}=frontier[pick.index];
+      if(gpuTeamKey(pick.after)===gpuTeamKey(leader)&&seed===leader.plan)continue;
+      finalists.push({row:pick.after,index:indices.get(gpuTeamKey(pick.after))??index,seed,quality:true});
+    }
+    await complete(finalists.map(entry=>({...entry,
+      donors:frontier.filter(row=>row.plan!==entry.seed).map(row=>row.plan.saves)})));
+  }
+  return plans;
+}
+
+async function planReferenceRows(payload,rows,selection,onProgress,ports,fullCount,liteOnly=false) {
+  if(!rows.length)return [];
+  const progress=(done,total,fraction)=>onProgress(done,total,fraction,'Planning Boards');
+  if(gpuSearches.has(selection))
+    return planGpuFrontier(payload,rows,selection,progress,ports,fullCount,liteOnly);
+  const {options,account,boardOpt}=payload;
+  const scoreKey=options.sortBy==='max'?'maxScore':'score';
+  const jobs=(indices,lite)=>indices.map(index=>fixedBoardJob(payload,rows[index],lite));
+  const regularJobs=(indices,lite)=>hasBoardProtection(boardOpt)?jobs(indices,lite):indices.map(index=>({
+    operation:'_hd_plan',payload:{account,options,team:rows[index].order,leaderChar:rows[index].leaderChar,
+      outfitId:options.leaderMode==='fixed'?options.outfitId:null,boardOpt:{...boardOpt,litePlan:lite}},
+  }));
+  const indices=rows.map((_,index)=>index);
+  if(!liteOnly&&hasBoardBonusTargets(boardOpt))
+    return (await runJobs(regularJobs(indices,false),selection,progress,ports)).map(response=>response.plan??null);
+  const lite=await runJobs(regularJobs(indices,true),selection,progress,ports);
   const plans=lite.map(response=>response.plan??null);
-  refine.forEach(({index},position)=>{
-    if(score(full[position]?.plan)>=score(plans[index])&&full[position]?.plan)plans[index]=full[position].plan;
+  if(liteOnly)return plans;
+  const score=plan=>plan?.after?.[scoreKey]??-1;
+  const refine=indices.filter(index=>score(plans[index])>=0).sort((a,b)=>score(plans[b])-score(plans[a]))
+    .slice(0,fullCount??Math.max(12,options.topN));
+  const full=await runJobs(regularJobs(refine,false),selection,progress,ports);
+  refine.forEach((index,position)=>{
+    if(full[position]?.plan&&score(full[position].plan)>=score(plans[index]))plans[index]=full[position].plan;
   });
   return plans;
 }
@@ -345,8 +454,8 @@ function mobileBoardPlans(payload,selection,progress,ports) {
     (done,total,fraction)=>progress(done,total,fraction,'Planning Boards for Mobile'),ports);
 }
 
-function mobileRoster(data,account,context) {
-  return data.cards.filter(card=>account.owned[card.id]?.owned)
+function mobileRoster(data,account,context,options) {
+  return data.cards.filter(card=>account.owned[card.id]?.owned&&isTeamCardEligible(card,options))
     .map(card=>({id:card.id,power:Object.values(context.stats.get(card.id)).reduce((sum,value)=>sum+value,0)}))
     .sort((a,b)=>b.power-a.power).map(card=>card.id);
 }
@@ -397,7 +506,46 @@ function mobileSearchRows(data,payload,cards,baseAccount) {
     return {...(next?{candidateId:row.candidateId,pulls:row.pulls,boards:row.boards,plan:activePlan}:{}),
       ...evaluateReferenceTeam(scores,row.order.map(id=>cards.get(id)),row.outfitId,row.leaderChar)};
   };
-  return {evaluate,roster:next?[]:mobileRoster(data,baseAccount,context),scenarioKey:next?nextScenarioKey:undefined};
+  return {evaluate,roster:next?[]:mobileRoster(data,baseAccount,context,options),scenarioKey:next?nextScenarioKey:undefined};
+}
+
+function mobileFinalists(payload,selection,ports,cards,evaluate){
+  const gpu=gpuSearches.get(selection);
+  if(!gpu)return;
+  return async rows=>{
+    const next=payload.options.goal==='next';
+    return (await Promise.all((next?rows.map(row=>[row]):[rows]).map(async seeds=>{
+      if(!seeds.length)return [];
+      const entries=next?mobileTeam(seeds[0],payload,cards).entries:null;
+      const query=entries?{...payload,options:{...payload.options,cardPool:'owned',focusCardIds:payload.extras.nextDeck},
+        account:{...payload.account,owned:{...payload.account.owned,...Object.fromEntries(Object.entries(entries)
+          .map(([id,value])=>[id,{...value,owned:true}]))}}}:payload;
+      const {best,alternate,neighbors}=await gpu.rankFundedTeams(query,seeds,seeds,true,entries?Object.keys(entries):[]);
+      const distinct=new Set();
+      const picks=[best,...neighbors];
+      if(alternate)picks.splice(4,0,alternate);
+      const variants=picks.flatMap(proposal=>{
+        if(!proposal)return [];
+        const {after,index}=proposal,seed=seeds[index];
+        const key=index+'|'+gpuTeamKey(after);
+        if(distinct.has(key))return [];
+        distinct.add(key);
+        const row={...seed,...after};
+        if(seed.plan)row.plan={...seed.plan,after,outfitId:after.outfitId,leaderChar:after.leaderChar,
+          before:evaluate({...row,plan:undefined,boards:undefined})};
+        return [row];
+      }).slice(0,alternate?5:4);
+      if(!query.boardOpt)return variants;
+      const teams=[seeds[0],...variants.filter(row=>gpuTeamKey(row)!==gpuTeamKey(seeds[0])).slice(0,1)];
+      const jobs=teams.map(row=>{
+        const job=fixedBoardJob(query,row,false);
+        if(row.plan)Object.assign(job.payload,{seedBoards:row.plan.saves,generalist:true,qualityRefine:true});
+        return job;
+      });
+      const planned=await runJobs(jobs,selection,()=>{},ports);
+      return [...variants,...planned.flatMap(({plan},index)=>plan?[{...teams[index],...plan.after,plan}]:[])];
+    }))).flat();
+  };
 }
 
 async function prepareMobileRating(data,payload,input,charts,selection,ports) {
@@ -417,7 +565,7 @@ async function prepareMobileRating(data,payload,input,charts,selection,ports) {
     async search(query,progress,keys,{optimize,summarize,compareScores}){
       const {options}=query;
       const next=options.goal==='next';
-      const seed={...query,account:next?query.account:account,boardOpt:next?query.boardOpt:null,limits:{...query.limits,jointBoards:false},
+      const seed={...query,reviewedFinals:true,account:next?query.account:account,boardOpt:next?query.boardOpt:null,limits:{...query.limits,jointBoards:false},
         options:{...options,topN:Math.max(12,options.topN*2)}};
       const responses=await solveShards(seed,selection,progress,ports);
       const gpuSearch=gpuSearches.get(selection);
@@ -426,6 +574,7 @@ async function prepareMobileRating(data,payload,input,charts,selection,ports) {
       const result=await searchReviewedMobile(responses,{
         options,roster,memberOf:id=>cards.get(id)?.characterId,progress,scenarioKey,
         planRows:optimize&&!next?mobileBoardPlans(query,selection,progress,ports):null,
+        deepen:mobileFinalists({...query,boardOpt:optimize||next?query.boardOpt:null},selection,ports,cards,evaluate),
         keepBoardBonuses:hasBoardBonusTargets(query.boardOpt),compareScores,
         score:row=>{
           const scores=score(row,keys);
@@ -451,7 +600,7 @@ async function reviewedNextBaseline(data,payload,account,cards,engine,selection,
   const focusCardIds=payload.extras.nextDeck??[];
   const options={...payload.options,goal:focusCardIds.length?'holomem':'best',focusCardIds,topN:1};
   const query={...payload,options};
-  const proposal={...query,account,boardOpt:null,limits:{...payload.limits,jointBoards:false},options:{...options,topN:12}};
+  const proposal={...query,reviewedFinals:true,account,boardOpt:null,limits:{...payload.limits,jointBoards:false},options:{...options,topN:12}};
   const baselineProgress=(done,total,fraction)=>progress(done,total,fraction,'Scoring current team for Mobile');
   const responses=await solveShards(proposal,selection,baselineProgress,ports);
   const {evaluate,roster}=mobileSearchRows(data,query,cards,account);
@@ -459,6 +608,7 @@ async function reviewedNextBaseline(data,payload,account,cards,engine,selection,
     options,roster,memberOf:id=>cards.get(id)?.characterId,progress:baselineProgress,
     score:row=>engine.score(mobileTeam(row,query,cards)),buildRow:evaluate,
     planRows:payload.boardOpt?mobileBoardPlans(query,selection,baselineProgress,ports):null,
+    deepen:mobileFinalists(query,selection,ports,cards,evaluate),
     keepBoardBonuses:hasBoardBonusTargets(payload.boardOpt),
   });
   const score=result?.rows[0]?.reviewedScore;
@@ -480,7 +630,7 @@ async function runReviewedMobile(data,payload,input,selection,progress,ports) {
   const cards=new Map(data.cards.map(card=>[card.id,card]));
   const event=await reviewedEventScoring(data,payload,input,cards,selection);
   const next=options.goal==='next';
-  const query={...payload,account:next?payload.account:account,boardOpt:next?boardOpt:null,limits:{...payload.limits,jointBoards:false},
+  const query={...payload,reviewedFinals:true,account:next?payload.account:account,boardOpt:next?boardOpt:null,limits:{...payload.limits,jointBoards:false},
     options:{...options,topN:Math.max(24,options.topN*2)}};
   const responses=await solveShards(query,selection,progress,ports);
   const gpuSearch=gpuSearches.get(selection);
@@ -489,6 +639,7 @@ async function runReviewedMobile(data,payload,input,selection,progress,ports) {
   const planRows=boardOpt&&!next?mobileBoardPlans(payload,selection,progress,ports):null;
   const result=await searchReviewedMobile(responses,{
     options,roster,memberOf:id=>cards.get(id)?.characterId,progress,planRows,rankScore:event?.rankScore,scenarioKey,
+    deepen:mobileFinalists(payload,selection,ports,cards,evaluate),
     keepBoardBonuses:hasBoardBonusTargets(boardOpt),
     score:row=>{
       const team=mobileTeam(row,payload,cards);
@@ -510,6 +661,10 @@ async function runReviewedMobile(data,payload,input,selection,progress,ports) {
 
 async function planUnitScoreRows(data,payload,rows,selection,onProgress,ports) {
   if(!payload.boardOpt||!rows.length)return rows;
+  if(gpuSearches.has(selection)){
+    const plans=await planReferenceRows(payload,rows,selection,onProgress,ports);
+    return rows.map((row,index)=>plans[index]?{...row,...plans[index].after,plan:plans[index]}:row).sort(compareUnitScore);
+  }
   const {account,options,boardOpt}=payload;
   const cards=new Map(data.cards.map(card=>[card.id,card]));
   const makeJobs=(teams,litePlan)=>teams.map(team=>fixedBoardJob(payload,team,litePlan));
@@ -541,7 +696,7 @@ async function planUnitScoreRows(data,payload,rows,selection,onProgress,ports) {
   return ranked.map(({team,best},index)=>{
     const fullPlan=applyPlan(team,full[index]?.plan);
     if(compareUnitScore(fullPlan,best)<0)best=fullPlan;
-    if(directTeams.has(team)&&!gpuSearches.has(selection)&&!hasBoardProtection(boardOpt)){
+    if(directTeams.has(team)&&!hasBoardProtection(boardOpt)){
       onProgress(checked++,directTeams.size,checked/directTeams.size,'Optimizing Boards for Unit Score');
       const direct=improveUnitScoreBoards(data,payload,team);
       if(compareUnitScore(direct,best)<0)best=direct;
@@ -602,16 +757,18 @@ function teamsForUi(data,rows,payload) {
   }));
 }
 
+let bundledPreviewGeometry;
 async function loadPreviewChartData(key, pc) {
   if(!key)return null;
   const {loadOptimizerResources}=await import('./team-optimizer-resources');
   const {decodeOptimizerChart}=await import('../hololive/vendor/shared/optimizer-chart-pack');
-  const {pack,previewHits,previewGeometry}=await loadOptimizerResources(source?.mobile);
+  bundledPreviewGeometry??=fetch('/assets/team-optimizer/optimizer-preview-geometry.json').then(response=>response.json()).catch(()=>({}));
+  const [{pack,previewHits,previewGeometry},bundledGeometry]=await Promise.all([loadOptimizerResources(source?.mobile),bundledPreviewGeometry]);
   const row=pack.rowsByKey.get(key);
   if(!row)return null;
   const decoded=decodeOptimizerChart(pack,key,pc?'pc':'mobile');
   const events={times:decoded.eventTimesMicroseconds,types:decoded.eventNoteTypes,officialHash:row[3]};
-  const bundled=bundledChartGeometry[key];
+  const bundled=bundledGeometry[key];
   const profile=previewHits?.[key]??bundled?.profile;
   if(Array.isArray(profile)&&profile[0]===row[3]){
     events.hitProfile=profile.slice(0,3);
@@ -890,16 +1047,10 @@ async function prepareFixedLineup(saved,input) {
     for(const [threshold,bonus] of jobData.powerUpLadder[card.cardLevelGroupId??'']??[]){if(level>=threshold)value=bonus;}
     return value;
   };
-  // A custom pool already applies its assumptions across the roster. For
-  // other saved lineups, start at imported levels and add the lineup's gain.
-  const baselineOwned=!assumptions
-    ?payload.extras.accountOwned:account.owned;
-  const observed=payload.options.powerUpOverride??jobData.cards.reduce((sum,card)=>{
-    const entry=baselineOwned[card.id];
-    return sum+(entry?.owned?ladderGain(card,entry.level):0);
-  },0);
-  const starting=order.map(card=>ladderGain(card,baselineOwned[card.id]?.level??0));
+  const observed=payload.options.powerUpOverride;
+  const starting=order.map(card=>ladderGain(card,payload.account.owned[card.id]?.level??0));
   const powerUp=lineup=>{
+    if(saved.powerUpPreset!=='search')return observed;
     const gain=order.reduce((sum,card,index)=>sum+ladderGain(card,lineup[index].level)-starting[index],0);
     return Math.min(5000,Math.max(0,observed+gain));
   };
@@ -986,6 +1137,20 @@ async function scoreSavedLineup(saved,input) {
 }
 
 self.addEventListener('message',async({data:message,ports})=>{
+  if(message.type==='gpu-rating-device'||message.type==='gpu-rating-lane'){
+    try{
+      const queue=await import('./gpu-rating-queue');
+      if(message.type==='gpu-rating-device')await queue.serveRatingDevice(ports);
+      else {
+        source=message.source;
+        const {createGpuTeamOptimizer}=await import('./gpu-team-optimizer');
+        const engine=await createGpuTeamOptimizer(await dataFor(message.selection),message.selection.objective,queue.ratingDeviceClient(ports[0]));
+        queue.serveRatingLane(ports[1],engine);
+      }
+      notify('gpu-ready',{});
+    }catch(error){notify('error',{message:error.message});}
+    return;
+  }
   let gpuSearch;
   try{
     if (message.type === 'review-details') {
@@ -1153,14 +1318,24 @@ self.addEventListener('message',async({data:message,ports})=>{
       if(gameOnly&&!options.pc&&!wantsReviewed)throw Error(gameChartCoverageError);
       const pcGameEstimate=options.pc&&(chart?.gameOnly||options.scoringMode==='generic'&&
         referenceRangeCharts(jobData,options).some(({chart})=>chart.gameOnly));
+      const createGpu=async()=>{
+        if(input.objective==='holomemLb'&&input.ratingLeaderIds?.length>1){
+          const {createGpuRatingPool}=await import('./gpu-rating-queue');
+          const fastHost=(navigator.hardwareConcurrency||4)>=6&&input.ratingLeaderIds.length>=4;
+          const lanes=[1,2,4].includes(input.gpuRatingLanes)?input.gpuRatingLanes:fastHost?4:2;
+          return createGpuRatingPool(selection,source,lanes,message.gpuHost?(request,ports)=>
+            postMessage({type:'gpu-worker',request},ports):undefined);
+        }
+        const {createGpuTeamOptimizer}=await import('./gpu-team-optimizer');
+        return createGpuTeamOptimizer(jobData,input.objective);
+      };
       const websiteOnly=async()=>{
         if(withoutGameOnlyCharts(jobData)===jobData)return;
         selection={...selection,websiteSongsOnly:true};
         jobData=await dataFor(selection);
         if(input.useGpu){
           gpuSearch?.close();
-          const {createGpuTeamOptimizer}=await import('./gpu-team-optimizer');
-          gpuSearch=await createGpuTeamOptimizer(jobData,input.objective);
+          gpuSearch=await createGpu();
           gpuSearches.set(selection,gpuSearch);
         }
       };
@@ -1172,8 +1347,7 @@ self.addEventListener('message',async({data:message,ports})=>{
       let compute;
       if(input.useGpu){
         progress(0,1,0,'Starting GPU search');
-        const {createGpuTeamOptimizer}=await import('./gpu-team-optimizer');
-        gpuSearch=await createGpuTeamOptimizer(jobData,input.objective);
+        gpuSearch=await createGpu();
         gpuSearches.set(selection,gpuSearch);
         notify('search-backend',{backend:'gpu'});
         progress(0,1,0,'Finding teams');
@@ -1188,15 +1362,26 @@ self.addEventListener('message',async({data:message,ports})=>{
           throw Error('This song is outside the selected event. Choose an event song.');
       }
       if(unitMode){
-        if(!['best','holomem'].includes(options.goal))throw Error('Choose Best team or Build around cards for Unit Score.');
-        const candidates=await searchUnitScoreRows(jobData,payload,selection,progress,ports);
-        const ranked=await planUnitScoreRows(jobData,payload,candidates,selection,progress,ports);
-        const rows=ranked.slice(0,options.topN).map(team=>({...team,score:undefined,maxScore:undefined,unitScore:undefined}));
+        const next=options.goal==='next';
+        if(next&&!gpuSearch)throw Error('Enable Use GPU in Settings to search Next upgrades for Unit Score.');
+        const focusCardIds=payload.extras.nextDeck??[];
+        const current=next?{...payload,options:{...options,cardPool:'owned',
+          goal:focusCardIds.length?'holomem':'best',focusCardIds}}:payload;
+        if(next)progress(0,1,0,'Finding your current best Unit Score');
+        const candidates=await searchUnitScoreRows(jobData,current,selection,progress,ports);
+        const ranked=await planUnitScoreRows(jobData,current,candidates,selection,progress,ports);
+        let result={results:ranked};
+        if(next){
+          progress(0,1,0,'Finding Unit Score upgrades');
+          const currentUnitTeams=ranked.slice(0,5).map(({order,outfitId,displayUnitScore})=>({order,outfitId,displayUnitScore}));
+          [result]=await solveShards({...payload,currentUnitTeams,currentUnitPlan:ranked[0]?.plan},selection,progress,ports);
+        }
+        const rows=result.results.slice(0,options.topN).map(team=>({...team,score:undefined,maxScore:undefined,unitScore:undefined}));
         if(gpuSearch)compute={backend:'gpu',...gpuSearch.metrics()};
-        notify('result',{results:teamsForUi(data,rows,payload),excluded,boardWarnings,boardRankOverrides,compute});
+        notify('result',{results:teamsForUi(data,rows,payload),baseline:result.baseline,excluded,boardWarnings,boardRankOverrides,compute});
         return;
       }
-      const runFallback=job=>runReferenceJob(jobData,job.operation,job.payload);
+      const runFallback=job=>runCpuJob(jobData,job.operation,job.payload);
       const runBoard=async(responses,query)=>{
         if(hasBoardProtection(query.boardOpt)){
           const candidates=collectBoardFinalists(responses,query.options).slice(0,Math.max(24,query.options.topN));
@@ -1213,11 +1398,18 @@ self.addEventListener('message',async({data:message,ports})=>{
       };
       if(input.objective==='holomemLb'){
         const driver={
+          reusePlans:!!gpuSearch,
+          rankFundedTeams:gpuSearch?.rankFundedTeams,
+          ...(gpuSearch&&{refine:async jobs=>(await runJobs(jobs.map(({query,row,donorLayouts,quality})=>({
+            operation:'_hd_plan',payload:{...query,options:{...query.options,leaderMode:'fixed'},
+              team:row.order,outfitId:row.outfitId,leaderChar:row.leaderChar,seedBoards:row.plan.saves,
+              donorLayouts,generalist:true,qualityRefine:quality},
+          })),selection,()=>{},ports)).map(result=>result.plan)}),
           solve:async(query,ratingProgress=progress,{rawJoint=false}={})=>{
             const responses=await solveShards(query,selection,ratingProgress,ports);
             if(gpuSearch){
               const rows=responses[0]?.results??[];
-              return query.boardOpt?rows:gpuSearch.rankResults(query,rows);
+              return query.boardOpt||query.ratingScout?rows:gpuSearch.rankResults(query,rows);
             }
             if(query.limits.jointBoards)return rawJoint?collectBoardFinalists(responses,query.options):runBoard(responses,query);
             return mergeReferenceResults(responses,query.options);
@@ -1228,6 +1420,109 @@ self.addEventListener('message',async({data:message,ports})=>{
           onProgress:progress,
         };
         const ratingInput={...input,ratingNow:input.ratingNow??Date.now()};
+        const displayRating=(rating,query,mobile)=>{
+          const displayRows=rows=>withDisplayUnitScores(jobData,query,teamsForUi(data,rows,query)).map(team=>{
+            if(!mobile)return team;
+            const reviewIndex=lastReview.rows.push(mobile.team(team))-1;
+            return {...team,reviewIndex};
+          });
+          return {...rating,results:displayRows(rating.results),
+            ratingGroups:rating.ratingGroups.map(group=>({...group,results:displayRows(group.results)}))};
+        };
+        if(input.ratingLeaderIds){
+          const names=new Map(data.cards.map(card=>[card.characterId,card.character]));
+          const leaders=[...new Set(input.ratingLeaderIds)].filter(id=>names.has(id));
+          if(!leaders.length)throw Error('No Holomems match the leader filter.');
+          const total=leaders.length;
+          const requested=Number.isInteger(input.ratingQuickLimit)&&input.ratingQuickLimit>0?input.ratingQuickLimit:0;
+          const limit=Math.min(total,requested);
+          const batchPayload={...payload,options:{...options,leaderMode:'auto',outfitId:null}};
+          const runBatch=async mobile=>{
+            lastPreview={data:jobData,payload:batchPayload,input,previewData};
+            lastReview=mobile?{engine:mobile.engine,rows:[]}:null;
+            const ratingLeaders=[];
+            const concurrency=gpuSearch?.leaderConcurrency??1;
+            const summary={ratingLeaders,leaderTotal:total,results:[],ratingGroups:[],byMax:options.sortBy==='max',
+              excluded,notes,boardWarnings,boardRankOverrides,scoringModel:mobile?'mobile':'website'};
+            if(limit)summary.quickTop={limit:requested,screened:null};
+            notify('rating-batch',summary);
+            let finalists=leaders.map(leaderId=>({leaderId,candidateCharts:referenceRatingCandidates(jobData,ratingInput,leaderId)}));
+            const queryFor=leaderId=>({...batchPayload,options:{...batchPayload.options,leaderChar:leaderId}});
+            if(limit){
+              const screened=[];
+              const scout={
+                solve:query=>driver.solve(query,()=>{}),
+                plan:(query,rows)=>planReferenceRows(query,rows,selection,()=>{},ports,undefined,true),mobile,
+              };
+              let scanned=0;
+              progress(0,total,0,'Screening leaders');
+              await eachLeader(finalists,concurrency,async(row,index)=>{
+                if(row.candidateCharts.length)screened[index]={...row,
+                  forecast:await forecastRating(jobData,queryFor(row.leaderId),ratingInput,row.candidateCharts,scout)};
+                progress(++scanned,total,.2*scanned/total,`Screening leaders · ${scanned} of ${total}`);
+              });
+              finalists=shortlistRatingLeaders(screened.filter(Boolean),limit);
+              summary.quickTop.screened=total;
+              summary.leaderTotal=finalists.length;
+              notify('rating-batch',summary);
+            }
+            let completedWork=0;
+            const start=limit ? .2 : 0;
+            await eachLeader(finalists,concurrency,async({leaderId,candidateCharts})=>{
+              const name=names.get(leaderId);
+              let leaderProgress=0,previousStage;
+              const update=phase=>progress(ratingLeaders.length,finalists.length,
+                start+(1-start)*completedWork/finalists.length,phase);
+              const report=(done,jobs,fraction,phase)=>{
+                const next=Math.max(leaderProgress,Math.min(.99,fraction||0));
+                if(next===leaderProgress&&phase===previousStage)return;
+                completedWork+=next-leaderProgress;
+                leaderProgress=next;
+                previousStage=phase;
+                update(`${name}${phase?' · '+phase:''}`);
+              };
+              update(name);
+              const row={leaderId,name};
+              if(candidateCharts.length){
+                const query=queryFor(leaderId);
+                const rating=await searchReferenceRating(jobData,query,{...ratingInput,leaderCharacterId:leaderId},{
+                  ...driver,candidateCharts,onProgress:report,prepareMobile:mobile?()=>mobile:undefined,
+                });
+                if(rating.results.length||rating.ratingGroups.length)Object.assign(row,displayRating(rating,query,mobile));
+                else row.status='No matching team';
+              }else row.status='No eligible charts';
+              ratingLeaders.push(row);
+              notify('rating-leader',{leader:row});
+              completedWork+=1-leaderProgress;
+            });
+            if(gpuSearch)summary.compute={backend:'gpu',...gpuSearch.metrics()};
+            notify('result',summary);
+          };
+          if(wantsMobileRating){
+            try{
+              const charts=new Map();
+              for(const leader of leaders)for(const {song,charts:candidates} of referenceRatingCandidates(jobData,ratingInput,leader)){
+                for(const chart of candidates){
+                  const key=song.id+'_'+chart.type;
+                  charts.set(key,{key,level:chart.level,notes:chart.notes});
+                }
+              }
+              if(charts.size){
+                const mobile=await prepareMobileRating(jobData,batchPayload,input,[...charts.values()],selection,ports);
+                await runBatch(mobile);
+                return;
+              }
+            }catch(error){
+              if(!(error instanceof MobileCoverageError))throw error;
+              notes.push(error.message);
+              completion=0;
+              progress(0,total,0,'Searching with score estimates');
+            }
+          }
+          await websiteOnly();
+          await runBatch(null);
+          return;
+        }
         let rating,mobile;
         if(wantsMobileRating){
           try {
@@ -1250,17 +1545,9 @@ self.addEventListener('message',async({data:message,ports})=>{
             await searchReferenceRating(jobData,payload,ratingInput,driver);
           if(!gpuSearch)lastReferenceRating={key,result:rating};
         }
-        const detailRows=[];
-        const displayRows=rows=>withDisplayUnitScores(jobData,payload,teamsForUi(data,rows,payload)).map(team=>{
-          if(!mobile)return team;
-          const reviewIndex=detailRows.push(mobile.team(team))-1;
-          return {...team,reviewIndex};
-        });
-        const results=displayRows(rating.results);
-        const ratingGroups=rating.ratingGroups.map(group=>({...group,results:displayRows(group.results)}));
-        if(mobile)lastReview={engine:mobile.engine,rows:detailRows};
+        if(mobile)lastReview={engine:mobile.engine,rows:[]};
         if(gpuSearch)compute={backend:'gpu',...gpuSearch.metrics()};
-        notify('result',{...rating,excluded,notes,boardWarnings,boardRankOverrides,results,ratingGroups,compute,
+        notify('result',{...displayRating(rating,payload,mobile),excluded,notes,boardWarnings,boardRankOverrides,compute,
           scoringModel:wantsMobileRating?(mobile?'mobile':'website'):undefined});
         return;
       }

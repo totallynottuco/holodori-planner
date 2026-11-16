@@ -2,7 +2,8 @@ import {boardRootNodeIds,connectedBoardNodeIds,resolveBoardNodes} from '../holol
 
 export type SavedBoard = {nodes:string[];cards:Record<string,string>};
 export type SavedBoards = Record<string,SavedBoard>;
-type BoardChange = {key:string;kind:'buy'|'reset'|'connect';id:string;card?:string};
+type BoardChange = {key:string;kind:'buy'|'reset'|'connect';id:string;card?:string;recommended?:true};
+type ConnectLocation = {owner:string;slot:string};
 const emptyBoard:SavedBoard={nodes:[],cards:{}};
 
 export function boardChanges(before:SavedBoard|undefined,after:SavedBoard|undefined):BoardChange[] {
@@ -17,9 +18,22 @@ export function boardChanges(before:SavedBoard|undefined,after:SavedBoard|undefi
   ];
 }
 
+export function boardConnectLocations(boards:SavedBoards):Map<string,ConnectLocation> {
+  const locations=new Map<string,ConnectLocation>();
+  for(const [owner,board] of Object.entries(boards)){
+    for(const [slot,card] of Object.entries(board.cards))locations.set(card,{owner,slot});
+  }
+  return locations;
+}
+
 export function remainingBoardChanges(original:SavedBoard|undefined,optimized:SavedBoard,
   saved:SavedBoard|undefined,connectOverrides?:Record<string,string|null>):BoardChange[] {
   const changes=boardChanges(original,optimized);
+  if(saved)for(const [id,card] of Object.entries(optimized.cards)){
+    if(original?.cards[id]===card&&saved.cards[id]!==card){
+      changes.push({key:'connect:'+id,kind:'connect',id,card,recommended:true});
+    }
+  }
   for(const [id,card] of Object.entries(connectOverrides??{})){
     const key='connect:'+id;
     const index=changes.findIndex(change=>change.key===key);
@@ -185,6 +199,30 @@ export function mergeSavedBoards(imported:SavedBoards,saved:SavedBoards):SavedBo
     [id,{nodes:board.nodes,cards:Object.fromEntries(Object.entries(board.cards).filter(([,card])=>!assigned.has(card)))}])),...saved};
 }
 
+export function boardPlanUpdates(current:SavedBoards,requested:SavedBoards,expected=current):SavedBoards {
+  const assignments=new Map<string,{owner:string;slot:string}>();
+  for(const [owner,board] of Object.entries(requested)){
+    for(const [slot,card] of Object.entries(board.cards)){
+      if(expected[owner]?.cards[slot]===card)continue;
+      if(assignments.has(card))throw Error('Choose one Connect slot for this card before saving.');
+      assignments.set(card,{owner,slot});
+    }
+  }
+  const updates={...requested};
+  for(const [owner,board] of Object.entries({...current,...requested})){
+    const movesAway=([slot,card]:[string,string])=>{
+      const target=assignments.get(card);
+      return target&&(owner!==target.owner||slot!==target.slot);
+    };
+    const cards=Object.entries(board.cards);
+    const remaining=cards.filter(entry=>!movesAway(entry));
+    if(remaining.length!==cards.length)updates[owner]={...board,cards:Object.fromEntries(remaining)};
+    // Include the source on a retry after a write failed but the local move was already applied.
+    else if(Object.entries(expected[owner]?.cards??{}).some(entry=>movesAway(entry)))updates[owner]=board;
+  }
+  return updates;
+}
+
 export function protectedSavedBoards(imported:SavedBoards,saved:SavedBoards,protection:Record<string,string>) {
   const plans:SavedBoards={};
   for(const [owner,board] of Object.entries(saved)){
@@ -206,7 +244,7 @@ export function checkSavedBoardAssignments(boards:SavedBoards) {
   const cards=new Set<string>();
   for(const board of Object.values(boards)){
     for(const card of Object.values(board.cards)){
-      if(cards.has(card))throw Error('A Connect card is already assigned. Save both affected Boards together.');
+      if(cards.has(card))throw Error('A Connect card can only occupy one slot.');
       cards.add(card);
     }
   }

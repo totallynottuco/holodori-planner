@@ -54,6 +54,48 @@ export function boardReachability(nodes,save,dreamRank) {
   return state?{active:state.active,spent:state.spent}:null;
 }
 
+// Find all cuts in one pass over the purchased graph. A DFS child is
+// severed only when its subtree has no route above the removed node.
+export function boardResetCuts(nodes,save,dreamRank){
+  const {root,byId,neighbors}=geometryFor(nodes,dreamRank);
+  const purchased=new Set(save.nodes);
+  if(save.nodes.some(id=>!byId.has(id)))return null;
+  const free=node=>node.pts===0&&(node.lock==null||node.lock<=dreamRank);
+  const unlocked=node=>purchased.has(node.id)||free(node);
+  const visited=new Map();
+  function walk(node,parent){
+    const enter=visited.size;
+    const record={node,parent,enter,low:enter,ancestor:null};
+    visited.set(node,record);
+    for(const next of neighbors(node)){
+      if(next===parent?.node||!unlocked(next))continue;
+      const seen=visited.get(next);
+      record.low=Math.min(record.low,seen?seen.enter:walk(next,record));
+    }
+    return record.low;
+  }
+  if(root&&unlocked(root))walk(root,null);
+  const cuts=new Map(save.nodes.map(id=>[id,[]]));
+  for(const record of visited.values()){
+    const {parent,low}=record;
+    if(!parent)continue;
+    const separates=low>=parent.enter&&purchased.has(parent.node.id)&&!free(parent.node);
+    record.ancestor=separates?parent:parent.ancestor;
+  }
+  // Emit only affected pairs, in saved order, including any nodes that
+  // were unreachable before the reset. Free connectors cannot be cut.
+  for(const id of save.nodes){
+    const record=visited.get(byId.get(id));
+    if(!record){
+      for(const removed of cuts.values())removed.push(id);
+      continue;
+    }
+    if(!free(record.node))cuts.get(id).push(id);
+    for(let cut=record.ancestor;cut;cut=cut.ancestor)cuts.get(cut.node.id).push(id);
+  }
+  return cuts;
+}
+
 function affectsTeam(node,owner,order,leader) {
   if(node.songTrigger||!statKinds.has(node.kind)&&!skillKinds.has(node.kind))return false;
   if(node.charTrigger==='WORK'||node.charTrigger==='SET_LIVE_LEADER'&&owner!==leader)return false;

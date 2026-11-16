@@ -3,20 +3,23 @@ import {nextAcquisitionChoices} from './acquisition-exchanges.js';
 const key='optimizer_preferences';
 const record=value=>value&&typeof value==='object'&&!Array.isArray(value)?value:{};
 const cardPools=['owned','ownedCustom','allMaxed','allCustom'];
+export const ratingQuickCounts=[1,3,5,10,20];
 
 export function optimizerDefaults(){
   return {
     mode:'best',objective:'score',eventId:'',eventChapter:null,eventChapterEventId:'',chartKey:'',
     eventScoreSongId:'',eventScoreChartKey:'',eventPointsSongId:'',eventPointsChartKey:'',pc:false,diffMin:null,diffMax:null,
     difficultyMode:'levels',difficultyTypes:['easy','normal','hard','expert'],
-    pool:'owned',customLevel:null,customBloom:null,keepHigherLevel:true,keepHigherBloom:true,
+    pool:'owned',customLevel:null,customBloom:null,keepHigherLevel:true,keepHigherBloom:true,excludeThreeStars:false,excludeFourStars:false,
     rosterSource:'owned',plannedPool:'owned',
     lockedCardIds:[],leaderCharacterId:'',leaderMode:'auto',outfitId:null,outfitTraining:null,allLeaders:false,leaderPickerInvitedOnly:true,
     powerUpPreset:'auto',
     boardMode:'optimize',boardSortHolomems:false,boardIgnoreExisting:false,boardNoRefund:false,boardMaxResets:null,boardResetLimit:0,boardUnlimited:false,
-    boardMaxPoints:false,boardAllInvited:false,boardBranches:['red','blue','yellow','green'],boardMaterials:{},boardKeep:{},boardProtection:{},
+    boardMaxPoints:false,boardAllInvited:false,boardBranches:['red','blue','yellow','green'],boardOptimizeConnectors:true,
+    boardMaterials:{},boardKeep:{},boardProtection:{},
     topN:10,sortBy:'avg',nextLevel:null,nextBloom:0,nextCount:1,nextBlooms:true,nextAcquisition:'any',
     liveBoost:3,passportOverride:null,ratingCharacterId:'',ratingOutfitId:null,ratingOutfitTraining:null,ratingLeaderMode:'auto',ratingInvitedOnly:true,
+    ratingScope:'single',ratingSelectedIds:[],ratingQuickCount:5,ratingBatchInvitedOnly:false,ratingRowsLimit:0,
     ratingAllSongs:false,ratingSongCount:5,ratingTeamsPerSong:3,ratingMaxDifficulty:null,ratingMerge:false,
   };
 }
@@ -24,8 +27,9 @@ const choices={
   mode:['best','holomem','next'],objective:['score','event','eventPoints','holomemLb','unitScore'],difficultyMode:['levels','types'],
   rosterSource:['owned','planned'],
   nextAcquisition:nextAcquisitionChoices.map(([id])=>id),
-  powerUpPreset:['auto','allMax','ownedMax','owned'],
+  powerUpPreset:['auto','search','allMax','ownedMax','owned'],
   pool:cardPools,plannedPool:cardPools,leaderMode:['auto','fixed','holomem'],
+  ratingScope:['single','selected','quick','all'],ratingQuickCount:ratingQuickCounts,ratingRowsLimit:[0,5,10,20],
   ratingLeaderMode:['auto','fixed','holomem'],boardMode:['optimize','imported','saved','none'],sortBy:['avg','max'],
 };
 function allProfiles(storage){

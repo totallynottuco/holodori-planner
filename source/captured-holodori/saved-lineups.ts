@@ -15,7 +15,7 @@ export const savedLineupSchema=z.object({
     customBloom:bloom.nullable(),
     noDelevel:z.boolean(),noDebloom:z.boolean(),
   }).optional(),
-  powerUpPreset:z.enum(['auto','allMax','ownedMax','owned']).optional(),
+  powerUpPreset:z.enum(['auto','search','allMax','ownedMax','owned']).optional(),
   plannedCards:z.array(z.object({cardId:identifier,level,potentialUpgradeCount:bloom,
     levelLimitBreakCount:z.number().int().min(0).max(4)})).optional(),
   leaderChar:identifier,outfitId:identifier.nullable(),

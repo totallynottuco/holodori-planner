@@ -156,6 +156,7 @@ simple(functions.get('T1').body,{Identifier(node){if(node.name==='M1')patch(node
 // The checklist fills the original page slot with Holodori groups and tiers.
 patch(0,0,'const holoTierSlot={props:{content:Object},render(){return i("div",Lw,[this.content]);}};\nconst holoChecklist=Z1(()=>import("/captured/achievements-ui.js").then(({createAchievements})=>createAchievements({h:i,vnode:g,resolve:M,Search:Ys,Toggle:Ae,Rail:sw,Row:Qs,OverlayPanel:N1,headingClass:ow.class,titleClass:lw.class})));\n','Lazy Holodori achievement checklist in the captured Vue runtime');
 patch(0,0,'const holoProgress=Z1(()=>import("/captured/account-progress-ui.js").then(({createAccountProgress})=>createAccountProgress({h:i,vnode:g,resolve:M,Search:Ys,OverlayPanel:N1,Dialog:le,Toggle:Ae,headingClass:ow.class,titleClass:lw.class})));\n','Lazy account progress and Board in the captured Vue shell');
+patch(0,0,'const holoLeaderboards=Z1(()=>import("/captured/holomem-leaderboard-ui.js").then(({createHolomemLeaderboards})=>createHolomemLeaderboards({h:i,vnode:g,resolve:M,Search:Ys,Dialog:le,headingClass:ow.class,titleClass:lw.class})));\n','Lazy Holomem Leaderboards');
 patch(0,0,'const importTeamOptimizer=()=>import("/captured/team-optimizer-ui.js");\nconst prepareTeamOptimizer=async()=>{const module=await importTeamOptimizer();await module.prepareOptimizerWorkspace().catch(()=>{});};\nconst holoTeamOptimizer=()=>importTeamOptimizer().then(({createTeamOptimizer})=>createTeamOptimizer({h:i,vnode:g,resolve:M,Search:Ys,Dialog:le,Toggle:Ae,headingClass:ow.class,titleClass:lw.class}));\n','Resolve the optimizer catalog before entering its captured route');
 patch(0,0,'import {holoKeepAlive} from "./vendor-8ba3b986.js";\n','Reuse the captured Vue KeepAlive component for the optimizer route');
 simple(functions.get('Jo').body,{CallExpression(node){
@@ -219,7 +220,7 @@ simple(functions.get('Pw').body,{ConditionalExpression(node){
 for(const name of ['allEvents','permanentTasks','checkOldData','checkOldTraces','checkDuplicates','checkOldTasks']){
   let found=false;simple(ast,{Property(node){if(node.method&&key(node)===name){patch(node.value.body.start,node.value.body.end,name==='allEvents'||name==='permanentTasks'?'{return [];}':'{return true;}','Deferred or inapplicable game migration '+name);found=true;}}});
 }
-replaceInit('_k','[{path:"/",redirect:"/characters"},{path:"/characters",component:c6},{path:"/planner",component:Tb},{path:"/inventory",component:mC},{path:"/achievements",component:ww},{path:"/progress",component:holoProgress},{path:"/team-optimizer",component:holoTeamOptimizer,beforeEnter:prepareTeamOptimizer},{path:"/settings",component:zm},{path:"/:pathMatch(.*)*",redirect:"/characters"}]','Add Progress and Team Optimizer to the captured router');
+replaceInit('_k','[{path:"/",redirect:"/characters"},{path:"/characters",component:c6},{path:"/planner",component:Tb},{path:"/inventory",component:mC},{path:"/achievements",component:ww},{path:"/progress",component:holoProgress},{path:"/team-optimizer",component:holoTeamOptimizer,beforeEnter:prepareTeamOptimizer},{path:"/leaderboards",component:holoLeaderboards},{path:"/settings",component:zm},{path:"/:pathMatch(.*)*",redirect:"/characters"}]','Add Progress, Team Optimizer and Leaderboards to the captured router');
 for(const name of ['Ha','ol','I4','hn','wi','k7','by'])replaceFunction(name,'return null;','Remove online-only or retired game settings component '+name);
 for(const name of ['f4','Hg','dy','u4'])replaceInit(name,'{render(){return null;}}','Remove online game account/import controller '+name);
 replaceInit('is','{}','Remove cloud synchronization provider');
@@ -251,7 +252,7 @@ replaceObjectMethod('y3','methods','download','return window.__holodoriDesktop.e
 replaceFunction('Pn','return null;','Remove the retired game selector');
 replaceObjectMethod('An',null,'data','return {list:{hololive:{name:"hololive Dreams",released:true}}};');
 replaceInit('W5',JSON.stringify([['2026-11-09','en','features','Actual captured interface with Holodori cards, progression, materials and offline profiles.']]),'Own application history');
-replaceFunction('kn',`return t==="achievements"?${text(prop(bindings.get('bn'),'achievements').value)}:t==="progress"?${text(prop(bindings.get('wn'),'tier').value)}:t==="team-optimizer"?'<path d="M9 18V5l12-2v13M9 18a3 2 0 1 1-6 0 3 2 0 0 1 6 0Zm12-2a3 2 0 1 1-6 0 3 2 0 0 1 6 0Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>':holoSidebar(t);`,'Use the captured sidebar artwork and a music note for Team Optimizer');
+replaceFunction('kn',`return t==="achievements"||t==="leaderboards"?${text(prop(bindings.get('bn'),'achievements').value)}:t==="progress"?${text(prop(bindings.get('wn'),'tier').value)}:t==="team-optimizer"?'<path d="M9 18V5l12-2v13M9 18a3 2 0 1 1-6 0 3 2 0 0 1 6 0Zm12-2a3 2 0 1 1-6 0 3 2 0 0 1 6 0Z" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>':holoSidebar(t);`,'Use the captured sidebar artwork and a music note for Team Optimizer');
 replaceInit('ss','{hololive:"#a98bf5"}','Game theme tint');
 for(const property of bindings.get('ht').properties.filter(node=>String(key(node)).startsWith('VITE_')))patch(property.value.start,property.value.end,'""','Remove online service configuration');
 
@@ -305,6 +306,9 @@ simple(functions.get('Jo').body,{CallExpression(node){
   const optimizer=progress.replace('to: "/progress"','to: "/team-optimizer", onPointerenter:prepareTeamOptimizer, onFocus:prepareTeamOptimizer')
     .replace('name: "progress"','name: "team-optimizer"').replace('"Progress"','"Team Optimizer"');
   patch(node.end,node.end,','+optimizer,'Reuse the captured sidebar entry pattern for Team Optimizer');
+  const leaderboards=progress.replace('"/progress"','"/leaderboards"').replace('name: "progress"','name: "leaderboards"')
+    .replace('"Progress"','"Leaderboards"');
+  patch(node.end,node.end,','+leaderboards,'Add the Leaderboards sidebar entry');
 }});
 simple(functions.get('b5').body,{Literal(node){if(node.value==='E')patch(node.start,node.end,'"B"','Holodori Bloom stage prefix');}});
 simple(functions.get('K4').body,{TemplateLiteral(node){if(text(node)==='`E${r}`')patch(node.start,node.end,'`B${r}`','Holodori Bloom in shared artwork');}});
@@ -548,7 +552,59 @@ labels.back_to_seelie='Back to Planner';
 await adaptCapturedData(stage,source,labels);
 await adaptCapturedLazyAssets(stage);
 await fs.writeFile(path.join(stage,'entry.js'),'import "'+path.join(root,'source/captured-holodori/desktop.js').replaceAll('\\','/')+'";await window.__holodoriDesktop.finishStartup(()=>import("./assets/index-f19fde22.js"));');
-const result=await build({entryPoints:{main:path.join(stage,'entry.js'),'team-optimizer-worker':path.join(root,'source/captured-holodori/team-optimizer-worker.js'),'outfit-decode-worker':path.join(root,'source/captured-holodori/outfit-decode-worker.js')},bundle:true,splitting:true,format:'esm',outdir:path.join(out,'app'),minify:true,target:'es2022',legalComments:'inline',metafile:true,alias:{'@shared':path.join(root,'source/hololive/vendor/shared')},plugins:[{name:'captured-game-boundaries',setup(build){build.onResolve({filter:/^\/captured\//},args=>({path:path.join(root,'source/captured-holodori',args.path.slice('/captured/'.length)).replace(/game\.js$/,'game.ts').replace(/assets\.js$/,'assets.ts')}));}}]});
+const result=await build({entryPoints:{main:path.join(stage,'entry.js'),'team-optimizer-worker':path.join(root,'source/captured-holodori/team-optimizer-worker.js'),'outfit-decode-worker':path.join(root,'source/captured-holodori/outfit-decode-worker.js')},bundle:true,splitting:true,format:'esm',outdir:path.join(out,'app'),minify:true,target:'es2022',charset:'utf8',legalComments:'linked',metafile:true,alias:{'@shared':path.join(root,'source/hololive/vendor/shared')},plugins:[{name:'captured-game-boundaries',setup(build){
+  build.onResolve({filter:/^\/captured\//},args=>({path:path.join(root,'source/captured-holodori',args.path.slice('/captured/'.length)).replace(/game\.js$/,'game.ts').replace(/assets\.js$/,'assets.ts')}));
+  build.onLoad({filter:/progression\.json$/},async({path:filename})=>{
+    const data=JSON.parse(await fs.readFile(filename,'utf8'));
+    const fields=['memberName','groupId','groupLabel'];
+    const columns=['id','cardName','rarity','attribute','stat','animation'];
+    if(!data.cards?.every(card=>typeof card.assetId==='string'&&fields.every(key=>typeof card[key]==='string')))
+      return {loader:'json',contents:JSON.stringify(data)};
+    const members={};
+    for(const card of data.cards){
+      if(card.id==='card-'+card.assetId)delete card.assetId;
+      const identity=members[card.id.slice(5,10)]??={};
+      for(const field of fields){
+        identity[field]??=card[field];
+        if(identity[field]===card[field])delete card[field];
+      }
+    }
+    data.cards=data.cards.map(card=>{
+      const row=columns.map(key=>card[key]);
+      if(columns.some(key=>!Object.hasOwn(card,key)))return card;
+      for(const key of columns)delete card[key];
+      if(Object.keys(card).length)row.push(card);
+      return row;
+    });
+    return {loader:'js',contents:`const data=${JSON.stringify(data)},members=${JSON.stringify(members)};
+      const columns=${JSON.stringify(columns)};
+      data.cards=data.cards.map(row=>{
+        const card=Array.isArray(row)?{...row[columns.length],...Object.fromEntries(columns.map((key,index)=>[key,row[index]]))}:row;
+        card.assetId??=card.id.slice(5);
+        for(const field of ${JSON.stringify(fields)})card[field]??=members[card.id.slice(5,10)][field];
+        return card;
+      });
+      export default data;`};
+  });
+  build.onLoad({filter:/card-catalog-order\.json$/},async({path:filename})=>{
+    const order=JSON.parse(await fs.readFile(filename,'utf8'));
+    const variants=['nrml','cmmn','uniq'];
+    const ids=Object.keys(order).sort((a,b)=>order[a]-order[b]);
+    if(ids.some((id,index)=>order[id]!==index+1))return {loader:'json',contents:JSON.stringify(order)};
+    const parts=ids.map(id=>/^card-(\d{5})-([345])-(nrml|cmmn|uniq)-(\d{4})-00$/.exec(id));
+    if(parts.some(part=>!part))return {loader:'json',contents:JSON.stringify(order)};
+    const compact=parts.map(([,member,tier,variant,design])=>
+      (((Number(member)*9+(Number(tier)-3)*3+variants.indexOf(variant))*10000)+Number(design)).toString(36).padStart(7,'0'));
+    return {loader:'js',contents:`
+      const variants=${JSON.stringify(variants)};
+      export default Object.fromEntries(${JSON.stringify(compact.join(''))}.match(/.{7}/g).map((key,i)=>{
+        const encoded=parseInt(key,36),type=Math.floor(encoded/10000);
+        const member=String(Math.floor(type/9)).padStart(5,'0');
+        const design=String(encoded%10000).padStart(4,'0');
+        return ['card-'+member+'-'+(3+Math.floor(type/3)%3)+'-'+variants[type%3]+'-'+design+'-00',i+1];
+      }));`};
+  });
+}}]});
 await fs.cp(path.join(root,'hololive-assets/assets'),path.join(out,'assets'),{recursive:true});
 const outfitDir=path.join(out,'assets/outfits');
 const outfitFiles=new Set(await fs.readdir(outfitDir));
@@ -600,7 +656,7 @@ await fs.writeFile(path.join(optimizerAssets,'hit-sound-updates/index.json'),'{}
 for(const file of ['hdsolver.js','hdsolver.wasm','solver-data.json','optimizer-events.json','event-titles.json','song-lengths.json','song-unlocks.json'])
   await fs.copyFile(path.join(root,'evidence/team-optimizer/reference',file),path.join(optimizerAssets,file));
 for (const file of ['optimizer-charts.json', 'optimizer-chart-events-v3.bin',
-  'optimizer-preview-lanes.json','optimizer-preview-lanes.bin','optimizer-preview-hits.json']) {
+  'optimizer-preview-lanes.json','optimizer-preview-lanes.bin','optimizer-preview-hits.json','optimizer-preview-geometry.json']) {
   await fs.copyFile(path.join(root, 'source/hololive/scoring-reviewed', file), path.join(optimizerAssets, file));
 }
 for (const file of ['scoring.json', 'chart-denominators.json']) {
@@ -652,12 +708,13 @@ await fs.copyFile(path.join(root,'source/captured-holodori/achievements.css'),pa
 await fs.copyFile(path.join(root,'source/captured-holodori/account-progress.css'),path.join(out,'captured/account-progress.css'));
 await fs.copyFile(path.join(root,'source/captured-holodori/holomem-board.css'),path.join(out,'captured/holomem-board.css'));
 await fs.copyFile(path.join(root,'source/captured-holodori/team-optimizer.css'),path.join(out,'captured/team-optimizer.css'));
+await fs.copyFile(path.join(root,'source/captured-holodori/holomem-leaderboard.css'),path.join(out,'captured/holomem-leaderboard.css'));
 await fs.copyFile(path.join(root,'source/captured-holodori/desktop-settings.css'),path.join(out,'captured/desktop-settings.css'));
 await fs.mkdir(path.join(out,'img/flags'),{recursive:true});
 for(const name of ['de','en','es','fr','id','it','ja','ko','pt','ru','th','tr','tw','vi','zh']){const files=await fs.readdir(path.join(archive,'upstream/assets'));const file=files.find(file=>file.startsWith(name+'-')&&file.endsWith('.svg'));if(file)await fs.copyFile(path.join(archive,'upstream/assets',file),path.join(out,'img/flags',name+'.svg'));}
 await fs.mkdir(path.join(out,'img/other'),{recursive:true});await fs.copyFile(path.join(archive,'upstream/img/other/times.svg'),path.join(out,'img/other/times.svg'));
 await fs.copyFile(path.join(archive,'upstream/img/other/question-mark.svg'),path.join(out,'img/other/question-mark.svg'));
-const html='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Hololive Dreams Planner</title><link rel="icon" href="/branding/icon.ico"><link rel="stylesheet" href="/captured/vendor.css"><link rel="stylesheet" href="/captured/theme.css"><link rel="stylesheet" href="/captured/layouts.css"><link rel="stylesheet" href="/captured/desktop.css"><link rel="stylesheet" href="/captured/card-stats.css"><link rel="stylesheet" href="/captured/achievements.css"><link rel="stylesheet" href="/captured/account-progress.css"><link rel="stylesheet" href="/captured/holomem-board.css"><link rel="stylesheet" href="/captured/team-optimizer.css"><script type="module" src="/app/main.js"></script></head><body style="background-color:#0D132B"><div id="app"></div></body></html>';
+const html='<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Hololive Dreams Planner</title><link rel="icon" href="/branding/icon.ico"><link rel="stylesheet" href="/captured/vendor.css"><link rel="stylesheet" href="/captured/theme.css"><link rel="stylesheet" href="/captured/layouts.css"><link rel="stylesheet" href="/captured/desktop.css"><link rel="stylesheet" href="/captured/card-stats.css"><link rel="stylesheet" href="/captured/achievements.css"><link rel="stylesheet" href="/captured/account-progress.css"><link rel="stylesheet" href="/captured/holomem-board.css"><link rel="stylesheet" href="/captured/team-optimizer.css"><link rel="stylesheet" href="/captured/holomem-leaderboard.css"><script type="module" src="/app/main.js"></script></head><body style="background-color:#0D132B"><div id="app"></div></body></html>';
 const mainOutput=Object.entries(result.metafile.outputs).find(([filename])=>filename.endsWith('/app/main.js'))?.[1];
 const capturedEntry=mainOutput?.imports.find(entry=>entry.kind==='dynamic-import'&&path.basename(entry.path).startsWith('index-f19fde22-'));
 const preload=capturedEntry?`<link rel="modulepreload" href="/app/${path.basename(capturedEntry.path)}">`:'';

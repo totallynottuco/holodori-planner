@@ -1,7 +1,7 @@
 // Score the captured Active/Special windows on the GPU. The host prepares
 // Board effects, unlock conditions and chart curves using the shared model.
 const shader=`
-struct Options { count: u32, pad0: u32, pad1: u32, pad2: u32 }
+struct Options { count: u32, maximumOnly: u32, pad1: u32, pad2: u32 }
 @group(0) @binding(0) var<storage,read> rows: array<f32>;
 @group(0) @binding(1) var<storage,read> offsets: array<u32>;
 @group(0) @binding(2) var<uniform> options: Options;
@@ -30,10 +30,12 @@ fn scoreTimelines(@builtin(global_invocation_id) id: vec3u) {
     var values: array<f32,64>;
     var probabilities: array<f32,64>;
     var count = 0u;
+    var maximumValue = 0.0;
     for (var a = 0u; a < activeCount; a++) {
       let k = activeStart+5u*a;
       if (f32(i) < rows[k] || f32(i) >= rows[k+1u]) { continue; }
       let value = rows[k+2u]*(1.0+rows[head]+rows[k+3u]+specialUp);
+      if (options.maximumOnly != 0u) { maximumValue = max(maximumValue,value); continue; }
       var p = count;
       loop {
         if (p == 0u || values[p-1u] >= value) { break; }
@@ -45,6 +47,7 @@ fn scoreTimelines(@builtin(global_invocation_id) id: vec3u) {
       probabilities[p] = rows[k+4u];
       count += 1u;
     }
+    if (options.maximumOnly != 0u) { maximum += maximumValue*weight; continue; }
     if (count > 0u) { maximum += values[0]*weight; }
     var remaining = 1.0;
     for (var a = 0u; a < count; a++) {
@@ -161,7 +164,7 @@ export function createGpuObjectiveScorer(kernels,scoreTimelines=createGpuTradeSc
       }
       return batches.map(value=>({value,tie:value}));
     }
-    const scores=await scoreTimelines(trials.map(trial=>trial.windows));
+    const scores=await scoreTimelines(trials.map(trial=>trial.windows),options.sortBy==='max');
     return scores?.map((row,index)=>boardMetric(row,options,trials[index].eventBonus,trials[index].epPermil))??null;
   };
 }
@@ -179,26 +182,29 @@ export function createGpuTradeScorer(kernels){
   const curves=new WeakMap();
   const timelineKeys=new WeakMap();
   const cache=new Map();
-  function multiplierKey({active,special,seconds,curve,outfit}){
+  function multiplierKey({active,special,seconds,curve,outfit},maximumOnly){
     const previous=timelineKeys.get(active);
-    if(previous?.special===special&&previous.seconds===seconds&&previous.curve===curve&&previous.outfit===outfit)
+    if(previous?.special===special&&previous.seconds===seconds&&previous.curve===curve&&previous.outfit===outfit&&
+      previous.maximumOnly===maximumOnly)
       return previous.key;
     if(!curves.has(curve))curves.set(curve,curveCount++);
-    const key=JSON.stringify([curves.get(curve),seconds,outfit,active,special]);
-    timelineKeys.set(active,{special,seconds,curve,outfit,key});
+    const key=JSON.stringify([curves.get(curve),seconds,outfit,maximumOnly,
+      active.map(({s,e,raw,eff,p})=>[s,e,raw,eff,maximumOnly?0:p]),special.map(({s,e,sup})=>[s,e,sup])]);
+    timelineKeys.set(active,{special,seconds,curve,outfit,maximumOnly,key});
     return key;
   }
-  return async function scoreTrades(trials){
-    const rows=[],offsets=[],ranges=[],pending=new Map();
+  return async function scoreTrades(trials,maximumOnly=false){
+    const rows=[],offsets=[],ranges=[],pending=new Map(),retained=new Map();
     for(const trial of trials){
       const range=[];
       for(const timeline of trial){
         const {active,special,seconds,curve,outfit,base}=timeline;
         // Parameters and song bonuses scale the same Active/Special windows.
         // Reuse the GPU multiplier when only these values change.
-        const key=multiplierKey(timeline);
+        const key=multiplierKey(timeline,maximumOnly);
         range.push({key,base});
-        if(cache.has(key)||pending.has(key))continue;
+        if(cache.has(key)){retained.set(key,cache.get(key));continue;}
+        if(pending.has(key))continue;
         pending.set(key,offsets.length);
         const edges=new Set([0,seconds]);
         for(const {s,e} of active){edges.add(s);edges.add(e);}
@@ -214,7 +220,7 @@ export function createGpuTradeScorer(kernels){
         }
         offsets.push(rows.length);
         const edgeIndex=new Map(sorted.map((time,index)=>[time,index]));
-        if(active.length>64){
+        if(!maximumOnly&&active.length>64){
           const overlapDelta=new Int32Array(sorted.length);
           for(const {s,e} of active){
             overlapDelta[edgeIndex.get(s)]++;
@@ -244,14 +250,18 @@ export function createGpuTradeScorer(kernels){
         const chunk=words.subarray(offsets[start],offsets[end]??words.length);
         const count=end-start;
         const indices=Uint32Array.from(offsets.slice(start,end),index=>index-offsets[start]);
-        const output=await kernels.dispatch(compute,[chunk,indices,[count,0,0,0]],count*2,[Math.ceil(count/64)]);
+        const output=await kernels.dispatch(compute,[chunk,indices,[count,Number(maximumOnly),0,0]],count*2,[Math.ceil(count/64)]);
         scores.set(new Float32Array(output.buffer,output.byteOffset,output.length),start*2);
         start=end;
       }
-      for(const [key,index] of pending)cache.set(key,[scores[index*2],scores[index*2+1]]);
+      for(const [key,index] of pending){
+        const row=[scores[index*2],scores[index*2+1]];
+        cache.set(key,row);
+        retained.set(key,row);
+      }
     }
     const result=ranges.map(range=>range.map(({key,base})=>{
-      const [average,maximum]=cache.get(key);
+      const [average,maximum]=retained.get(key);
       return [base*average,base*maximum];
     }));
     while(cache.size>1024)cache.delete(cache.keys().next().value);

@@ -2,21 +2,21 @@ import {formatNumber,parseNumber,formatDate,formatDateTime} from './regional-for
 import {game,resourceImage} from './game';
 import {accountManifest,accountRosterBranches,boardPointsForMemberLevel,resolveBoardNodes} from '../hololive/vendor/shared/account-data';
 import {loadExtraSongs,saveExtraSongs} from './optimizer-song-unlocks';
-import {loadOptimizerPreferences,saveOptimizerPreferences} from './optimizer-preferences';
-import {boardChangeBadge,createHolomemBoard} from './holomem-board-ui';
+import {loadOptimizerPreferences,ratingQuickCounts,saveOptimizerPreferences} from './optimizer-preferences';
+import {boardChangeBadge,boardConnectArtwork,createHolomemBoard} from './holomem-board-ui';
 import {boardNodeLabel,connectCard} from './holomem-board';
 import {accountProgressRank,accountProgressMemoryBonus} from './account-progress';
 import {currentBoards,currentMemberRank,currentOwnedCards,currentGachaPoints,currentUpgradeBonus,currentDreamRank} from './current-account';
 import {automaticChapter,defaultEvent,eventStatus} from './optimizer-events';
 import {optimizerPowerUpPresets,referencePowerUpOverride,referenceSearchRoster} from './reference-team-solver';
-import {referencePowerUpBonus} from './reference-rating-math';
 import {previewTeamPlan} from './team-plan';
 import {plannedOptimizerCards} from './planned-optimizer-cards';
 import {optimizerBoards,savedLineupSchema} from './saved-lineups';
-import {boardChanges,boardTable,mergeSavedBoards,projectBoardSelection,protectedSavedBoards,remainingBoardChanges} from './saved-boards';
-import {boardPlanningBaseline,boardProtection,boardProtectionModes,preservesBoard} from './board-protection';
+import {boardChanges,boardConnectLocations,boardTable,mergeSavedBoards,projectBoardSelection,protectedSavedBoards,remainingBoardChanges} from './saved-boards';
+import {boardPlanningBaseline,boardProtection,boardProtectionModes,pinsBoardConnects,preservesBoard,retainedConnectorPaths} from './board-protection';
 import {boardBill,optimizerResetLimit,quoteBoardBudget,resetGold} from './board-budget';
 import {createOutfitPreview} from './outfit-preview.js';
+import outfitWaistAnchors from './outfit-waist-anchors.json';
 import {optimizerWorkspaceCatalog,prepareOptimizerWorkspace} from './optimizer-workspace-catalog.js';
 import {previewSoundtrack,rememberPreviewSoundtrack} from './optimizer-preview-audio.js';
 import {createPreviewHitPlayback} from './optimizer-preview-hit-playback.js';
@@ -24,12 +24,16 @@ import {loadChartHitEvents} from './optimizer-chart-hit-events.js';
 import {preloadPreviewHitSounds,previewHitSoundTypes} from './optimizer-preview-hit-sounds.js';
 import {loadChartArtwork,chartArtworkCrop,chartArtworkPoint,chartArtworkViewBox,chartArtworkWindows} from './optimizer-chart-artwork.js';
 import {activeGachaCurrencies,nextAcquisitionChoices,quoteCardAcquisitions} from './acquisition-exchanges.js';
+import {isTeamCardEligible} from './team-card-pool';
+import {leaderboardRegions,selectedLeaderboardRegion,ratingWithChart,projectedLeaderboardPlace,formatLeaderboardPlace} from './leaderboard-placement';
+import {pickerActionClass as action,renderPickerChoice,renderHolomemChoices} from './optimizer-picker-controls';
 
 export {prepareOptimizerWorkspace};
 
 const workers = new WeakMap();
 const searchWorkers = new WeakMap();
 const lineupWorkers = new WeakMap();
+const placementOrigins = new WeakMap();
 const outfitSwipes = new WeakMap();
 const boardPreviews = new WeakMap();
 const hitPlayback = new WeakMap();
@@ -63,7 +67,6 @@ function loadOutfitPreviews(){
     return merged;
   });
 }
-const action = 'holo-team-action rounded bg-gray-700 hover:bg-gray-600 font-semibold';
 const primary = 'holo-team-action rounded bg-purple-600 hover:bg-purple-500 font-semibold';
 const inputClass = 'holo-team-input p-inputtext p-component';
 const modes = [['best','Best team'],['holomem','Build around cards'],['next','Next upgrades']];
@@ -75,6 +78,7 @@ const eventDateRange=event=>Number.isFinite(event.startTime)&&Number.isFinite(ev
 const objectives = [['score','Score'],['unitScore','Unit Score'],['holomemLb','Holomem Rating'],
   ['event','Event Song Score'],['eventPoints','Event Points']];
 const steps = [['build','Build'],['target','Target'],['lineup','Lineup'],['boards','Boards'],['run','Run & results']];
+const ratingScopes=[['single','One Holomem'],['selected','Selected Leaders'],['quick','Quick Top'],['all','All Leaders']];
 const modeDescriptions = {
   best:['star','Find your strongest lineup'],
   holomem:['check-circle','Start with cards you pick'],
@@ -443,8 +447,9 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         previewTeam:null,reviewDetails:null,detailRequest:0,previewChartKey:'',previewPc:false,previewSection:null,
         previewSlot:null,previewQuery:'',planTeam:null,planError:'',
         savedLineups:[],savedLineupId:null,lineupNameDraft:null,lineupDeleting:false,lineupError:'',lineupScore:null,lineupScoring:false,resultContext:null,
-        lineupValueEdit:null,activeStep:'build',visitedSteps:['build'],resultsChanged:false,eventClock:Date.now(),eventTimer:null,eventPage:0,
-        catalogRefreshPending:false,catalogLoading:false,searchBackend:null,gpuError:false,gachaError:'',
+        lineupValueEdit:null,activeStep:'build',visitedSteps:['build'],resultsChanged:false,eventClock:Date.now(),eventTimer:null,eventPage:0,ratingLeader:null,ratingChart:null,
+        ratingStandings:{},ratingStandingsRegion:null,ratingStandingsCheckedAt:0,ratingStandingsRequest:0,
+        catalogRefreshPending:false,catalogLoading:false,searchBackend:null,gpuError:false,gachaError:'',connectorIconId:null,
       };
     },
     computed:{
@@ -500,20 +505,21 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         const data=this.powerUpData;
         if(!data)return [['auto','Automatic']];
         const owned=Object.fromEntries(this.rosterCards.map(card=>[card.cardId,{owned:true,level:card.level,bloom:card.potentialUpgradeCount}]));
+        const current=Object.fromEntries(this.ownedCards.map(card=>[card.cardId,{owned:true,level:card.level}]));
         const input={goal:this.mode,cardPool:this.effectivePool,customLevel:this.customLevel,customBloom:this.customBloom,
           noDelevel:this.keepHigherLevel,noDebloom:this.keepHigherBloom,
-          upgradeBonusPermyriad:this.rosterSource==='owned'?this.upgradeBonus:undefined,
+          upgradeBonusPermyriad:this.upgradeBonus,
           outfitAssumption:this.activeOutfitAssumption};
-        const imported=referencePowerUpOverride(data,owned,input);
-        const automatic=imported!==undefined?`${input.outfitAssumption?'Search roster':'Current'} · ${powerUpLabel(imported)}`:this.mode==='next'?'Search roster':
-          `Search roster · ${powerUpLabel(referencePowerUpBonus(referenceSearchRoster(data,owned,input),data,'owned'))}`;
+        const bonus=referencePowerUpOverride(data,owned,input,current);
+        const automatic=`${input.outfitAssumption?'Current account + outfit':'Current account'} · ${powerUpLabel(bonus)}`;
         return [['auto',automatic],...optimizerPowerUpPresets.map(([id,label])=>[id,
-          `${label} · ${powerUpLabel(referencePowerUpOverride(data,owned,{...input,powerUpPreset:id}))}`])];
+          `${label} · ${powerUpLabel(referencePowerUpOverride(data,owned,{...input,powerUpPreset:id},current))}`])];
       },
-      candidates(){
+      poolCandidates(){
         const outfitCard=this.activeOutfitAssumption?.cardId;
         return (this.catalog?.supportedCardIds ?? []).filter(id=>!this.useOwned||this.rosterById.has(id)||id===outfitCard);
       },
+      candidates(){return this.poolCandidates.filter(id=>isTeamCardEligible(this.catalog.cardDetails[id],this));},
       candidateMembers(){return new Set(this.candidates.map(id=>this.cardMember(id)));},
       lockedMembers(){return new Set(this.lockedCardIds.map(id=>this.cardMember(id)));},
       supportedObjectives(){return new Set(this.catalog?.objectives ?? ['score']);},
@@ -533,16 +539,20 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       visibleEvents(){return this.availableEvents.slice(this.eventPageIndex*10,(this.eventPageIndex+1)*10);},
       eventMode(){return this.objective==='event' || this.objective==='eventPoints';},
       ratingMode(){return this.objective==='holomemLb';},
+      hasRatingResults(){return !!this.result&&(this.resultContext?.objective??this.objective)==='holomemLb';},
+      ratingBatch(){return this.ratingMode&&this.ratingScope!=='single';},
+      ratingLeaderIds(){return this.availableLeaders.filter(({id})=>this.ratingScope==='selected'?this.ratingSelectedIds.includes(id):
+        !this.ratingBatchInvitedOnly||this.invitedLeaderIds.has(id)).map(({id})=>id);},
       unitMode(){return this.objective==='unitScore';},
-      activeLeaderId(){return this.ratingMode?this.ratingCharacterId:this.leaderCharacterId;},
-      activeOutfitId(){return this.ratingMode?this.ratingOutfitId:this.outfitId;},
+      activeLeaderId(){return this.ratingBatch?'':this.ratingMode?this.ratingCharacterId:this.leaderCharacterId;},
+      activeOutfitId(){return this.ratingBatch?null:this.ratingMode?this.ratingOutfitId:this.outfitId;},
       activeOutfitTraining(){return this.ratingMode?this.ratingOutfitTraining:this.outfitTraining;},
       activeOutfitAssumption(){
         const outfit=this.availableOutfits.find(outfit=>outfit.id===this.activeOutfitId);
         if(this.activeLeaderMode!=='fixed'||!this.isAssumableOutfit(outfit))return null;
         return this.outfitScenario(outfit,this.activeOutfitTraining);
       },
-      activeLeaderMode(){return this.ratingMode?this.ratingLeaderMode:this.leaderMode;},
+      activeLeaderMode(){return this.ratingBatch?'auto':this.ratingMode?this.ratingLeaderMode:this.leaderMode;},
       pickerInvitedOnly(){return this.ratingMode?this.ratingInvitedOnly:this.leaderPickerInvitedOnly;},
       automaticInvitedOnly(){return !this.ratingMode&&!this.allLeaders&&!this.activeLeaderId;},
       songs(){return this.catalog?.songs??[];},
@@ -583,9 +593,10 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       queryText(){return this.query.trim().toLocaleLowerCase();},
       ratingDifficulty(){return this.ratingMaxDifficulty ?? this.difficultyBounds[1];},
       ratingSongs(){
-        const now=Date.now();
+        const leaders=new Set(this.ratingBatch?this.ratingLeaderIds:[this.ratingCharacterId]);
+        const now=this.eventClock;
         return this.songs.filter(song=>song.rateTarget!==false && (song.startTime??0)<=now &&
-          song.characterIds?.includes(this.ratingCharacterId) && (song.singerType==='SOLO'||song.singerType==='GROUP'&&song.characterIds.length>1));
+          song.characterIds?.some(id=>leaders.has(id)) && (song.singerType==='SOLO'||song.singerType==='GROUP'&&song.characterIds.length>1));
       },
       automaticSongs(){
         const imported=new Set(this.snapshot?.tables.songs?.filter(row=>Number(row.releasedTime)<=this.eventClock).map(row=>row.musicId));
@@ -616,7 +627,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       optimizerGameCards(){return new Map((this.optimizerSource?.gameCatalog?.cards??[]).map(card=>[card.id,card]));},
       availableLeaders(){return this.catalog?.leaders??[];},
       invitedLeaderIds(){return new Set(this.members.map(member=>member.characterId));},
-      visibleLeaders(){return this.availableLeaders.filter(leader=>(!this.pickerInvitedOnly||this.invitedLeaderIds.has(leader.id))&&
+      visibleLeaders(){return this.availableLeaders.filter(leader=>(this.picker==='ratingLeaders'||!this.pickerInvitedOnly||this.invitedLeaderIds.has(leader.id))&&
         contains(leader.name,this.queryText));},
       availableOutfits(){
         const outfits=(this.catalog?.costumes??[]).filter(outfit=>outfit.characterId===this.activeLeaderId);
@@ -645,19 +656,29 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         return {...Object.fromEntries(boardItems.map(item=>[item.key,this.boardMaterials[item.id]??quantity(item.key)])),
           hologold:quantity('hologold')};
       },
+      connectorIcon(){return game.cardImage(this.connectorIconId,'grid');},
       boardBudget(){
         if(this.effectiveBoards!=='optimize')return null;
         const imported=this.currentBoardLayouts;
         const limits={stock:this.boardStock,maxResets:this.boardMaxResets,infiniteMaterials:this.boardUnlimited};
         const refundResets=!(this.boardIgnoreExisting&&this.boardNoRefund);
         const protectedPlans=this.protectedBoardSetup?.plans??{};
-        const flexible=Object.entries(imported).filter(([owner])=>!Object.hasOwn(this.boardProtection,owner));
+        const starting=this.protectedBoardSetup?.boards??imported;
+        const flexible=Object.entries(starting).filter(([owner])=>!Object.hasOwn(this.boardProtection,owner));
         try{
           const reserved=boardBill(imported,protectedPlans,refundResets);
-          const cleared=this.boardIgnoreExisting?Object.fromEntries(flexible.map(([owner])=>[owner,{nodes:[],cards:{}}])):{};
+          const preserveConnects=!this.boardOptimizeConnectors;
+          const flexibleBoards=Object.fromEntries(flexible);
+          const connectorPaths=this.boardIgnoreExisting&&preserveConnects?retainedConnectorPaths(flexibleBoards,
+            owner=>resolveBoardNodes(owner).map(node=>({id:node.groupId,x:node.x,y:node.y,pts:node.boardPointCost,
+              lock:node.unlockPlayerLevel,hide:node.viewPlayerLevel})),
+            this.boardMaxPoints?1_000_000:currentDreamRank(this.profile)):undefined;
+          const baseline=this.boardIgnoreExisting?boardPlanningBaseline(flexibleBoards,
+            {ignoreExisting:true,preserveConnects,connectorPaths}):{};
+          const cleared=Object.fromEntries(flexible.map(([owner])=>[owner,baseline[owner]??{nodes:[],cards:{}}]));
           const startingBill=this.boardIgnoreExisting?boardBill(imported,{...protectedPlans,...cleared},refundResets):reserved;
           const ceiling=this.boardIgnoreExisting?0:flexible.reduce((total,[,board])=>total+board.nodes.length,0);
-          return {imported,protectedPlans,limits,refundResets,reserved,startingBill,
+          return {imported,protectedPlans,limits,refundResets,reserved,startingBill,connectorPaths,
             quote:quoteBoardBudget(startingBill,limits),maxResets:optimizerResetLimit(startingBill.resets,ceiling,limits)};
         }catch(error){return {error:error.message};}
       },
@@ -670,7 +691,9 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         return {ignoreExisting:this.boardIgnoreExisting,noRefund:this.boardIgnoreExisting,
           maxResets:budget.maxResets,infiniteMaterials:this.boardUnlimited,materials,maxBoardPoints:this.boardMaxPoints,
           allInvited:this.boardAllInvited,branches:[...this.boardBranches],keep:{targets:{...this.boardKeep}},
-          ...(Object.keys(this.boardProtection).length?{protection:{...this.boardProtection},objective:this.objective}:{})};
+           ...(Object.keys(this.boardProtection).length?{protection:{...this.boardProtection}}:{}),
+           ...(!this.boardOptimizeConnectors?{preserveConnects:true,connectorPaths:budget.connectorPaths}:{}),
+           ...(!this.boardOptimizeConnectors||Object.keys(this.boardProtection).length?{objective:this.objective}:{})};
       },
       needsChart(){return this.eventMode;},
       searchBlocker(){
@@ -679,7 +702,9 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         if(this.protectedBoardSetup?.error)return ['boards',this.protectedBoardSetup.error];
         if(this.boardBudget?.error)return ['boards',this.boardBudget.error];
         if(this.boardBudget?.quote&&!this.boardBudget.quote.fits)return ['boards','The starting Boards exceed the shared budget. Check the shortfall in Boards.'];
-        if(this.unitMode&&this.mode==='next')return ['build','Choose Best team or Build around cards for Unit Score.'];
+        if(this.unitMode&&this.mode==='next'&&!this.useGpu)return ['build','Enable Use GPU in Settings for Unit Score upgrades.'];
+        if(this.mode!=='best'&&this.lockedCardIds.some(id=>!isTeamCardEligible(this.catalog?.cardDetails[id],this)))
+          return ['lineup','Unlock the excluded cards or include their rarity.'];
         if(this.mode==='next'&&!this.useOwned){
           const outfit=this.activeOutfitAssumption;
           const hasBloomUpgrade=this.nextBlooms&&this.candidates.some(id=>{
@@ -697,7 +722,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         if(this.eventMode&&!this.chart)return ['target','Choose a difficulty for this song.'];
         if(!this.ratingMode&&!this.unitMode&&this.selectedChartKey&&!this.chart)return ['target','The selected chart is unavailable. Choose a chart or use Any song.'];
         if(!this.ratingMode&&!this.unitMode&&this.pc&&this.chart?.gameOnly&&!this.chart.pcEstimate)return ['target','Choose Mobile to score this chart.'];
-        if(this.ratingMode&&!this.activeLeaderId)return ['target','Choose a Holomem for Rating.'];
+        if(this.ratingBatch&&!this.ratingLeaderIds.length)return ['target',this.ratingScope==='selected'?'Choose at least one leader.':'Invite a Holomem or allow all leaders.'];
+        if(this.ratingMode&&!this.ratingBatch&&!this.activeLeaderId)return ['target','Choose a Holomem for Rating.'];
         if(this.ratingMode&&!this.hasRatingChart)return ['target','Adjust song access or the maximum difficulty to include a chart.'];
         if(!this.ratingMode&&!this.unitMode&&!this.chart&&(this.needsChart||this.rangeCharts===0))return ['target','Choose a chart or an available difficulty range.'];
         if(!rosterReady)return ['lineup',this.useOwned&&this.rosterSource==='planned'?'Add more active cards to Planner or choose another card pool.':this.useOwned&&!this.ownedCards.length?'Mark cards as owned in Characters, import your account, or choose another card pool.':
@@ -710,6 +736,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       canSearch(){return !this.searching&&!this.catalogLoading&&!this.searchBlocker;},
     },
     watch:{
+      hasRatingResults(ready){if(ready)void this.refreshRatingStandings();},
       searching(active){if(!active&&this.catalogRefreshPending)this.refreshOptimizerCatalog();},
       profile(next,previous){if(!next&&previous)this.clearResult();},
       snapshot(){this.reconcile();this.inputsChanged();this.clearLineupScore();},
@@ -728,17 +755,54 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       this.eventTimer=setInterval(()=>{
         this.eventClock=Date.now();
         if(this.catalog?.nextSongRelease<=this.eventClock)this.refreshOptimizerCatalog();
+        if(this.hasRatingResults&&this.$route.path==='/team-optimizer')void this.refreshRatingStandings();
       },60_000);
       window.addEventListener('holodori-optimizer-catalog-updated',this.refreshOptimizerCatalog);
     },
     beforeUnmount(){
       clearInterval(this.eventTimer);
+      this.ratingStandingsRequest++;
       window.removeEventListener('holodori-optimizer-catalog-updated',this.refreshOptimizerCatalog);
       this.stopWorker();
       this.clearLineupScore();
     },
+    activated(){
+      const cards=Object.keys(accountManifest.cardConnectEffectIds)
+        .filter(id=>id!==this.connectorIconId&&game.getCard(id)?.rarity===5);
+      if(cards.length)this.connectorIconId=cards[Math.floor(Math.random()*cards.length)];
+      if(this.hasRatingResults)void this.refreshRatingStandings();
+      const origin=placementOrigins.get(this);
+      if(!origin)return;
+      placementOrigins.delete(this);
+      this.$nextTick(()=>{
+        if(origin.isConnected){
+          origin.scrollIntoView({block:'nearest'});
+          origin.focus({preventScroll:true});
+        }else if(this.hasRatingResults)this.showResults();
+      });
+    },
     deactivated(){if(this.pickerVisible)this.closePicker();},
     methods:{
+      async refreshRatingStandings(){
+        const region=selectedLeaderboardRegion(sessionStorage);
+        const now=Date.now();
+        if(this.ratingStandingsRegion===region&&now-this.ratingStandingsCheckedAt<900_000)return;
+        if(this.ratingStandingsRegion!==region)this.ratingStandings={};
+        this.ratingStandingsRegion=region;
+        this.ratingStandingsCheckedAt=now;
+        const request=++this.ratingStandingsRequest;
+        const invoke=window.__TAURI__?.core.invoke;
+        if(!invoke)return;
+        const read=async()=>{
+          const standings=await invoke('desktop_holomem_rating_standings',{region});
+          if(request===this.ratingStandingsRequest)this.ratingStandings=Object.freeze(standings??{});
+        };
+        try {
+          await read();
+          if(request===this.ratingStandingsRequest&&await invoke('desktop_refresh_holomem_rankings',{region,force:false}))
+            await read();
+        } catch {}
+      },
       async refreshJackets(){
         this.updatedJackets=await loadJacketUpdates()??this.updatedJackets;
       },
@@ -783,11 +847,14 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         try{
           const worker = new Worker(workerUrl,{type:'module'});
           workers.set(this,worker);
-          worker.onmessage = ({data})=>{
+          worker.onmessage = ({data,ports})=>{
             if(workers.get(this)!==worker)return;
+            if(data.type==='gpu-worker'&&this.searching)this.startGpuWorker(data.request,ports);
             if(data.type==='review-details' && data.request===this.detailRequest)this.reviewDetails=data;
             if(data.type==='progress' && this.searching)this.progress = data;
             if(data.type==='search-backend'&&this.searching)this.searchBackend=data.backend;
+            if(data.type==='rating-batch'&&this.searching)this.result=data;
+            if(data.type==='rating-leader'&&this.searching&&this.result?.ratingLeaders)this.result.ratingLeaders.push(data.leader);
             if(data.type==='result' && this.searching){
               this.result = data;
               this.searching = false;
@@ -812,6 +879,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         }
       },
       stopWorker(){
+        if(this.searching&&this.result?.ratingLeaders)this.result=null;
         this.stopSearchWorkers();
         workers.get(this)?.terminate();
         workers.delete(this);
@@ -822,6 +890,19 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       stopSearchWorkers(){
         for(const {worker,port} of searchWorkers.get(this)??[]){worker.terminate();port.close();}
         searchWorkers.delete(this);
+      },
+      startGpuWorker(request,[port,...inputs]){
+        const fail=()=>port.postMessage({message:'A shared GPU worker stopped.'});
+        try{
+          const worker=new Worker(workerUrl,{type:'module'});
+          const pool=searchWorkers.get(this)??[];
+          searchWorkers.set(this,pool);
+          pool.push({worker,port});
+          port.onmessage=()=>{worker.terminate();port.close();};
+          worker.onerror=worker.onmessageerror=fail;
+          worker.onmessage=({data})=>port.postMessage(data);
+          worker.postMessage(request,inputs);
+        }catch{fail();}
       },
       createSearchPorts(useBoardWorkers, gpuBoards=false){
         const pool=[];
@@ -852,6 +933,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       clearResult(){
         if(this.searching)this.stopWorker();
         this.result = null;
+        this.ratingLeader=null;
+        this.ratingChart=null;
         this.resultContext = null;
         this.resultsChanged=false;
         this.searchBackend = null;
@@ -880,7 +963,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           this[this.ratingMode?'ratingOutfitTraining':'outfitTraining'] = null;
           this[this.ratingMode?'ratingLeaderMode':'leaderMode'] = 'auto';
         }
-        const eligible = new Set(this.candidates);
+        const eligible = new Set(this.poolCandidates);
         this.lockedCardIds = this.lockedCardIds.filter(id=>eligible.has(id));
         if(this.activeOutfitId && !this.availableOutfits.some(outfit=>outfit.id===this.activeOutfitId&&this.canSelectOutfit(outfit))){
           this[this.ratingMode?'ratingOutfitId':'outfitId'] = null;
@@ -911,7 +994,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         }
         if(['mode','pool','plannedPool','objective','rosterSource'].includes(key))this.reconcile();
         this.saveOptions();
-        if(key==='leaderPickerInvitedOnly'||key==='ratingInvitedOnly')return;
+        if(key==='leaderPickerInvitedOnly'||key==='ratingInvitedOnly'||key==='ratingRowsLimit')return;
         this.inputsChanged();
       },
       saveOptions(){saveOptimizerPreferences(localStorage,this.profileId,this);},
@@ -1324,6 +1407,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           ...(this.difficultyMode==='types'&&!chart?{anyDiffTypes:[...this.difficultyTypes]}:{}),
           memories:scoring.memoryCount,topN:this.topN,eventBonus:this.objective==='event',
           eventPoints:this.objective==='eventPoints',sortBy:chart||this.ratingMode?this.sortBy:'avg',
+          excludeThreeStars:this.excludeThreeStars,excludeFourStars:this.excludeFourStars,
         };
         const outfitAssumption=clone(this.activeOutfitAssumption);
         const scenario={cardPool:this.effectivePool,customLevel:this.customLevel,customBloom:this.customBloom,
@@ -1338,12 +1422,19 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         const boardOpt=this.boardOpt;
         const existing={...imported,...this.profile?.savedBoards};
         const boardPlanBase={...existing};
+        const startingBoards=optimizerBoards(boards);
+        if(boardOpt?.preserveConnects){
+          for(const [owner,board] of Object.entries(startingBoards)){
+            if(Object.keys(board.cards).length)boardPlanBase[owner]=board;
+          }
+        }
         for(const owner of Object.keys(boardOpt?.protection??{})){
           const protectedBoard=protectedSetup?.boards?.[owner];
           if(protectedBoard)boardPlanBase[owner]=protectedBoard;else delete boardPlanBase[owner];
         }
         this.resultContext={profileId:this.profileId,connectPool,mode:this.mode,nextAcquisition:this.nextAcquisition,
-          objective:this.objective,charts:chart?[chart]:[],pc,anyDiffMin:options.anyDiffMin,
+          objective:this.objective,ratingLeaderId:this.ratingMode?this.activeLeaderId:null,
+          charts:chart?[chart]:[],pc,anyDiffMin:options.anyDiffMin,
           anyDiffMax:options.anyDiffMax,anyDiffTypes:options.anyDiffTypes,sortBy:options.sortBy,eventId,eventChapter,
           ...(this.customPool||this.effectivePool==='allMaxed'?{cardAssumptions:{cardPool:this.effectivePool,
             customLevel:this.customLevel,customBloom:this.customBloom,
@@ -1352,9 +1443,10 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           ...(outfitAssumption?{outfitAssumption}:{}),
           ...(plannedCards?{plannedCards}:{}),
           liveBoost:this.liveBoost,boardMode,boardDreamRank:this.boardOpt?.maxBoardPoints?1_000_000:scoring.dreamRank,
-          boardPlanBase,boardPlanExisting:existing,boardPlanSaved:{},boardProtection:boardOpt?.protection,
+           boardPlanBase,boardPlanExisting:existing,boardPlanSaved:{},boardPlanBudgetSaved:{},boardProtection:boardOpt?.protection,
+           ...(boardOpt?.preserveConnects?{preserveConnects:true,boardPlanConnectBase:startingBoards}:{}),
           boardBudget:boardOpt?clone(this.boardBudget):null,
-          boards:boardMode==='none'?{}:boardPlanningBaseline(optimizerBoards(boards),boardOpt)};
+           boards:boardMode==='none'?{}:boardPlanningBaseline(startingBoards,boardOpt)};
         this.progress = null;
         this.searching = true;
         const useBoardWorkers=this.effectiveBoards==='optimize'&&this.mode!=='next';
@@ -1367,6 +1459,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           options,objective:this.objective,reviewedMobile:true,eventId,eventChapter,liveBoost:this.liveBoost,outfitAssumption,plannedCards,
           useGpu,
           holoPassport:this.passport,ratingSongCount:this.ratingSongCount,ratingTeamsPerSong:this.ratingTeamsPerSong,
+          ...(this.ratingBatch?{ratingLeaderIds:this.ratingLeaderIds,ratingNow:this.eventClock,
+            ratingQuickLimit:this.ratingScope==='quick'?this.ratingQuickCount:undefined}:{}),
           ratingMaxDifficulty:this.ratingDifficulty,ratingAllSongs:this.ratingAllSongs,ratingMerge:this.ratingMerge,ratingSongIds:this.ratingSongIds,
           chartKey:chart?.key??'',customLevel:this.customLevel,customBloom:this.customBloom,
           noDelevel:this.keepHigherLevel,noDebloom:this.keepHigherBloom,
@@ -1386,7 +1480,9 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           message.source=await window.__holodoriDesktop.optimizerCatalogSource(clone(this.optimizerSource)??null);
           if(nextAcquisition)nextAcquisition.catalog=message.source?.exchangeCatalog;
           if(workers.get(this)!==worker)return;
-          worker.postMessage(message,useGpu&&!standaloneGpu?[]:this.createSearchPorts(useBoardWorkers,standaloneGpu));
+          const sharedGpu=useGpu&&this.ratingBatch&&this.ratingLeaderIds.length>1;
+          if(sharedGpu)message.gpuHost=true;
+          worker.postMessage(message,sharedGpu||useGpu&&!standaloneGpu?[]:this.createSearchPorts(useBoardWorkers,standaloneGpu));
         }catch{
           if(workers.get(this)!==worker)return;
           this.stopWorker();
@@ -1421,12 +1517,10 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       const field = (label,control,reset,id) => h(reset?'div':'label',{class:'holo-team-field'},[
         label==null?null:h(id?'label':'span',{class:'holo-team-label font-semibold',for:id},label),clearable(control,reset),
       ]);
-      const searchChoice = (key,title,value,blocked=false,media) => button([
-        media ? image(media,'holo-team-choice-icon',24,24) : null,
-        h('span',{class:'holo-team-choice-text',title:value},value),
-        icon('chevron-right','holo-team-choice-arrow'),
-      ],()=>this.openPicker(key),{
-        class:`${action} holo-team-choice`,disabled:disabled || blocked,'aria-haspopup':'dialog','aria-label':title,
+      const searchChoice = (key,title,value,blocked=false,media) => renderPickerChoice(h,{
+        value,media:media?image(media,'holo-team-choice-icon',24,24):null,
+        arrow:icon('chevron-right','holo-team-choice-arrow'),label:title,onClick:()=>this.openPicker(key),
+        disabled:disabled||blocked,
       });
       const select = (key,label,options,value=this[key],onChange,reset) => field(label,h('select',{class:inputClass,disabled,'aria-label':label,
         id:reset?`optimizer-${key}`:undefined,
@@ -1590,19 +1684,20 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       };
       const pickerTitles = {chart:'Choose a chart',event:'Choose an event',eventSong:this.objective==='event'?'Choose an event song':'Choose a song',
         cards:'Lock cards',leader:this.ratingMode?'Choose a Holomem':'Choose a leader',outfit:'Choose an outfit',
-        ratingSongs:'Additional unlocked songs',boardProtection:'Protect Boards',
+        ratingSongs:'Additional unlocked songs',ratingLeaders:'Choose leaders',boardProtection:'Protect Boards',
         preview:this.previewCard && this.cardName(this.previewCard.id),
         team:'Preview details','plan-team':'Plan this team',
         'saved-lineups':'Saved lineups','saved-lineup':this.savedLineup?.name??'Saved lineup'};
       const pickerLabels = {chart:'Search songs and difficulty',eventSong:'Search songs',
         cards:'Search cards',leader:this.ratingMode?'Search Holomems':'Search leaders',outfit:'Search outfits',ratingSongs:'Search songs',
-        boardProtection:'Search Holomems'};
+        boardProtection:'Search Holomems',ratingLeaders:'Search Holomems'};
       const protectedBoards=Object.keys(this.boardProtection).length;
       const protectionChoices=(owner,unavailable=disabled)=>boardProtectionModes.map(([mode,label])=>
         button(label,()=>this.protectBoard(owner,mode),{
           key:mode,'aria-pressed':(this.boardProtection[owner]??'flexible')===mode,disabled:unavailable,
         }));
-      const multiSelectPicker = ['cards','ratingSongs','boardProtection'].includes(this.picker);
+      const selectingLeaders=this.picker==='ratingLeaders';
+      const multiSelectPicker = selectingLeaders||['cards','ratingSongs','boardProtection'].includes(this.picker);
       const detailPicker = ['team','plan-team','saved-lineups','saved-lineup'].includes(this.picker);
       const pickerContentClass = this.picker==='outfit'?'holo-team-outfit-content':
         this.picker==='preview'?'holo-team-preview-content':
@@ -1630,10 +1725,11 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             button('Done',()=>this.closePicker(),{class:primary}),
           ]),
         ]);
-        if(this.picker==='ratingSongs')return h('div',{class:'holo-team-picker-actions'},[
-          caption('Quest and invitation unlocks are included automatically.'),
+        if(selectingLeaders||this.picker==='ratingSongs')return h('div',{class:'holo-team-picker-actions'},[
+          caption(selectingLeaders?`${count(this.ratingLeaderIds.length)} selected`:'Quest and invitation unlocks are included automatically.'),
           h('div',{class:'holo-team-options'},[
-            this.ratingSongs.some(song=>this.ratingExtraSongs.includes(song.id))?pickerClear('Clear selections',this.clearRatingSongs):null,
+            selectingLeaders?(this.ratingSelectedIds.length?pickerClear('Clear selections',()=>this.change('ratingSelectedIds',[])):null):
+              this.ratingSongs.some(song=>this.ratingExtraSongs.includes(song.id))?pickerClear('Clear selections',this.clearRatingSongs):null,
             button('Done',()=>this.closePicker(),{class:primary}),
           ]),
         ]);
@@ -1692,13 +1788,13 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         if(this.picker==='cards')return [
           this.visibleCards.length ? h('div',{class:'holo-team-card-grid'},this.visibleCards.map(cardTile)) : caption('No matching cards.'),
         ];
-        return [
-          this.visibleLeaders.length ? h('div',{class:'holo-team-person-grid'},this.visibleLeaders.map(leader=>button([
-            portrait(leader.id),h('span',{},leader.name),
-          ],()=>this.chooseLeader(leader.id),{
-            key:leader.id,class:`${action} holo-team-person`,'aria-pressed':this.activeLeaderId===leader.id,
-          }))) : caption(this.pickerInvitedOnly&&!this.queryText?'No invited Holomems. Turn off Invited only to browse all leaders.':'No matching leaders.'),
-        ];
+        return [renderHolomemChoices(h,{members:this.visibleLeaders,portrait:({id})=>portrait(id),
+          onSelect:id=>selectingLeaders?this.change('ratingSelectedIds',this.ratingSelectedIds.includes(id)?
+            this.ratingSelectedIds.filter(selected=>selected!==id):[...this.ratingSelectedIds,id]):this.chooseLeader(id),
+          isSelected:id=>selectingLeaders?this.ratingSelectedIds.includes(id):this.activeLeaderId===id,
+          emptyMessage:!selectingLeaders&&this.pickerInvitedOnly&&!this.queryText?
+            'No invited Holomems. Turn off Invited only to browse all leaders.':'No matching leaders.',
+        })];
       };
       const outfitCarousel=()=>{
         const outfits=this.visibleOutfits, outfit=this.previewOutfit;
@@ -1752,7 +1848,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             },[
               room?h('img',{class:'holo-outfit-room',src:room,alt:'',decoding:'async'}):null,
               this.outfitStageReady&&this.pickerVisible&&media?vnode(OutfitPreview,{key:this.outfitMedia.updated?.[asset]??asset,
-                asset:this.outfitMedia.updated?.[asset]??asset,costume:asset,updated:!!this.outfitMedia.updated?.[asset],
+                asset:this.outfitMedia.updated?.[asset]??asset,waistAnchor:outfitWaistAnchors[asset],updated:!!this.outfitMedia.updated?.[asset],
                 atlases:media,reactions:this.outfitMedia.reactions?.[asset]}):null,
             ]),
               outfit?h('div',{class:'holo-outfit-caption','aria-live':'polite'},[
@@ -1920,22 +2016,26 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           const original=context?.boardPlanBase??{};
           const saved=context?.boardPlanSaved??{};
           const base={...original,...saved};
-          const protection={protection:context?.boardProtection};
-          const pinnedCards=new Set(Object.keys(protection.protection??{}).flatMap(owner=>Object.values(original[owner]?.cards??{})));
+          const connectLocations=boardConnectLocations({...this.currentBoardLayouts,...this.profile?.savedBoards});
+           const protection={protection:context?.boardProtection,preserveConnects:context?.preserveConnects};
+           const starting=context?.boardPlanConnectBase??original;
+           const pinnedCards=new Set(Object.entries(starting).flatMap(([owner,board])=>
+             pinsBoardConnects(protection,owner)?Object.values(board.cards):[]));
           const reported=new Map((plan.changes??[]).map(row=>[row.owner,row]));
           const cleared=plan.ignoredExisting?Object.keys(budget?.imported??{}).filter(owner=>
             boardProtection(protection,owner)==='flexible'):[];
-          const changes=[...new Set([...reported.keys(),...Object.keys(plan.saves??{}),...cleared])].flatMap(owner=>{
+          const changes=[...new Set([...reported.keys(),...Object.keys(plan.saves??{}),...cleared,...Object.keys(saved)])].flatMap(owner=>{
             if(boardProtection(protection,owner)==='locked')return [];
-            const board=plan.saves?.[owner]??(cleared.includes(owner)?{nodes:[],cards:{}}:null);
-            if(!board||!boardChanges(original[owner],board).length)return [];
+            const board=plan.saves?.[owner]??(cleared.includes(owner)?{nodes:[],cards:{}}:context?.boards?.[owner]??original[owner]);
+            if(!board)return [];
             const picks=remainingBoardChanges(original[owner],board,saved[owner],state.connectOverrides[owner]);
+            if(!picks.length&&!boardChanges(original[owner],board).length)return [];
             const rank=plan.ranks?.[owner]??this.members.find(member=>member.characterId===owner)?.level??1;
             const change=reported.get(owner)??{owner,ptsBudget:boardPointsForMemberLevel(owner,rank),
               ptsSpent:projectBoardSelection(owner,board,[],[],Infinity).points};
             return [{...change,picks,buys:picks.filter(pick=>pick.kind==='buy').map(pick=>pick.id),
               resets:picks.filter(pick=>pick.kind==='reset').map(pick=>pick.id),
-              connects:picks.filter(pick=>pick.kind==='connect').map(pick=>({socket:pick.id,cardId:pick.card}))}];
+              connects:picks.filter(pick=>pick.kind==='connect').map(({id,card,recommended})=>({socket:id,cardId:card,recommended}))}];
           });
           const members=this.boardSortHolomems?[...changes].sort((a,b)=>{
             const left=boardRosterOrder.get(a.owner),right=boardRosterOrder.get(b.owner);
@@ -1944,17 +2044,17 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           }):changes;
           const selection=change=>{
             const selected=state.selected[change.owner];
-            return change.picks.map(pick=>pick.key).filter(key=>!selected||selected.includes(key));
+            return change.picks.filter(pick=>selected?selected.includes(pick.key):!pick.recommended).map(pick=>pick.key);
           };
           const project=change=>{
             const result=projectBoardSelection(change.owner,base[change.owner],change.picks,selection(change),change.ptsBudget);
-            if(!preservesBoard(protection,change.owner,original[change.owner],result.board))
+            if(!preservesBoard(protection,change.owner,starting[change.owner],result.board))
               return {...result,error:'This change would alter a protected node or Connect card.'};
             return result;
           };
           const editorStatus=changes.map(change=>[change,project(change)]);
           const changed=editorStatus.filter(([change,result])=>boardChanges(base[change.owner],result.board).length);
-          const reservedTargets={...budget?.protectedPlans,...saved};
+          const reservedTargets={...budget?.protectedPlans,...context?.boardPlanBudgetSaved};
           const billFor=rows=>boardBill(budget.imported,{
             ...reservedTargets,...Object.fromEntries(rows.map(([change,result])=>[change.owner,result.board])),
           },budget.refundResets);
@@ -1984,10 +2084,11 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
               }));
               const quote=budgetFor(rows);
               if(quote&&!quote.fits)throw Error(quote.error||'These changes exceed the shared Board budget.');
-              await window.__holodoriDesktop.saveBoardPlans(context?.profileId,updates,
+              const applied=await window.__holodoriDesktop.saveBoardPlans(context?.profileId,updates,
                 {...(context?.boardPlanExisting??original),...saved},protection);
-              for(const [owner,board] of Object.entries(updates)){
-                saved[owner]=board;
+              Object.assign(saved,applied);
+              for(const owner of Object.keys(updates)){
+                context.boardPlanBudgetSaved[owner]=applied[owner];
                 delete state.selected[owner];
                 delete state.editing[owner];
               }
@@ -2037,12 +2138,19 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                   const preview=open?this.boardPlanPreview(team,change,base[change.owner],state.connectOverrides[change.owner]):null;
                   const picked=new Set(selection(change));
                   const result=editorStatus.find(([row])=>row===change)[1];
+                  const connectNotes=change.connects.flatMap(({socket,cardId,recommended})=>{
+                    if(!cardId)return [];
+                    const source=connectLocations.get(cardId);
+                    const moving=picked.has('connect:'+socket)&&source&&(source.owner!==change.owner||source.slot!==socket);
+                    const label=moving?`Clears ${memberName(source.owner)} · ${source.slot}`:
+                      recommended?`Recommended · ${this.cardName(cardId)}`:null;
+                    return label?[node('li',{key:socket},[chip(socket,'connect'),node('span',{},label)])]:[];
+                  });
                   const pointsLeft=result.points===null?null:change.ptsBudget-result.points;
                   const isSaved=!!saved[change.owner]&&!change.picks.length;
                   const hasChanges=boardChanges(base[change.owner],result.board).length;
                   const editing=!isSaved&&!!state.editing[change.owner];
-                  const noResets=boardProtection(protection,change.owner)==='noResets';
-                  const pinnedSlot=slot=>noResets&&Object.hasOwn(original[change.owner]?.cards??{},slot);
+                   const pinnedSlot=slot=>pinsBoardConnects(protection,change.owner)&&Object.hasOwn(starting[change.owner]?.cards??{},slot);
                   const togglePick=key=>{
                     if(!editing||state.pending)return;
                     if(picked.has(key))picked.delete(key);else picked.add(key);
@@ -2156,7 +2264,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                     planConnectChoices:editing&&!state.pending?connectChoices:null,planConnectProtected:pinnedSlot,planConnectCards:result.board.cards,
                     onPlanConnect:changeConnect});
                   return memberAccordion(node('div',{class:'holo-team-board-map-body'},[
-                    editToolbar,error,map,caption,changeRows?node('details',{class:'holo-team-board-change-list'},[
+                    editToolbar,error,connectNotes.length?node('ul',{class:'holo-team-board-connect-notes','aria-label':'Connect slot details'},connectNotes):null,
+                    map,caption,changeRows?node('details',{class:'holo-team-board-change-list'},[
                       node('summary',{},[icon('chevron-right','holo-team-board-chevron'),'Changes']),changeRows,
                     ]):null,
                   ]));
@@ -2933,9 +3042,37 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       const planResult = team => this.openTeamPlan(team);
       const resultMode=this.resultContext?.mode??this.mode;
       const resultObjective=this.resultContext?.objective??this.objective;
-      const resultBaseline=resultMode==='next'&&resultObjective==='score'&&
-        (!this.resultContext?.charts.length||this.resultContext?.sortBy==='avg')&&Number.isFinite(this.result?.baseline);
-      const renderRows = (teams,openFirst=true,group=null)=>teams.map((team,index)=>h('details',{
+      const placementRegion=leaderboardRegions[this.ratingStandingsRegion];
+      const singleRatingLeader=this.resultContext?.ratingLeaderId;
+      const placementBadge=(leaderId,rating,compact=false)=>{
+        const standings=this.ratingStandings[leaderId];
+        const place=projectedLeaderboardPlace(standings?.rows,rating);
+        if(!place)return null;
+        const label=formatLeaderboardPlace(place);
+        const text=compact?label:`Est. ${label}`;
+        const detail=place.first>100?'Outside the top 100.':place.last>place.first?'Placement range for equal ratings.':'';
+        return button(text,event=>{
+          event.preventDefault();
+          event.stopPropagation();
+          placementOrigins.set(this,event.currentTarget);
+          void this.$router.push({path:'/leaderboards',query:{holomem:leaderId,region:this.ratingStandingsRegion,rating:String(rating)}});
+        },{class:'holo-rating-placement',
+          'aria-label':`${text} on the ${placementRegion} leaderboard`,
+          title:`Projected ${placementRegion} placement with ${count(rating)} total rating. ${detail} Standings captured ${formatDateTime(standings.capturedAt)}.`.trim(),
+        });
+      };
+      const unitUpgrades=resultMode==='next'&&resultObjective==='unitScore';
+      const resultBaseline=Number.isFinite(this.result?.baseline)&&resultMode==='next'&&(unitUpgrades||
+        resultObjective==='score'&&(!this.resultContext?.charts.length||this.resultContext?.sortBy==='avg'));
+      const lineupRatingMetric=(team,group,ratingResult)=>{
+        const metric=summaryMetric('Holomem rating',team.rating);
+        if(!ratingResult)return metric;
+        const rating=group?ratingWithChart(ratingResult.ratingContributors,group.songId,team.rating):
+          ratingResult.ratingMerged?team.rating:null;
+        const place=placementBadge(ratingResult.leaderId??singleRatingLeader??team.leaderChar,rating);
+        return place?h('span',{class:'holo-rating-lineup-metric'},[metric,place]):metric;
+      };
+      const renderRows = (teams,openFirst=true,group=null,ratingResult=null)=>teams.map((team,index)=>h('details',{
         key:`${index}-${team.cardIds.join(',')}`,class:'holo-team-result rounded bg-gray-800',open:openFirst&&index===0,
       },[
         h('summary',{class:'holo-team-result-head'},[
@@ -2944,7 +3081,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             summaryMetric('Estimated average song score',scoreOf(team)),
             summaryMetric(team.reviewedScore?.chartCount?'Avg. chart max':'Est. max score',maxOf(team)),
             summaryMetric('Unit Score',team.displayUnitScore),summaryMetric('Avg. event points',team.eventPointsAvg),
-            summaryMetric('Max event points',team.eventPointsMax),summaryMetric('Holomem rating',team.rating),
+            summaryMetric('Max event points',team.eventPointsMax),lineupRatingMetric(team,group,ratingResult),
           ]),
           icon('chevron-right','holo-team-result-chevron'),
         ]),
@@ -2974,12 +3111,13 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           team.ratingSongs?.length ? h('div',{class:'holo-team-rating-songs'},team.ratingSongs.map(song=>h('div',{key:song.songId,class:'holo-team-rating-song'},[
             image(songJacket(song.songId),'holo-team-jacket',28,28),
             h('span',{},[h('strong',{},song.title),h('small',{class:'text-gray-400'},capitalize(song.difficulty))]),
-            h('span',{},[h('strong',{},count(song.rating)),h('small',{class:'text-gray-400'},count(Math.floor(song.score)))]),
+            h('span',{},[h('strong',{},count(song.rating)),h('small',{class:'text-gray-400'},count(song.score))]),
           ]))) : null,
           Number.isFinite(team.unitScore) || team.breakdown ? details('Score breakdown',[
             Number.isFinite(team.unitScore) ? h('dl',{class:'holo-team-breakdown'},[metric('Chart base score',team.unitScore)]) : null,
             breakdown(team),
           ]) : null,
+          resultBaseline&&unitUpgrades?caption(`+${count(team.displayUnitScore-this.result.baseline)} Unit Score vs. current best`):
           resultBaseline ?
             caption(Math.abs(scoreOf(team)-this.result.baseline)<.5?'Matches the current best':
               `${count(Math.abs(scoreOf(team)-this.result.baseline))} points ${scoreOf(team)>this.result.baseline?'above':'below'} current best`):null,
@@ -2987,19 +3125,82 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         ]),
       ]));
       const rows=renderRows(this.result?.results??[]);
-      const ratingGroups = (this.result?.ratingGroups??[]).map((group,index)=>h('details',{
+      const ratingChartLabel=chart=>[
+        image(songJacket(chart.songId),'holo-team-jacket',34,34),
+        h('span',{class:'holo-rating-chart-name'},[h('strong',{},chart.title),h('small',{class:'text-gray-400'},capitalize(chart.difficulty))]),
+        h('span',{class:'holo-rating-chart-score'},[h('strong',{},`${count(chart.rating)} rating`),h('small',{class:'text-gray-400'},count(chart.best))]),
+      ];
+      const ratingGroups = groups=>groups.map((group,index)=>h('details',{
         key:group.songId,class:'holo-team-result holo-team-rating-group rounded bg-gray-800',open:index===0,
       },[
-        h('summary',{class:'holo-team-rating-song'},[
-          icon('chevron-right','holo-team-result-chevron'),
-          image(songJacket(group.songId),'holo-team-jacket',34,34),
-          h('span',{},[h('strong',{},group.title),h('small',{class:'text-gray-400'},capitalize(group.difficulty))]),
-          h('span',{},[h('strong',{},`${count(group.rating)} rating`),h('small',{class:'text-gray-400'},count(Math.floor(group.best)))]),
-        ]),
-        h('div',{class:'holo-team-rating-teams'},[
-          ...renderRows(group.results,true,group),
-        ]),
+        h('summary',{class:'holo-team-rating-song'},[icon('chevron-right','holo-team-result-chevron'),...ratingChartLabel(group)]),
+        h('div',{class:'holo-team-rating-teams'},renderRows(group.results,true,group)),
       ]));
+      const batchRows=this.result?.ratingLeaders;
+      const quick=this.result?.quickTop,limit=quick?.limit??this.ratingRowsLimit;
+      const leaderboard=()=>{
+        const ranked=batchRows.filter(row=>!row.status);
+        const skipped=batchRows.filter(row=>row.status);
+        if(!this.searching)ranked.sort((a,b)=>b.ratingTotal-a.ratingTotal||a.name.localeCompare(b.name));
+        const visible=limit?ranked.slice(0,limit):ranked;
+        const leader=visible.find(row=>row.leaderId===this.ratingLeader)??visible[0];
+        const groups=leader?.ratingGroups??[];
+        const chart=groups.find(group=>group.songId===this.ratingChart)??groups[0];
+        const ratingLabel=this.result.byMax?'Max rating':'Rating';
+        const showPlacement=visible.some(row=>this.ratingStandings[row.leaderId]?.rows.length);
+        let rank=0;
+        return h('div',{class:'holo-rating-layout'},[
+          leader?h('div',{class:'holo-rating-columns'},[
+            h('div',{class:`holo-rating-list${showPlacement?' holo-rating-list-placement':''}`,role:'group','aria-label':'Ranked leaders'},[
+              this.searching?caption('Final ranks appear when the search ends.'):null,
+              h('div',{class:'holo-rating-row holo-rating-label text-gray-400','aria-hidden':'true'},[
+                h('span',{class:'holo-rating-index'},'Rank'),h('span',{class:'holo-rating-name-column'},'Holomem'),
+                showPlacement?h('span',{class:'holo-rating-place-column',title:`Projected ${placementRegion} leaderboard placement`},`${placementRegion} place`):null,
+                h('span',{class:'holo-rating-total'},ratingLabel),
+              ]),
+              ...visible.map((row,index)=>{
+                if(row.ratingTotal!==ranked[index-1]?.ratingTotal)rank=index+1;
+                const tied=row.ratingTotal===ranked[index-1]?.ratingTotal||row.ratingTotal===ranked[index+1]?.ratingTotal;
+                const selectLeader=event=>{
+                  const {left}=event.currentTarget.getBoundingClientRect();
+                  this.ratingLeader=row.leaderId;
+                  if(leader!==row)this.ratingChart=null;
+                  this.$nextTick(()=>{
+                    const panel=this.$refs.ratingInspector;
+                    if(panel&&panel.getBoundingClientRect().left<=left)panel.focus();
+                  });
+                };
+                return h('div',{key:row.leaderId,class:'holo-rating-row holo-rating-leader rounded','data-selected':leader===row},[
+                  button([
+                    h('span',{class:'holo-rating-index text-gray-400',...(tied&&!this.searching&&{'aria-label':`Tied at rank ${count(rank)}`})},
+                      this.searching?'–':`${count(rank)}${tied?' =':''}`),
+                    portrait(row.leaderId,28),h('strong',{},row.name),
+                    h('strong',{class:'holo-rating-total'},count(row.ratingTotal)),
+                    icon('chevron-right','holo-team-result-chevron'),
+                  ],selectLeader,{class:'holo-rating-leader-select','aria-pressed':leader===row,'aria-controls':'holo-rating-inspector'}),
+                  showPlacement?h('span',{class:'holo-rating-place-column'},[placementBadge(row.leaderId,row.ratingTotal,true)??'—']):null,
+                ]);
+              }),
+            ]),
+            h('section',{id:'holo-rating-inspector',ref:'ratingInspector',tabindex:-1,class:'holo-rating-inspector rounded bg-gray-800',
+              'aria-label':`${leader.name} results`},[
+              h('header',{},[portrait(leader.leaderId,32),h('h3',{class:'font-semibold'},leader.name),
+                h('div',{class:'holo-rating-inspector-total'},[placementBadge(leader.leaderId,leader.ratingTotal),
+                  h('strong',{},count(leader.ratingTotal))])]),
+              groups.length?h('div',{class:'holo-rating-charts',role:'group','aria-label':'Rating charts'},[
+                caption(groups.length>3?'Top three charts contribute to rating':'Contributing charts'),...groups.map(group=>button(ratingChartLabel(group),()=>{
+                  this.ratingLeader=leader.leaderId;
+                  this.ratingChart=group.songId;
+                },{key:group.songId,class:'holo-team-rating-song holo-rating-chart rounded','aria-pressed':chart===group})),
+              ]):null,
+              h('div',{key:`${leader.leaderId}:${chart?.songId??''}`,class:'holo-rating-lineups'},
+                renderRows(chart?.results??leader.results??[],true,chart,leader)),
+            ]),
+          ]):caption(this.searching?'Results appear as full searches finish.':'No supported team matched these options.'),
+          skipped.length?details(`${count(skipped.length)} without results`,skipped.map(row=>
+            h('p',{key:row.leaderId},`${row.name} · ${row.status}`))):null,
+        ]);
+      };
       const bonusTargets=this.catalog?.boardKeepTargets??[];
       const boardBonusControls=boardBonusGroups.map(([name,art,keys,keepOnly])=>{
         const targets=Array.isArray(keys)?keys.map(id=>bonusTargets.find(target=>target.id===id)).filter(Boolean):
@@ -3082,6 +3283,11 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
               },{key:color,class:action+' holo-encore-branch',title:`${capitalize(color)} branch`,'aria-label':`${capitalize(color)} branch`,
                 disabled:disabled||this.boardBranches.length===1&&this.boardBranches.includes(color),
                 'aria-pressed':this.boardBranches.includes(color)})),
+              button(this.connectorIcon?boardConnectArtwork(h,this.connectorIcon,5):[icon('link')],
+                ()=>this.change('boardOptimizeConnectors',!this.boardOptimizeConnectors),{
+                  class:'holo-encore-connector','aria-label':'Connectors','aria-pressed':this.boardOptimizeConnectors,disabled,
+                  title:this.boardOptimizeConnectors?'Connectors · Allow moves and replacements':'Connectors · Keep placed cards and fill empty slots',
+                }),
             ]),
             h('div',{class:'holo-encore-board-field',role:'group','aria-label':'Board resets'},[
               h('span',{class:'holo-team-label font-semibold'},'Max resets'),
@@ -3125,7 +3331,9 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         ]) : null,
       ];
       const chartArtwork=this.ratingMode&&leader?memberIcon(leader.id):chart&&songJacket(chart.songId);
-      const chartTitle=this.unitMode?'Unit Score':this.ratingMode?(leader?.name??'Choose a Holomem'):
+      const chartTitle=this.unitMode?'Unit Score':this.ratingMode?(this.ratingBatch?
+        this.ratingScope==='quick'?`Quick Top ${this.ratingQuickCount}`:ratingScopes.find(([key])=>key===this.ratingScope)?.[1]:
+        leader?.name??'Choose a Holomem'):
         (chart?.title??this.eventSong?.title??(this.needsChart?'Choose a song':'Any song'));
       const targetDetail=this.unitMode?'Team power and skill bonuses':this.ratingMode?'Mobile · Holomem Rating':
         `${this.pc?'PC':'Mobile'} · ${chart?chartName(chart):'Chart average'}`;
@@ -3186,10 +3394,13 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         ],
         target:[
               objectiveChoices(),
+              this.ratingMode?choices('ratingScope','Rating scope',ratingScopes):null,
               ...(this.eventMode?eventTarget():[]),
               this.unitMode||this.eventMode ? null : this.ratingMode ? h('div',{class:'holo-encore-inline-fields holo-encore-rating-fields'},[
-                field('Rating leader',searchChoice('leader','Choose a Holomem',chartTitle,false,leader&&memberIcon(leader.id)),
+                this.ratingBatch?null:field('Rating leader',searchChoice('leader','Choose a Holomem',chartTitle,false,leader&&memberIcon(leader.id)),
                   {label:'Clear Rating leader',clear:()=>this.chooseLeader('',false),show:!!this.activeLeaderId}),
+                this.ratingScope==='selected'?field('Leaders',searchChoice('ratingLeaders','Choose leaders',
+                  this.ratingLeaderIds.length?`${count(this.ratingLeaderIds.length)} selected`:'Choose leaders')):null,
                 number('ratingMaxDifficulty','Max difficulty',this.difficultyBounds[0],this.difficultyBounds[1],this.ratingDifficulty,undefined,undefined,
                   {label:'Reset max difficulty',clear:()=>this.change('ratingMaxDifficulty',null),show:this.ratingMaxDifficulty!==null}),
               ]) : clearable(button([jacketTile(),h('span',{},[h('strong',{},chartTitle),
@@ -3217,10 +3428,13 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                 ]),
               ]) : null,
               this.ratingMode ? h('div',{class:'holo-team-options'},[
+                this.ratingBatch&&this.ratingScope!=='selected'?flag('ratingBatchInvitedOnly','Invited Holomems only'):null,
                 flag('ratingAllSongs','Include locked songs'),
                 !this.ratingAllSongs ? searchChoice('ratingSongs','Additional unlocked songs',
-                  ratingSongCount?`Additional songs · ${ratingSongCount}`:'Additional unlocked songs',!leader) : null,
+                  ratingSongCount?`Additional songs · ${ratingSongCount}`:'Additional unlocked songs',!(leader||this.ratingBatch)) : null,
               ]) : null,
+              this.ratingMode&&this.ratingScope==='quick'?choices('ratingQuickCount','Quick leaderboard size',
+                ratingQuickCounts.map(value=>[value,`Top ${value}`])):null,
               this.objective==='eventPoints' ? h('div',{class:'holo-encore-inline-fields holo-encore-event-options'},[
                 number('liveBoost','Live Boost',1,10),
                 h('div',{class:'holo-team-options'},[
@@ -3232,7 +3446,19 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         ],
         lineup:[
               h('div',{class:'holo-lineup-pool'},[
-                select(this.poolKey,'Card pool',poolOptions),
+                h('div',{class:'holo-encore-inline-fields holo-lineup-pool-controls'},[
+                  select(this.poolKey,'Card pool',poolOptions),
+                  h('div',{class:'holo-team-field'},[
+                    h('span',{class:'holo-team-label font-semibold'},'Exclude rarity'),
+                    h('div',{role:'group','aria-label':'Exclude card rarity',class:'holo-encore-rarity'},
+                      [[3,'excludeThreeStars','text-white'],[4,'excludeFourStars','text-epic-400']].map(([rarity,key,color])=>{
+                        const label=`Exclude ${rarity}★ cards`;
+                        return button([icon('star',color)],()=>this.change(key,!this[key]),{
+                          key,title:label,'aria-label':label,'aria-pressed':this[key],disabled,
+                        });
+                      })),
+                  ]),
+                ]),
                 this.rosterSource==='planned'&&this.useOwned?caption(count(this.plannedCards.length)+' active Planner cards'):
                   caption(poolHints[this.effectivePool]),
                 ...(this.customPool?lineupAssumptions():[]),
@@ -3260,7 +3486,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                   {label:'Use any leader',clear:()=>this.chooseLeader('',false),show:!!this.activeLeaderId}),
                   flag('allLeaders','All Holomems',!!leader),
                 ]),
-                h('div',{class:'holo-lineup-leader'},[
+                this.ratingBatch?field('Outfit',caption('Best the leader owns')):h('div',{class:'holo-lineup-leader'},[
                   field('Outfit',searchChoice('outfit','Choose an outfit',
                     outfit?.name??(this.activeLeaderMode==='holomem'?'From a locked card':'Best the leader owns'),
                     !leader&&this.mode!=='holomem',outfit?.cardId?cardPortrait(outfit.cardId):outfit?.characterId?memberIcon(outfit.characterId):null),
@@ -3286,7 +3512,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       };
       const blocker=this.searchBlocker;
       const runAction=disabled?button('Cancel',this.stopWorker):
-        button('Find best teams',this.searchTeams,{class:primary,disabled:!this.canSearch});
+        button(this.ratingBatch?'Rank leaders':'Find best teams',this.searchTeams,{class:primary,disabled:!this.canSearch});
       const stepNotes={
         build:modeTitle,
         target:this.unitMode?objectiveTitle:`${objectiveTitle} · ${chartTitle}`,
@@ -3333,7 +3559,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         this.mode==='next'&&this.nextAcquisition!=='any'?
           ['Acquisition',nextAcquisitionChoices.find(([id])=>id===this.nextAcquisition)?.[1]]:null,
         ['Leader',leader?h('span',{class:'holo-encore-fact-person'},[portrait(leader.id,18),leader.name]):
-          this.ratingMode?'Not selected':'Automatic'],['Boards',boardTitle],
+          this.ratingBatch?`${count(this.ratingLeaderIds.length)} leaders`:this.ratingMode?'Not selected':'Automatic'],['Boards',boardTitle],
       ];
       const brief = h('aside',{class:'holo-encore-brief','aria-label':'Search brief'},[
         h('div',{class:'holo-encore-brief-heading'},[jacketTile(),h('div',{},[
@@ -3353,7 +3579,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           ['Invited Holomems',count(this.members.length)],
           ['Outfit',outfit?h('span',{class:'holo-encore-fact-person'},[
             outfit.cardId?image(cardPortrait(outfit.cardId),'holo-team-outfit-icon',16,20):portrait(outfit.characterId,18),outfit.name,
-          ]):(this.activeLeaderMode==='holomem'?'From a locked card':'Automatic')],
+          ]):(this.activeLeaderMode==='holomem'?'From a locked card':'Best the leader owns')],
           ['Memory bonus',this.profile?.account?.memoryBonusPermil!==undefined?'Current bonus':'From Memory count'],
           ['Member Power-Up',h('select',{class:inputClass+' holo-encore-power-up','aria-label':'Member Power-Up preset',
             disabled:disabled||!this.catalog,value:this.powerUpPreset,onChange:event=>this.change('powerUpPreset',event.target.value)},
@@ -3367,6 +3593,13 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       ]);
       const rankOverrides=this.result?.boardRankOverrides??[];
       const progressFraction=Number.isFinite(this.progress?.fraction)?Math.max(0,Math.min(.99,this.progress.fraction)):0;
+      const searchMeter=()=>h('div',{class:'holo-encore-search-progress'},[
+        h('div',{class:'holo-encore-search-status text-sm text-gray-400'},[
+          h('span',{role:'status'},this.progress?.phase?`${this.progress.phase}…`:'Searching teams…'),
+          h('span',{class:'holo-encore-search-percent','aria-hidden':'true'},formatNumber(progressFraction,{style:'percent'})),
+        ]),
+        h('progress',{class:'holo-encore-meter',max:1,value:progressFraction,'aria-label':'Team search progress'}),
+      ]);
       const ranksToSync=rankOverrides.filter(({characterId,planned,rank})=>{
         const bounds=this.profile?.account&&accountProgressRank(this.profile.account,characterId,rank);
         return bounds&&rank>=bounds.min&&rank<=bounds.max&&planned!==rank;
@@ -3388,14 +3621,30 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           workflow,
           brief,
           h('section',{ref:'encoreResults',tabindex:-1,class:'holo-team-results','aria-label':'Team search results'},this.result ? [
-            h('div',{class:'holo-team-results-heading'},[
-              h('h2',{class:'font-semibold'},resultObjective==='unitScore'?'Best Unit Score teams':resultObjective==='holomemLb'?'Holomem Rating':resultMode==='next'?'Best next cards':'Your best teams'),
-              button('Clear Results',this.clearResult),
+            h('div',{class:`holo-team-results-heading${batchRows?' holo-rating-results-head rounded bg-gray-800':''}`},[
+              h('div',{class:'holo-rating-results-title'},[
+                h('h2',{class:'font-semibold'},quick?`Quick Top ${quick.limit}`:batchRows?'Holomem Rating leaderboard':unitUpgrades?'Best Unit Score upgrades':
+                  resultObjective==='unitScore'?'Best Unit Score teams':resultObjective==='holomemLb'?'Holomem Rating':resultMode==='next'?'Best next cards':'Your best teams'),
+                batchRows?h('p',{class:'text-xs text-gray-400',role:'status'},quick?quick.screened===null?`Screening ${count(this.result.leaderTotal)} leaders`:
+                  `${count(quick.screened)} screened · ${this.searching?`${count(batchRows.length)} / `:''}${count(this.result.leaderTotal)} full searches`:
+                  `${count(batchRows.length)} of ${count(this.result.leaderTotal)} leaders complete`):null,
+              ]),
+              h('div',{class:'holo-team-options'},[
+                batchRows&&!quick?h('select',{class:inputClass+' holo-rating-limit','aria-label':'Show ranked leaders',
+                  title:'Changes how many completed leaders are shown',value:this.ratingRowsLimit,
+                  onChange:event=>this.change('ratingRowsLimit',Number(event.target.value))},
+                [0,5,10,20].map(value=>h('option',{value},value?`Top ${value}`:'All leaders'))):null,
+                button('Clear Results',this.clearResult),
+              ]),
             ]),
             this.resultsChanged?h('p',{class:'text-xs text-gray-400',role:'status'},'These results use your previous search setup. Run again to apply changes.'):null,
             this.result.scoringModel==='game-pc-estimate'?caption('PC estimate from game chart data.'):null,
-            resultObjective==='holomemLb'?h('p',{class:'text-xs text-gray-400',role:'status'},
-              `${count(this.result.ratingTotal)} ${this.result.byMax?'max rating':'rating'}`):null,
+            !batchRows&&resultObjective==='holomemLb'?h('div',{class:'holo-rating-single-total text-xs text-gray-400',role:'status'},[
+              `${count(this.result.ratingTotal)} ${this.result.byMax?'max rating':'rating'}`,
+              placementBadge(singleRatingLeader,this.result.ratingTotal),
+              this.ratingStandings[singleRatingLeader]?.rows.length?h('span',{},placementRegion):null,
+            ]):null,
+            batchRows&&this.searching?searchMeter():null,
             this.result.excluded?caption(`${count(this.result.excluded)} cards excluded`):null,
             this.result.boardWarnings?.length?h('div',{class:'holo-encore-notice',role:'status'},[
               icon('information-circle'),
@@ -3410,20 +3659,15 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
               })):button('Review ranks',()=>this.$router.push('/progress')),
             ]):null,
             resultBaseline ?
-              caption(`Current best · ${count(this.result.baseline)} estimated average song score`) : null,
+              caption(`Current best · ${count(this.result.baseline)} ${unitUpgrades?'Unit Score':'estimated average song score'}`) : null,
             ...rows,
-            ...ratingGroups,
-            !rows.length&&!ratingGroups.length ? caption(resultMode==='next'&&this.resultContext?.nextAcquisition!=='any'?
-              'No upgrade team matched this acquisition filter.':'No supported team matched these options.') : null,
+            ...(batchRows?[leaderboard()]:ratingGroups(this.result.ratingGroups??[])),
+            !batchRows&&!rows.length&&!this.result.ratingGroups?.length ? caption(resultMode==='next'&&this.resultContext?.nextAcquisition!=='any'?
+              'No upgrade team matched this acquisition filter.':unitUpgrades&&resultBaseline?
+                'No upgrades improved your current best Unit Score.':'No supported team matched these options.') : null,
           ] : [h('div',{class:'holo-team-result-placeholder bg-gray-800 rounded'},[
             h('h2',{class:'font-semibold'},this.resultsChanged&&!disabled?'Setup changed':'Results'),
-            this.searching?h('div',{class:'holo-encore-search-progress'},[
-              h('div',{class:'holo-encore-search-status text-sm text-gray-400'},[
-                h('span',{role:'status'},this.progress?.phase?`${this.progress.phase}…`:'Searching teams…'),
-                h('span',{class:'holo-encore-search-percent','aria-hidden':'true'},formatNumber(progressFraction,{style:'percent'})),
-              ]),
-              h('progress',{class:'holo-encore-meter',max:1,value:progressFraction,'aria-label':'Team search progress'}),
-            ]):h('p',{class:'text-sm text-gray-400',role:'status'},this.resultsChanged?
+            this.searching?searchMeter():h('p',{class:'text-sm text-gray-400',role:'status'},this.resultsChanged?
               'Run again to see teams for your new choices.':'Your ranked teams will appear here.'),
             this.activeStep!=='run'?button(disabled?'View search':'Go to Run',()=>this.goToStep('run',true)):null,
           ])]),

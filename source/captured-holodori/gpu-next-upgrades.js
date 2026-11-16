@@ -1,10 +1,12 @@
 import {boardPlanningBaseline} from './board-protection';
 import {nextAcquisitionFilter} from './acquisition-exchanges.js';
+import {isTeamCardEligible} from './team-card-pool';
 
 const byScore=(left,right)=>right.value-left.value||
   (right.tieScore??right.score)-(left.tieScore??left.score);
 const pullKey=pulls=>pulls.map(({id,bloom})=>id+':'+bloom).sort().join('|');
 const lineupKey=order=>order.map(card=>card.id).sort().join('|');
+const teamKey=row=>row.outfitId+'|'+row.order.slice().sort().join('|');
 const distinct=(items,key)=>[...new Map(items.map(item=>[key(item),item])).values()];
 const totalStats=({performance,technique,sense})=>performance+technique+sense;
 
@@ -45,19 +47,22 @@ function arrangements(order){
   return rows;
 }
 
-export async function searchGpuNextUpgrades({data,payload,scorer,rank,plan,findOwnedTeams}){
-  const {account,options,extras,boardOpt}=payload;
+export async function searchGpuNextUpgrades({data,payload,scorer,rank,plan,findOwnedTeams,refine}){
+  const {account,options,extras,boardOpt,currentUnitTeams}=payload;
   const {owned,ranks}=account;
   const optionsOwned={...options,cardPool:'owned'};
   const boardSaves=boardPlanningBaseline(account.boards,boardOpt);
   const keepBoardBonuses=Object.keys(boardOpt?.keep?.targets??{}).length>0;
+  // Both the baseline and each upgrade can use the same funded layout.
+  // A score-loss policy needs a fresh comparison for the upgraded lineup.
+  const funded=keepBoardBonuses?null:payload.currentUnitPlan;
   const byId=new Map(data.cards.map(card=>[card.id,card]));
   const locked=new Set(extras.nextDeck??[]);
   const fixed=[...locked].map(id=>byId.get(id));
   if(fixed.length>5||fixed.some(card=>!card||!owned[card.id]?.owned)||
     new Set(fixed.map(card=>card.characterId)).size!==fixed.length)return {results:[],baseline:null};
   const limits=Math.min(29,Math.max(1,Math.trunc(extras.nextCount)||1));
-  const cards=data.cards.filter(card=>card.maxLevel>0);
+  const cards=data.cards.filter(card=>card.maxLevel>0&&isTeamCardEligible(card,options));
   const allowsAcquisition=nextAcquisitionFilter(extras.nextAcquisition);
   const upgradeCards=allowsAcquisition?cards.filter(({id})=>allowsAcquisition([{id,copies:1}])):cards;
   const entries=new Map(cards.map(card=>[card.id,{
@@ -96,9 +101,10 @@ export async function searchGpuNextUpgrades({data,payload,scorer,rank,plan,findO
   }
   const lockMembers=new Set(fixed.map(card=>card.characterId));
   const openCandidates=rankedByStrength.filter(card=>!lockMembers.has(card.characterId)).length;
-  const current=ownedTeam.length===5&&fixed.length<5&&openCandidates>5-fixed.length?
+  const current=currentUnitTeams??(ownedTeam.length===5&&fixed.length<5&&openCandidates>5-fixed.length?
     await findOwnedTeams({...basePayload,account:{...basePayload.account,boards:boardSaves},boardOpt:null,
-      options:{...optionsOwned,goal:locked.size?'holomem':'best',focusCardIds:[...locked],topN:8}}):[];
+      options:{...optionsOwned,goal:locked.size?'holomem':'best',focusCardIds:[...locked],topN:8},
+      reviewedFinals:true}):[]);
   const eligibleOutfits=(order,rows)=>options.leaderNoOverlap?
     rows.filter(([,outfit])=>!order.some(card=>card.characterId===outfit.characterId)):rows;
   const initial=[{order:ownedTeam,pulls:[],outfits:ownedOutfits}];
@@ -112,9 +118,9 @@ export async function searchGpuNextUpgrades({data,payload,scorer,rank,plan,findO
       rows.push(score(order,outfitId,characterId));
     return rows.sort(byScore)[0];
   };
-  let base;
+  let base=currentUnitTeams?.[0];
   const discoveredOutfits=new Map(current.map(row=>[lineupKey(row.order.map(id=>byId.get(id))),row.outfitId]));
-  if(ownedTeam.length===5){
+  if(!currentUnitTeams&&ownedTeam.length===5){
     for(const candidate of distinct(initial,({order})=>lineupKey(order))){
       const valid=eligibleOutfits(candidate.order,candidate.outfits);
       const strongest=valid.length>6?valid
@@ -128,15 +134,16 @@ export async function searchGpuNextUpgrades({data,payload,scorer,rank,plan,findO
   }
   // Preserve the settings on every independent Board plan. A proposed
   // acquisition exists only in that plan's temporary account.
-  async function optimizedBoard(row,pulls){
+  async function optimizedBoard(row,pulls,seed){
     if(!row||!boardOpt)return row;
     const query=rosterPayload(pulls);
     const {plan:optimized}=await plan({...query,options:{...optionsOwned,leaderMode:'fixed'},
-      team:row.order,leaderChar:row.leaderChar,outfitId:row.outfitId});
+      team:row.order,leaderChar:row.leaderChar,outfitId:row.outfitId,
+      ...(seed&&{seedBoards:seed.saves,generalist:true,qualityRefine:true})});
     return optimized&&(keepBoardBonuses||byScore(optimized.after,row)<0)?
       {...row,...optimized.after,boards:optimized.saves,plan:optimized}:row;
   }
-  base=await optimizedBoard(base,[]);
+  if(!currentUnitTeams)base=await optimizedBoard(base,[]);
   const priorityOutfits=(candidate,scoring)=>{
     const eligible=eligibleOutfits(candidate.order,candidate.outfits);
     if(eligible.length<=5)return eligible;
@@ -204,7 +211,7 @@ export async function searchGpuNextUpgrades({data,payload,scorer,rank,plan,findO
     const prepared=new Map();
     const scoringFor=candidate=>{
       const key=pullKey(candidate.pulls);
-      if(!prepared.has(key))prepared.set(key,scorer(rosterPayload(candidate.pulls),boardSaves));
+      if(!prepared.has(key))prepared.set(key,scorer(rosterPayload(candidate.pulls),funded?.saves??boardSaves,funded?.ranks));
       return prepared.get(key);
     };
     // Rank the bounded expansion on the device. Each trial uses the
@@ -241,19 +248,56 @@ export async function searchGpuNextUpgrades({data,payload,scorer,rank,plan,findO
       const firstNew=candidate.pulls.find(pull=>pull.new);
       const result={...row,pulls:candidate.pulls,...(firstNew?{candidateId:firstNew.id}:{})};
       const key=pullKey(candidate.pulls);
-      const previous=resultRows.get(key);
-      if(!previous||byScore(result,previous)<0)resultRows.set(key,result);
+      const choices=[...(resultRows.get(key)??[]),result].sort(byScore);
+      const main=choices[0];
+      const rival=boardOpt&&refine&&choices.find(choice=>teamKey(choice)!==teamKey(main));
+      resultRows.set(key,rival?[main,rival]:[main]);
       extended.push({row:result,pulls:candidate.pulls,order:row.order.map(id=>byId.get(id))});
     }
     pool=distinct(extended.sort((a,b)=>byScore(b.row,a.row)),row=>pullKey(row.pulls))
       .sort((a,b)=>byScore(a.row,b.row)).slice(0,Math.min(retain,depth===1?12:8));
   }
-  let best=[...resultRows.values()].sort(byScore).slice(0,Math.max(options.topN*2,8));
+  let best=[...resultRows.values()].map(([main])=>main).sort(byScore).slice(0,Math.max(options.topN*2,8));
+  const onFunded=row=>{
+    if(!funded)return row;
+    const before=scorer(rosterPayload(row.pulls),boardSaves,funded.ranks)
+      .score(row.order.map(id=>byId.get(id)),row.outfitId,row.leaderChar);
+    const plan={...funded,before,after:row,outfitId:row.outfitId,leaderChar:row.leaderChar};
+    return {...row,plan,boards:funded.saves};
+  };
   if(boardOpt){
-    const leading=await Promise.all(best.slice(0,Math.min(6,best.length)).map(row=>optimizedBoard(row,row.pulls)));
+    const rivals=best.slice(0,3).flatMap((row,index)=>{
+      const rival=resultRows.get(pullKey(row.pulls))[1];
+      return rival&&rival.value>=row.value*.98?[{index,row:onFunded(rival)}]:[];
+    });
+    best=best.map(onFunded);
+    const extra=refine&&!payload.reviewedFinals?best.slice(6,10).filter(row=>row.value>=best[0].value*.97).length:0;
+    const leading=await Promise.all(best.slice(0,6+extra).map(row=>optimizedBoard(row,row.pulls,row.plan)));
+    for(const {index,row} of rivals){
+      const planned=await optimizedBoard(row,row.pulls,row.plan);
+      if(payload.reviewedFinals)best.push(planned);
+      else if(byScore(planned,leading[index])<0)leading[index]=planned;
+    }
+    best=[...leading,...best.slice(leading.length)].sort(byScore);
+  }
+  if(refine&&!payload.reviewedFinals&&!keepBoardBonuses){
+    const leading=await Promise.all(best.slice(0,3).map(async row=>{
+      const query=rosterPayload(row.pulls);
+      query.options={...query.options,focusCardIds:[...locked]};
+      const {best:pick}=await refine(query,[row],[],true,row.pulls.map(pull=>pull.id));
+      let candidate=row;
+      if(pick&&byScore(pick.after,row)<0){
+        const after=pick.after;
+        const seed=row.plan;
+        const before=seed&&scorer(query,boardSaves,seed.ranks).score(after.order.map(id=>byId.get(id)),after.outfitId,after.leaderChar);
+        candidate={...row,...after,...(seed&&{plan:{...seed,before,after,outfitId:after.outfitId,leaderChar:after.leaderChar}})};
+      }
+      return optimizedBoard(candidate,row.pulls,candidate.plan);
+    }));
     best=[...leading,...best.slice(leading.length)].sort(byScore);
   }
   if(boardOpt?.ignoreExisting)best=best.map(row=>({...row,boards:row.boards??boardSaves}));
-  const baseline=base?.[options.sortBy==='max'?'maxScore':'score']??null;
-  return {results:best.filter(row=>!base||byScore(row,base)<0),baseline,evaluated};
+  const baseline=(currentUnitTeams?base?.displayUnitScore:base?.[options.sortBy==='max'?'maxScore':'score'])??null;
+  const results=best.filter(row=>!base||(currentUnitTeams?row.displayUnitScore>baseline:byScore(row,base)<0));
+  return {results,baseline,evaluated};
 }

@@ -5,7 +5,7 @@ use std::{fs, path::{Path, PathBuf}};
 
 const JOURNAL: &str = "pending-reset.json";
 const TRASH: &str = "reset-old-data";
-const DIRECTORIES: &[&str] = &["profiles", "backups", "artwork", "restore-next-artwork", "restore-previous-artwork"];
+const DIRECTORIES: &[&str] = &["profiles", "backups", "artwork", "restore-next-artwork", "restore-previous-artwork", "leaderboards"];
 #[derive(Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Intent { schema: u32, operation: String }

@@ -16,7 +16,7 @@ import {loadAchievementCatalog} from './achievements';
 import {compareAccountImports} from './import-changes';
 import {loadInventoryEvents} from './inventory-events';
 import {readSavedLineups,optimizerBoards} from './saved-lineups';
-import {boardChanges,checkSavedBoardAssignments,mergeSavedBoards,protectedSavedBoards,reconcileProtectedBoards,validateSavedBoard} from './saved-boards';
+import {boardChanges,boardPlanUpdates,checkSavedBoardAssignments,mergeSavedBoards,protectedSavedBoards,reconcileProtectedBoards,validateSavedBoard} from './saved-boards';
 import {preservesBoardProtection} from './board-protection';
 import {currentBoards,currentBoardPoints,currentOwnedCards,currentDreamRank} from './current-account';
 import {resolveBoardNodes,resolveBoardConnectEffect} from '../hololive/vendor/shared/account-data';
@@ -437,23 +437,25 @@ import {getCard} from './game';
     if(!app||app.account!==id||closing||storageBlocked||ui.busy||ui.gameImport||ui.restore||ui.profileImport||ui.deleteStage)
       throw Error('Finish the open Settings action before saving Boards.');
     const profile=projectProfile(Object.fromEntries(values),id);
-    for(const [owner,board] of Object.entries(boards))validateSavedBoard(owner,board);
     const imported=currentBoards(profile);
-    const protectedBase=protection?.protection?
-      protectedSavedBoards(imported,profile.savedBoards??{},protection.protection).boards:imported;
-    if(!preservesBoardProtection(protection,protectedBase,{...protectedBase,...boards}))
-      throw Error('This plan would change a protected Board or Connect card.');
     const current={...imported,...profile.savedBoards};
     for(const [owner,board] of Object.entries(boards)){
       if(boardChanges(expected[owner],current[owner]).length&&boardChanges(board,current[owner]).length)
         throw Error('This saved Board changed after the search. Run the optimizer again to edit the latest plan.');
     }
-    const savedBoards={...profile.savedBoards,...boards};
-    checkSavedBoardAssignments({...protectedBase,...savedBoards});
+    const updates=boardPlanUpdates(current,boards,expected);
+    for(const owner of Object.keys(boards))validateSavedBoard(owner,updates[owner]);
+    const protectedBase=protection?.protection?
+      protectedSavedBoards(imported,profile.savedBoards??{},protection.protection).boards:imported;
+    if(!preservesBoardProtection(protection,protectedBase,{...protectedBase,...updates}))
+      throw Error('This plan would change a protected Board or Connect card.');
+    const savedBoards={...profile.savedBoards,...updates};
+    checkSavedBoardAssignments({...imported,...savedBoards});
     const key=`${id}-holodori`;
     methods.setItem(key,JSON.stringify({...profile,savedBoards}));
     app.data[key]={...(app.data[key]??profile),savedBoards};
     await flush();
+    return updates;
   }
   function editableProfile(id){
     const app=window.__seelieApp;

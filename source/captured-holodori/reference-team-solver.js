@@ -1,5 +1,6 @@
 import {referencePowerUpBonus} from './reference-rating-math.js';
-import {boardProtection} from './board-protection.js';
+import {pinsBoardConnects,retainedConnectorPaths} from './board-protection.js';
+import {isTeamCardEligible,teamRarityFilter} from './team-card-pool';
 
 const endpoint = '/assets/team-optimizer/';
 const expected = {
@@ -40,11 +41,22 @@ function call(solver,name,value,read) {
   }finally{solver._hd_free(pointer);}
 }
 let lastData;
+const byRarity=new WeakMap();
 export function hasBoardBonusTargets(boardOpt) {
   return Object.keys(boardOpt?.keep?.targets??{}).length>0;
 }
 
 export async function runReferenceJob(data,job,payload,onProgress) {
+  const filter=teamRarityFilter(payload.options??{});
+  if(filter&&job!=='_hd_plan'){
+    const options=payload.options;
+    if(options.powerUpOverride==null)payload={...payload,options:{...options,
+      powerUpOverride:referencePowerUpBonus(payload.account.owned,data,options.cardPool)}};
+    if(!byRarity.has(data))byRarity.set(data,[]);
+    const variants=byRarity.get(data);
+    variants[filter]??={...data,cards:data.cards.filter(card=>isTeamCardEligible(card,options))};
+    data=variants[filter];
+  }
   const solver=await getModule();
   if(lastData!==data){
     call(solver,'_hd_load_data',data,status=>{
@@ -108,7 +120,7 @@ function validateOutfitAssumption(data,options,assumption) {
 }
 
 export const optimizerPowerUpPresets=[
-  ['allMax','All cards, max level'],['ownedMax','Owned cards, max level'],['owned','Owned cards, current levels'],
+  ['search','Search roster'],['allMax','All cards, max level'],['ownedMax','Owned cards, max level'],['owned','Owned cards, current levels'],
 ];
 
 export function referencePowerUpPreset(data,owned,preset) {
@@ -120,18 +132,20 @@ export function referencePowerUpPreset(data,owned,preset) {
   if(preset==='owned')return referencePowerUpBonus(owned,data,'owned');
 }
 
-export function referencePowerUpOverride(data,owned,input) {
+export function referencePowerUpOverride(data,owned,input,currentOwned=owned) {
   const {outfitAssumption}=input;
-  const preset=referencePowerUpPreset(data,withAssumedOutfitCard(owned,outfitAssumption),input.powerUpPreset);
+  if(input.powerUpPreset==='search')
+    return referencePowerUpBonus(referenceSearchRoster(data,owned,input),data,'owned');
+  const preset=referencePowerUpPreset(data,currentOwned,input.powerUpPreset);
   if(preset!==undefined)return preset;
   const imported=input.upgradeBonusPermyriad;
-  if(input.cardPool==='owned'&&input.goal!=='next'&&Number.isInteger(imported)&&imported>=0&&imported<=5000){
-    if(!outfitAssumption)return imported;
-    const subset={...data,cards:data.cards.filter(card=>card.id===outfitAssumption.cardId)};
-    const before=referencePowerUpBonus(owned,subset,'owned');
-    const after=referencePowerUpBonus(withAssumedOutfitCard({},outfitAssumption),subset,'owned');
-    return Math.max(0,Math.min(5000,imported+after-before));
-  }
+  const current=Number.isInteger(imported)&&imported>=0&&imported<=5000?imported:
+    referencePowerUpBonus(currentOwned,data,'owned');
+  if(!outfitAssumption)return current;
+  const subset={...data,cards:data.cards.filter(card=>card.id===outfitAssumption.cardId)};
+  const before=referencePowerUpBonus(currentOwned,subset,'owned');
+  const after=referencePowerUpBonus(withAssumedOutfitCard({},outfitAssumption),subset,'owned');
+  return Math.max(0,Math.min(5000,current+after-before));
 }
 
 /** Match the captured memory table unless the current account supplied a measured value. */
@@ -167,11 +181,16 @@ export function prepareReferenceSearch(data,input) {
   const accountOwned=Object.fromEntries((input.plannedCards??input.cards).map(card=>[card.cardId,{owned:true,level:card.level,
     bloom:card.potentialUpgradeCount,...(input.plannedCards&&card.levelLimitBreakCount!=null?{sp:card.levelLimitBreakCount}:{})}]));
   const outfitAssumption=validateOutfitAssumption(data,options,input.outfitAssumption);
-  const scenario={...input,goal,cardPool:options.cardPool,outfitAssumption,
-    ...(input.plannedCards?{upgradeBonusPermyriad:undefined}:{})};
-  const powerUp=referencePowerUpOverride(data,accountOwned,scenario);
-  if(powerUp!==undefined)options.powerUpOverride=powerUp;
+  const scenario={...input,goal,cardPool:options.cardPool,outfitAssumption};
+  const currentOwned=input.plannedCards?Object.fromEntries(input.cards.map(card=>[card.cardId,{owned:true,level:card.level}])):accountOwned;
+  if(goal!=='next'||input.powerUpPreset!=='search')
+    options.powerUpOverride??=referencePowerUpOverride(data,accountOwned,scenario,currentOwned);
   const owned=referenceSearchRoster(data,accountOwned,scenario);
+  if(teamRarityFilter(options)){
+    const locked=new Set([...(options.focusCardIds??[]),...(input.nextDeck??[])]);
+    if(data.cards.some(card=>locked.has(card.id)&&!isTeamCardEligible(card,options)))
+      throw Error('Unlock the excluded cards in Lineup or include their rarity.');
+  }
   const ownedCostumeIds=input.ownedCostumeIds??[];
   if(outfitAssumption){
     options.leaderChar=data.costumes[outfitAssumption.outfitId].characterId;
@@ -183,18 +202,21 @@ export function prepareReferenceSearch(data,input) {
   const boards=input.useBoards===false?{}:Object.fromEntries((input.boards??[]).map(board=>[
     board.characterId,{nodes:board.releasedSkillTreeNodeGroupIds,
       cards:Object.fromEntries(board.connectedSkillTreeNodeGroupIds.map((slot,index)=>[slot,board.connectedSkillTreeNodeCardIds[index]])
-        .filter(([,id])=>boardProtection(input.boardOpt,board.characterId)!=='flexible'||
+        .filter(([,id])=>pinsBoardConnects(input.boardOpt,board.characterId)||
           !(input.plannedCards||input.savedBoardMode)||owned[id]?.owned))},
   ]));
-  const boardOpt=input.useBoards!==false&&input.boardOpt?.branches?.length?input.boardOpt:null;
-  if(boardOpt?.protection&&input.plannedCards){
+  let boardOpt=input.useBoards!==false&&input.boardOpt?.branches?.length?input.boardOpt:null;
+  const rank=boardOpt?.maxBoardPoints?1_000_000:input.dreamRank??0;
+  if(boardOpt?.preserveConnects&&boardOpt.ignoreExisting&&!boardOpt.connectorPaths){
+    boardOpt={...boardOpt,connectorPaths:retainedConnectorPaths(boards,owner=>data.boards[owner],rank)};
+  }
+  if((boardOpt?.preserveConnects||boardOpt?.protection)&&input.plannedCards){
     const pinned=new Set(Object.entries(boards).flatMap(([owner,board])=>
-      boardProtection(boardOpt,owner)!=='flexible'?Object.values(board.cards):[]));
+      pinsBoardConnects(boardOpt,owner)?Object.values(board.cards):[]));
     const entries=Object.fromEntries(input.cards.filter(card=>pinned.has(card.cardId)&&!owned[card.cardId])
-      .map(card=>[card.cardId,{level:card.level,bloom:card.potentialUpgradeCount,sp:card.levelLimitBreakCount}]));
+      .map(card=>[card.cardId,{owned:true,level:card.level,bloom:card.potentialUpgradeCount,sp:card.levelLimitBreakCount}]));
     if(Object.keys(entries).length)options.pinnedConnectEntries=entries;
   }
-  const rank=boardOpt?.maxBoardPoints?1_000_000:input.dreamRank??0;
   return {
     account:{dreamRank:rank,owned,boards,ranks,ownedCostumeIds:outfitAssumption?
       [...new Set([...ownedCostumeIds,outfitAssumption.outfitId])]:ownedCostumeIds},options,

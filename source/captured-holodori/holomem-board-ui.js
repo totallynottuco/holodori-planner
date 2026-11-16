@@ -32,6 +32,14 @@ export function boardChangeBadge(h,kind,props={}){
   ]);
 }
 
+export function boardConnectArtwork(h,thumbnail,rarity){
+  const image=(src,className)=>h('img',{class:className,src,alt:'',decoding:'async',draggable:false});
+  return [
+    image(thumbnail,'socket-card-art'),
+    [3,4,5].includes(rarity)?image(assets+'ui_999_thm_card_rarity_r'+rarity+'_s.webp','socket-ribbon'):null,
+  ];
+}
+
 export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
   const art = (file,cls) => h('img',{class:cls,src:assets+file,alt:'',decoding:'async',draggable:false});
   const texture = (file,cls) => h('span',{class:'holo-board-layer holo-board-texture '+cls,'aria-hidden':'true',
@@ -402,10 +410,7 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
         let layers;
         if(cell.type==='connect'&&shownCard?.thumbnail)layers=[
           h('span',{class:'holo-board-layer socket-card-shadow','aria-hidden':'true'}),
-          h('span',{class:'holo-board-layer socket-card','aria-hidden':'true'},[
-            cardArt(shownCard.thumbnail,'socket-card-art'),
-            [3,4,5].includes(shownCard.rarity) ? art('ui_999_thm_card_rarity_r'+shownCard.rarity+'_s.webp','socket-ribbon') : null,
-          ]),
+          h('span',{class:'holo-board-layer socket-card','aria-hidden':'true'},boardConnectArtwork(h,shownCard.thumbnail,shownCard.rarity)),
           h('span',{class:'holo-board-layer socket-card-frame','aria-hidden':'true'}),
         ];
         else if(cell.type==='connect')layers=[
