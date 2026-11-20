@@ -132,6 +132,9 @@ export interface CardGoal {
 }
 
 export interface AccountBoardState {
+  characterExp?: string
+  layoutKnown?: boolean
+  pointBalance?: {quantity:number;rank:number;spent:number}
   characterId: string
   characterLevel: number
   unlockedNodeIds: string[]
@@ -139,6 +142,7 @@ export interface AccountBoardState {
 }
 
 export interface AccountState {
+  ownedSongIds?: string[]
   storyProgress: {
     chapter: number
     episode: number
@@ -259,7 +263,16 @@ export interface AppProfileV12 {
   tasks?: import('../../tasks').PlannerTask[]
   gameAccountImport?: GameAccountImportState
   savedBoards?: Record<string,{nodes:string[];cards:Record<string,string>}>
+  /** Layout each still-pending plan started from, for three-way import review. */
+  savedBoardBases?: AppProfileV12['savedBoards']
+  currentDataVersion?: 1
+  gachaPoints?: Record<string,number|string>
+  achievementProgress?: AppProfileV12['achievementEdits']
+  achievementProgressKnown?: boolean
+  upgradeBonusManual?: boolean
+  memoryBonusManual?: boolean
   boardEdits?: AppProfileV12['savedBoards']
+  boardProgressVersion?: 1
   dreamRankManuallySet?: boolean
   cardOwnership?: Record<string,boolean>
   gachaPointEdits?: Record<string,number>

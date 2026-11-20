@@ -5,7 +5,7 @@ import {
 import {createDefaultAccountState} from '../hololive/vendor/shared/profile';
 import {accountProgressLimits,accountProgressMemoryBonus,accountProgressRank} from './account-progress';
 import {createHolomemBoard} from './holomem-board-ui';
-import {currentBoards,currentDreamRank} from './current-account';
+import {currentBoards,currentDreamRank,currentMemberRank} from './current-account';
 import {game} from './game';
 
 const emptyAccount = createDefaultAccountState();
@@ -28,8 +28,8 @@ export function createAccountProgress({h,vnode,resolve,Search,OverlayPanel,Dialo
         const inventory=window.__seelieApp?.data?.[`${this.profileId}-inventory`];
         return Array.isArray(inventory)?Object.fromEntries(game.resourceKeys.map(id=>[id,game.getInventory.call({inventory},id,id)])):this.profile?.inventory;
       },
-      importedRanks() {
-        return new Map(this.profile?.gameAccountImport?.snapshot.tables.members.map(member => [member.characterId,member.level]));
+      memberRanks() {
+        return new Map((this.profile?.account.unlockedCharacterIds??[]).map(id=>[id,currentMemberRank(this.profile,id)]));
       },
       unlocked() { return new Set(this.progressAccount.unlockedCharacterIds); },
       visibleBranches() {
@@ -61,7 +61,7 @@ export function createAccountProgress({h,vnode,resolve,Search,OverlayPanel,Dialo
           return;
         }
         this.commitEditor();
-        this.editor = {...details,anchor,profileId:this.profileId,text:digit ?? formatNumber(details.value),
+        this.editor = {...details,anchor,profileId:this.profileId,edited:digit!=null,text:digit ?? formatNumber(details.value),
           episode:details.episode == null ? '' : formatNumber(details.episode),direct:digit != null};
         const panel = this.$refs.progressEditor;
         const alreadyOpen = panel.visible;
@@ -78,7 +78,7 @@ export function createAccountProgress({h,vnode,resolve,Search,OverlayPanel,Dialo
       commitEditor(cancel=false) {
         const editor = this.editor;
         this.editor = null;
-        if (!editor || cancel || editor.profileId !== this.profileId) return;
+        if (!editor?.edited || cancel || editor.profileId !== this.profileId) return;
         const value = entryNumber(editor.text);
         const edit = editor.kind === 'quest' ? {kind:'quest',chapter:value,episode:entryNumber(editor.episode)} :
           editor.kind === 'rank' ? {kind:'rank',characterId:editor.characterId,value} : {kind:editor.kind,value:editor.factor?Math.round(value*editor.factor):value};
@@ -150,7 +150,7 @@ export function createAccountProgress({h,vnode,resolve,Search,OverlayPanel,Dialo
         },
       },caption);
       const tile = member => {
-        const rank = accountProgressRank(account,member.id,this.importedRanks.get(member.id),this.currentLayouts[member.id]?.nodes);
+        const rank = accountProgressRank(account,member.id,this.memberRanks.get(member.id),this.currentLayouts[member.id]?.nodes);
         const level = this.sliderDrafts[member.id] ?? rank.level;
         const unlocked = this.unlocked.has(member.id);
         const step = (label,delta,disabled,text) => h('button',{
@@ -199,7 +199,7 @@ export function createAccountProgress({h,vnode,resolve,Search,OverlayPanel,Dialo
       const editField = (label,value,change,primary=false) => h('label',{class:'holo-progress-field'},[
         h('span',{class:'text-xs font-semibold text-gray-300'},label),
         h('input',{ref:primary?'progressInput':undefined,type:'text',inputmode:editor?.factor?'decimal':'numeric',
-          class:'bg-gray-700 border-none rounded-md',value,onInput:event => change(event.target.value)}),
+          class:'bg-gray-700 border-none rounded-md',value,onInput:event => {editor.edited=true;change(event.target.value);}}),
       ]);
       return h('section',{class:'holo-progress','aria-label':'Progress'},[
         ...header,

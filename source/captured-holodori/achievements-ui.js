@@ -1,8 +1,8 @@
 import {formatNumber,parseNumber} from './regional-formats.js';
-import {achievementProgress,indexAchievementProgress,loadAchievementCatalog} from './achievements';
+import {achievementProgress,loadAchievementCatalog} from './achievements';
 import {createAchievementRewardFilter} from './achievement-reward-filter';
 import {accountCharactersById,memberLevelProgression} from '../hololive/vendor/shared/account-data';
-import {currentMemberRank} from './current-account';
+import {currentAchievementProgress,currentMembers} from './current-account';
 
 const amount = value => value == null ? '—' : formatNumber(BigInt(value));
 const art = icon => `/assets/achievements/groups/${icon}.webp`;
@@ -81,9 +81,8 @@ export function createAchievements({h,vnode,resolve,Search,Toggle,Rail,Row,Overl
       profile(){return window.__seelieApp?.data?.[`${this.account || 'main'}-holodori`];},
       snapshot(){return this.profile?.gameAccountImport?.snapshot;},
       progressIndex(){
-        const imported=indexAchievementProgress(this.snapshot?.tables.missions);
-        const edits=Object.entries(this.profile?.achievementEdits??{});
-        return edits.length?new Map([...imported??[],...edits]):imported;
+        const rows=Object.entries(currentAchievementProgress(this.profile));
+        return rows.length||this.profile?.achievementProgressKnown?new Map(rows):null;
       },
       missionIndex(){
         return new Map((this.catalog?.categories??[]).flatMap(category=>category.groups.flatMap(group=>group.missions.map(mission=>[mission.id,mission]))));
@@ -91,16 +90,12 @@ export function createAchievements({h,vnode,resolve,Search,Toggle,Rail,Row,Overl
       categories() {
         const index=this.progressIndex;
         return (this.catalog?.categories ?? []).map(category => {
-          const groups = category.groups.map(group => groupProgress(group,index,this.snapshot?.tables.missions===undefined));
+          const groups = category.groups.map(group => groupProgress(group,index,!this.profile?.achievementProgressKnown));
           return {...category,groups,...summarize(groups)};
         });
       },
       members() {
-        const imported=new Map(this.snapshot?.tables.members?.map(member=>[member.characterId,member]));
-        return new Map((this.profile?.account.unlockedCharacterIds??[]).map(characterId=>{
-          const level=currentMemberRank(this.profile,characterId),observed=imported.get(characterId);
-          return [characterId,observed?.level===level?observed:{characterId,level}];
-        }));
+        return new Map(currentMembers(this.profile).map(member=>[member.characterId,member]));
       },
       selectedRewardIds() {
         const selected = new Set(this.rewardSelection);

@@ -1,37 +1,38 @@
 import {desktopButtonClass} from './desktop-settings.js';
 
-function releaseNotesContent(h,notes){
-  const content=[];
-  let bullets=[];
-  for(const line of notes.split(/\r?\n/)){
-    const bullet=line.match(/^\s*[-*+]\s+(.+)/);
-    if(bullet){
-      bullets.push(h('li',null,bullet[1]));
-      continue;
-    }
-    if(bullets.length){
-      content.push(h('ul',{class:'list-disc pl-5 space-y-1'},bullets));
-      bullets=[];
-    }
-    const heading=line.match(/^#{1,6}\s+(.+)/);
-    if(heading)content.push(h('h3',{class:'font-semibold'},heading[1]));
-    else if(line.trim())content.push(h('p',null,line.trim()));
-  }
-  if(bullets.length)content.push(h('ul',{class:'list-disc pl-5 space-y-1'},bullets));
-  return content;
-}
-
 export function createAppUpdates({h,reactive,vnode,Dialog,invoke,flush,blocked,enabled}){
-  const state=reactive({version:null,phase:'idle',visible:false,error:'',notes:null,notesSaving:false,notesError:false});
+  const state=reactive({version:null,phase:'idle',visible:false,error:'',notes:null,notesSaving:false,notesError:false,notesLinkError:false});
+  let renderNotes;
   const busy=()=>['downloading','installing'].includes(state.phase);
   const dismiss=()=>{if(!busy())state.visible=false;};
   async function start(){
     try{
-      state.notes=await invoke('desktop_app_update_notes');
+      const release=await invoke('desktop_app_update_notes');
+      if(release?.notes){
+        try{
+          const {parseReleaseNotes,renderReleaseNotes}=await import('./release-notes.js');
+          const tokens=parseReleaseNotes(release.notes);
+          renderNotes=()=>renderReleaseNotes(h,tokens);
+        }catch{
+          // Keep the notes readable if the renderer cannot be loaded.
+        }
+      }
+      state.notes=release;
     }catch{
       // An unavailable notes file should not prevent the update check.
     }
     await check();
+  }
+  async function openNotesLink(event){
+    const url=event.target.closest('a')?.getAttribute('href');
+    if(!url)return;
+    event.preventDefault();
+    state.notesLinkError=false;
+    try{
+      await invoke('desktop_app_update_open_link',{url});
+    }catch{
+      state.notesLinkError=true;
+    }
   }
   async function dismissNotes(){
     if(!state.notes||state.notesSaving)return;
@@ -100,8 +101,9 @@ export function createAppUpdates({h,reactive,vnode,Dialog,invoke,flush,blocked,e
         'aria-labelledby':'desktop-app-update-notes-title',style:{width:'480px',maxWidth:'calc(100vw - 32px)'}},{
         default:()=>h('div',{class:'mt-4'},[
           h('h2',{id:'desktop-app-update-notes-title',class:'text-xl font-bold'},`What’s new in v${version}`),
-          h('div',{class:'mt-3 space-y-2 text-sm text-gray-300',style:{maxHeight:'45vh',overflowY:'auto',overflowWrap:'anywhere'}},
-            notes?releaseNotesContent(h,notes):'This release has no published notes.'),
+          h('div',{class:'desktop-release-notes mt-3 text-sm text-gray-300',onClick:openNotesLink},
+            renderNotes?renderNotes():[h('p',{style:{whiteSpace:'pre-wrap'}},notes||'This release has no published notes.')]),
+          state.notesLinkError?h('p',{class:'mt-3 text-sm text-red-400',role:'alert'},'Could not open the link in your browser.'):null,
           state.notesError?h('p',{class:'mt-3 text-sm text-red-400',role:'alert'},'Could not save your dismissal. Try again.'):null,
         ]),
         footer:()=>h('div',{class:'flex justify-end'},[

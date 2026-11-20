@@ -156,7 +156,7 @@ simple(functions.get('T1').body,{Identifier(node){if(node.name==='M1')patch(node
 // The checklist fills the original page slot with Holodori groups and tiers.
 patch(0,0,'const holoTierSlot={props:{content:Object},render(){return i("div",Lw,[this.content]);}};\nconst holoChecklist=Z1(()=>import("/captured/achievements-ui.js").then(({createAchievements})=>createAchievements({h:i,vnode:g,resolve:M,Search:Ys,Toggle:Ae,Rail:sw,Row:Qs,OverlayPanel:N1,headingClass:ow.class,titleClass:lw.class})));\n','Lazy Holodori achievement checklist in the captured Vue runtime');
 patch(0,0,'const holoProgress=Z1(()=>import("/captured/account-progress-ui.js").then(({createAccountProgress})=>createAccountProgress({h:i,vnode:g,resolve:M,Search:Ys,OverlayPanel:N1,Dialog:le,Toggle:Ae,headingClass:ow.class,titleClass:lw.class})));\n','Lazy account progress and Board in the captured Vue shell');
-patch(0,0,'const holoLeaderboards=Z1(()=>import("/captured/holomem-leaderboard-ui.js").then(({createHolomemLeaderboards})=>createHolomemLeaderboards({h:i,vnode:g,resolve:M,Search:Ys,Dialog:le,headingClass:ow.class,titleClass:lw.class})));\n','Lazy Holomem Leaderboards');
+patch(0,0,'const holoLeaderboards=Z1(()=>import("/captured/holomem-leaderboard-ui.js").then(({createHolomemLeaderboards})=>createHolomemLeaderboards({h:i,reactive:ea,vnode:g,resolve:M,Search:Ys,Dialog:le,headingClass:ow.class,titleClass:lw.class})));\n','Lazy Holomem Leaderboards');
 patch(0,0,'const importTeamOptimizer=()=>import("/captured/team-optimizer-ui.js");\nconst prepareTeamOptimizer=async()=>{const module=await importTeamOptimizer();await module.prepareOptimizerWorkspace().catch(()=>{});};\nconst holoTeamOptimizer=()=>importTeamOptimizer().then(({createTeamOptimizer})=>createTeamOptimizer({h:i,vnode:g,resolve:M,Search:Ys,Dialog:le,Toggle:Ae,headingClass:ow.class,titleClass:lw.class}));\n','Resolve the optimizer catalog before entering its captured route');
 patch(0,0,'import {holoKeepAlive} from "./vendor-8ba3b986.js";\n','Reuse the captured Vue KeepAlive component for the optimizer route');
 simple(functions.get('Jo').body,{CallExpression(node){
@@ -625,6 +625,7 @@ for(const file of [...outfitFiles].sort()){
 }
 for(const slots of Object.values(outfitIndex.reactions))slots.sort((a,b)=>a-b);
 await fs.writeFile(path.join(outfitDir,'index.json'),JSON.stringify(outfitIndex));
+await fs.copyFile(path.join(root,'source/captured-holodori/outfit-waist-anchors.json'),path.join(out,'assets/outfit-waist-anchors.json'));
 const outfitUpdates=path.join(out,'assets/outfit-updates');
 await fs.mkdir(outfitUpdates,{recursive:true});
 await fs.writeFile(path.join(outfitUpdates,'index.json'),'{}');

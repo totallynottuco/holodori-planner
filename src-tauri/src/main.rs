@@ -499,6 +499,7 @@ fn main() {
         .invoke_handler(tauri::generate_handler![
             app_update::desktop_app_update_check,
             app_update::desktop_app_update_notes,
+            app_update::desktop_app_update_open_link,
             app_update::desktop_app_update_acknowledge,
             app_update::desktop_app_update_download,
             app_update::desktop_app_update_install,
@@ -506,6 +507,7 @@ fn main() {
             holomem_leaderboard::desktop_holomem_leaderboard,
             holomem_leaderboard::desktop_holomem_rating_standings,
             holomem_leaderboard::desktop_refresh_holomem_rankings,
+            holomem_leaderboard::desktop_refresh_holomem_from_game,
             desktop_catalog_check,
             desktop_catalog_preloads_check,
             optimizer_catalog::desktop_optimizer_catalog_read,

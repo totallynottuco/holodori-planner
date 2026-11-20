@@ -1,7 +1,6 @@
 import {bloomRequirements,game,manifest,type CharacterGoal,type GameContext,type SeelieGoal,type TrainingGoal} from './game';
 import {materialPlan} from './material-plan';
-import {cardProgress} from './account-import';
-import {currentOwnership} from './current-account';
+import {currentOwnedCards,currentOwnership} from './current-account';
 
 type Lineup = {cardIds: string[]; lineup: {level: number; bloom: number; sp?: number}[]};
 
@@ -9,7 +8,7 @@ export function previewTeamPlan(team: Lineup, context: GameContext) {
   const goals = [...(context.goals ?? [])];
   const profile=context.$root?.data?.[`${context.account ?? 'main'}-holodori`];
   const owned=currentOwnership(profile);
-  const raw=new Map(profile?.gameAccountImport?.snapshot.tables.cards.map(card=>[card.cardId,card]));
+  const records=new Map(currentOwnedCards(profile,goals).map(card=>[card.cardId,card]));
   const changedCards = new Set<string>();
   const rows = team.cardIds.map((id, position) => {
     const entry = team.lineup?.[position];
@@ -20,15 +19,13 @@ export function previewTeamPlan(team: Lineup, context: GameContext) {
     const trainingIndex = goals.findIndex(goal => goal.character === id && goal.type === 'trace');
     const level = goals[levelIndex] as CharacterGoal | undefined;
     const training = goals[trainingIndex] as TrainingGoal | undefined;
-    const imported=owned?.has(id)?raw.get(id):undefined;
-    const progress = imported && cardProgress(imported, undefined, card);
-    const observed = typeof progress === 'object' ? progress : undefined;
+    const recorded=records.get(id);
     const maxLevel = game.rulesFor(id).maxLevel;
     const saved=profile?.cards[id];
-    const currentLevel=level?.current.level??saved?.level??observed?.level??1;
-    const currentSP=Math.max(game.minimumStage(id,currentLevel),level?.current.asc??saved?.trainingStage??observed?.trainingStage??0,training?.sp.current??0);
-    const currentBloom=level?.eidolon??saved?.bloomStage??observed?.bloomStage??0;
-    const exp=level?.current.expIntoLevel??(currentLevel===saved?.level?saved.expIntoLevel:currentLevel===observed?.level?observed.expIntoLevel:undefined);
+    const currentLevel=level?.current.level??saved?.level??recorded?.level??1;
+    const currentSP=Math.max(game.minimumStage(id,currentLevel),level?.current.asc??saved?.trainingStage??recorded?.levelLimitBreakCount??0,training?.sp.current??0);
+    const currentBloom=level?.eidolon??saved?.bloomStage??recorded?.potentialUpgradeCount??0;
+    const exp=level?.current.expIntoLevel??(currentLevel===saved?.level?saved.expIntoLevel:undefined);
     const previousLevel = Math.max(currentLevel, level?.goal.level ?? 1);
     const previousSP = Math.max(currentSP, game.minimumStage(id, previousLevel), level?.goal.asc ?? 0, training?.sp.goal ?? 0);
     const previousBloom = Math.max(currentBloom, level?.goalBloom ?? 0);

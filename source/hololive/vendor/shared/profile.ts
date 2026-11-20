@@ -60,6 +60,9 @@ const legacyAccountStateSchema = z.object({
   playAssumption: z.object({ mode: z.literal('all-perfect') })
 })
 const accountBoardStateSchema = z.object({
+  characterExp:z.string().regex(/^\d{1,20}$/).optional(),
+  layoutKnown:z.boolean().optional(),
+  pointBalance:z.object({quantity:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER),rank:z.number().int().min(1).max(2147483647),spent:z.number().int().nonnegative().max(Number.MAX_SAFE_INTEGER)}).optional(),
   characterId: z.string().min(1),
   characterLevel: z.number().int().min(1).max(50),
   unlockedNodeIds: z.array(z.string().min(1)).refine((values) => new Set(values).size === values.length, 'Board nodes must be unique'),
@@ -93,6 +96,7 @@ const accountStateV9Schema = accountStateV8Schema.extend({
   })
 })
 export const accountStateSchema = accountStateV8Schema.extend({
+  ownedSongIds:z.array(z.string().regex(/^m\d{4}$/)).max(50000).optional(),
   storyProgress: z.object({chapter: z.number().int().min(1).max(2147483647), episode: z.number().int().min(0).max(2147483647)}),
   playerLevel: z.number().int().min(1).max(2147483647),
   memoriesCollected: z.number().int().min(0).max(50000),
@@ -305,9 +309,17 @@ const boardLayoutsSchema=z.record(z.string().regex(/^chr-\d+$/),z.object({
     cards:z.record(z.string().min(1).max(100),z.string().regex(/^card-[a-z\d-]+$/)),
 }));
 export const appProfileSchema = z.object({
+  currentDataVersion:z.literal(1).optional(),
+  gachaPoints:z.record(z.string().regex(/^gacha_point-[a-z0-9_-]{1,100}$/),z.union([safeInteger,accountInt64Schema])).optional(),
+  achievementProgress:z.record(sourceId,z.object({progress:accountInt64Schema,rewardReceivedThresholds:z.array(accountInt64Schema).max(1000)})).optional(),
+  achievementProgressKnown:z.boolean().optional(),
+  upgradeBonusManual:z.boolean().optional(),
+  memoryBonusManual:z.boolean().optional(),
   gameAccountImport:gameAccountImportSchema.optional(),
   savedBoards:boardLayoutsSchema.optional(),
+  savedBoardBases:boardLayoutsSchema.optional(),
   boardEdits:boardLayoutsSchema.optional(),
+  boardProgressVersion:z.literal(1).optional(),
   dreamRankManuallySet:z.boolean().optional(),
   cardOwnership:z.record(z.string().regex(/^card-[a-z\d-]+$/),z.boolean()).optional(),
   gachaPointEdits:z.record(z.string().regex(/^gacha_point-[a-z0-9_-]{1,100}$/),safeInteger).optional(),
@@ -492,11 +504,11 @@ function validateParsedProfileForManifest(
 
   const costumes = new Set(accountManifest.costumes.map((costume) => costume.id))
   for (const costumeId of profile.account.ownedCostumeIds) {
-    if (!costumes.has(costumeId)) throw new Error(`Unknown outfit ID: ${costumeId}`)
+    if (!costumes.has(costumeId)&&profile.currentDataVersion!==1) throw new Error(`Unknown outfit ID: ${costumeId}`)
   }
   const characterIds = new Set(accountManifest.characters.map((character) => character.id))
   for (const characterId of profile.account.unlockedCharacterIds) {
-    if (!characterIds.has(characterId)) throw new Error(`Unknown unlocked member ID: ${characterId}`)
+    if (!characterIds.has(characterId)&&profile.currentDataVersion!==1) throw new Error(`Unknown unlocked member ID: ${characterId}`)
   }
   for (const [characterId, costumeId] of Object.entries(profile.account.selectedCostumeIds)) {
     const costume = accountManifest.costumes.find((entry) => entry.id === costumeId)
@@ -508,6 +520,13 @@ function validateParsedProfileForManifest(
   const connectedCards = new Set<string>()
   for (const [characterId, board] of Object.entries(profile.account.boards)) {
     if (characterId !== board.characterId) throw new Error(`Board map key does not match ${board.characterId}`)
+    if(board.layoutKnown===false){
+      for(const id of Object.values(board.connectAssignments))if(id){
+        if(connectedCards.has(id))throw new Error(`Card ${id} is assigned to more than one Connect node`)
+        connectedCards.add(id)
+      }
+      continue
+    }
     const character = accountCharactersById.get(characterId)
     if (!character) throw new Error(`Unknown Board member ID: ${characterId}`)
     if (board.characterLevel > character.maximumLevel) throw new Error(`${character.name} exceeds the member level cap`)
@@ -778,6 +797,13 @@ export function prepareProfile(input: unknown, manifest: ProgressionManifest): {
   const catalogIds = new Set(manifest.cards.map((card) => card.id))
   const assignedCards = new Set<string>()
   for (const [characterId, board] of Object.entries(profile.account.boards)) {
+    if(board.layoutKnown===false){
+      for(const id of Object.values(board.connectAssignments))if(id){
+        if(assignedCards.has(id))throw new Error(`Card ${id} is assigned to more than one Connect node`)
+        assignedCards.add(id)
+      }
+      continue
+    }
     if (!accountCharactersById.has(characterId)) throw new Error(`Unknown Board member ID: ${characterId}`)
     const nodes = resolveBoardNodes(characterId)
     const byId = new Map(nodes.map((node) => [node.groupId, node]))

@@ -1,13 +1,15 @@
 import {accountRosterBranches} from '../hololive/vendor/shared/account-data';
 import {formatDateTime,formatNumber} from './regional-formats';
 import {leaderboardRegions as regions,leaderboardRegionKey,selectedLeaderboardRegion,
-  projectedLeaderboardPlace,formatLeaderboardPlace} from './leaderboard-placement';
+  projectedLeaderboardPlace,formatLeaderboardPlace,leaderboardStandingsUpdated} from './leaderboard-placement';
 import {renderPickerChoice,renderHolomemChoices} from './optimizer-picker-controls';
 
 const members=accountRosterBranches.flatMap(branch=>branch.generations.flatMap(group=>group.characters));
+const memberIds=[...new Set(members.map(member=>member.id))];
 const storageKey='holomemLeaderboardMember';
 const refreshInterval=15*60*1000;
 let artwork;
+let gameRefresh;
 
 function projectionFromQuery({holomem,region,rating}) {
   if(!members.some(member=>member.id===holomem)||typeof region!=='string'||!Object.hasOwn(regions,region)||
@@ -23,7 +25,7 @@ async function loadArtwork() {
   return artwork;
 }
 
-export function createHolomemLeaderboards({h,vnode,resolve,Search,Dialog,headingClass,titleClass}) {
+export function createHolomemLeaderboards({h,reactive,vnode,resolve,Search,Dialog,headingClass,titleClass}) {
   const portrait=(assetId,size,className)=>h('img',{class:className,src:`/assets/members/${assetId}.webp`,
     width:size,height:size,alt:'',loading:'lazy',decoding:'async',draggable:false});
   return {
@@ -32,11 +34,12 @@ export function createHolomemLeaderboards({h,vnode,resolve,Search,Dialog,heading
       const projection=projectionFromQuery(this.$route.query);
       return {memberId:projection?.memberId??members.find(member=>member.id===saved)?.id??members[0].id,
         region:projection?.region??selectedLeaderboardRegion(sessionStorage),board:null,available:null,
-        syncing:false,boardRequest:0,feedRequest:0,timer:null,artwork:null,revealedProjection:null,
+        syncing:false,refreshJob:null,refreshError:'',active:true,boardRequest:0,feedRequest:0,timer:null,artwork:null,revealedProjection:null,
         pickerVisible:false,pickerQuery:''};
     },
     computed:{
       profile(){return window.__seelieApp?.account??'main';},
+      refreshing(){return this.refreshJob!==null;},
       member(){return members.find(member=>member.id===this.memberId);},
       matchingMembers(){
         const query=this.pickerQuery.trim().toLocaleLowerCase();
@@ -55,7 +58,7 @@ export function createHolomemLeaderboards({h,vnode,resolve,Search,Dialog,heading
       },
     },
     watch:{
-      boardSelection(){this.readBoard();},
+      boardSelection(){this.refreshError='';this.readBoard();},
       region(){
         this.available=null;
         this.sync();
@@ -83,9 +86,10 @@ export function createHolomemLeaderboards({h,vnode,resolve,Search,Dialog,heading
       loadArtwork().then(assets=>{this.artwork=assets;}).catch(()=>{});
       this.readBoard();
       this.sync();
-      this.timer=setInterval(()=>{if(!this.syncing)this.sync(true);},refreshInterval);
+      if(gameRefresh)void this.followGameRefresh(gameRefresh);
+      this.timer=setInterval(()=>{if(!this.syncing&&!this.refreshing)this.sync(true);},refreshInterval);
     },
-    beforeUnmount(){clearInterval(this.timer);this.boardRequest++;this.feedRequest++;},
+    beforeUnmount(){this.active=false;clearInterval(this.timer);this.boardRequest++;this.feedRequest++;},
     methods:{
       openMemberPicker(){
         this.pickerQuery='';
@@ -130,6 +134,39 @@ export function createHolomemLeaderboards({h,vnode,resolve,Search,Dialog,heading
           if(clear&&request===this.boardRequest)this.board=null;
         }
       },
+      async refreshFromGame(){
+        if(gameRefresh||this.refreshing)return;
+        this.refreshError='';
+        const job=reactive({region:this.region,completed:0});
+        job.promise=Promise.resolve().then(()=>{
+          const {Channel,invoke}=window.__TAURI__.core;
+          const onProgress=new Channel();
+          onProgress.onmessage=completed=>{job.completed=completed;};
+          return invoke('desktop_refresh_holomem_from_game',{members:memberIds,region:job.region,onProgress});
+        }).then(()=>window.dispatchEvent(new CustomEvent(leaderboardStandingsUpdated,{detail:job.region})));
+        gameRefresh=job;
+        try{
+          await this.followGameRefresh(job);
+        }finally{
+          gameRefresh=null;
+        }
+      },
+      async followGameRefresh(job){
+        const selected=()=>this.active&&job.region===this.region;
+        this.refreshJob=job;
+        try{
+          await job.promise;
+          if(selected()){
+            this.available=true;
+            await this.readBoard(false);
+          }
+        }catch(error){
+          if(selected())this.refreshError=String(error?.message??error??'Could not refresh from the game.')
+            .replace('before importing.','before refreshing.');
+        }finally{
+          this.refreshJob=null;
+        }
+      },
       async sync(force=false){
         const request=++this.feedRequest;
         this.syncing=true;
@@ -146,8 +183,10 @@ export function createHolomemLeaderboards({h,vnode,resolve,Search,Dialog,heading
       },
     },
     render() {
-      const caption=this.board?(this.available===false?'Last saved ':'Captured ')+formatDateTime(this.board.capturedAt):
-        this.syncing?'Loading standings…':'';
+      const job=this.refreshJob;
+      const caption=job?`Refreshing ${regions[job.region]} rankings · ${formatNumber(job.completed)} / ${formatNumber(memberIds.length)}`:
+        this.board?(this.available===false?'Last saved ':'Captured ')+formatDateTime(this.board.capturedAt):
+          this.syncing?'Loading standings…':'';
       const graphic=(asset,kind)=>asset?h('img',{
         key:asset.file,class:'holo-leaderboards-'+kind,src:'/assets/'+asset.file,
         width:asset.width,height:asset.height,alt:asset.label||'',title:asset.label||undefined,
@@ -189,15 +228,16 @@ export function createHolomemLeaderboards({h,vnode,resolve,Search,Dialog,heading
             h('button',{key:id,type:'button','aria-pressed':this.region===id,
               onClick:()=>this.chooseBoard('region',id)},label))),
           h('button',{type:'button',class:'h-8 rounded bg-gray-700 px-3 text-sm font-semibold hover:bg-gray-600',
-            disabled:this.syncing,onClick:()=>this.sync(true)},'Refresh'),
+            disabled:this.refreshing,'aria-busy':this.refreshing||undefined,onClick:this.refreshFromGame},'Refresh'),
           h('span',{class:'text-xs text-gray-400','aria-live':'polite'},caption),
         ]),
+        this.refreshError?h('p',{class:'text-sm text-red-400 mb-2',role:'alert'},this.refreshError):null,
         rows?.length?h('table',{class:'holo-leaderboards-table'+(placement?' holo-leaderboards-table-projecting':''),
           'aria-label':this.member.name+' rankings'},[
           h('thead',null,[h('tr',null,['Rank','Player','Rating'].map(label=>h('th',{scope:'col'},label)))]),
           h('tbody',null,rows),
         ]):h('p',{class:'text-sm text-gray-400',role:'status'},this.board?'No ranked players for this Holomem.':
-          this.syncing?'':'No standings available for this region yet.'),
+          this.syncing||this.refreshing?'':'No standings available for this region yet.'),
         vnode(Dialog,{visible:this.pickerVisible,'onUpdate:visible':visible=>{this.pickerVisible=visible;},
           onShow:this.focusMemberSearch,header:'Choose a Holomem',modal:true,draggable:false,dismissableMask:true,
           position:'top',class:'holo-team-dialog',contentClass:'holo-team-picker-content',

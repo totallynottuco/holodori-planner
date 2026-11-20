@@ -109,7 +109,8 @@ export function configureInventory(original) {
         set(value){this.setSetting('inventory_hide_zero',value===true);},
       },
       gameSnapshot(){return this.$root.data?.[this.account+'-holodori']?.gameAccountImport?.snapshot;},
-      gameItemBase(){return this.gameItemCatalog?projectGameInventory(this.gameSnapshot,this.gameItemCatalog,compactQuantity):noGameItems;},
+      gameItemBase(){return this.gameItemCatalog?projectGameInventory(this.gameSnapshot,this.gameItemCatalog,compactQuantity,
+        this.$root.data?.[this.account+'-holodori']?.gameInventory??{}):noGameItems;},
       gameItems(){return applyGameInventoryEdits(this.gameItemBase,this.inventory,compactQuantity);},
       plannerItems(){
         return Object.fromEntries(game.resourceKeys.map((key,index)=>{

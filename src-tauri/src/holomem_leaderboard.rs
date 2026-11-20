@@ -1,12 +1,28 @@
 use crate::{catalog_update, game_import, store, Native};
 use serde::{Deserialize, Serialize};
-use std::{collections::BTreeMap, fs, path::{Path, PathBuf}, sync::Mutex, time::{Duration, Instant}};
-use tauri::{AppHandle, Manager};
+use std::{collections::{BTreeMap, BTreeSet}, fs, path::{Path, PathBuf}, sync::Mutex, time::{Duration, Instant}};
+use std::sync::atomic::{AtomicBool, Ordering};
+use tauri::{ipc::Channel, AppHandle, Manager};
 
 const FEED_PATH: &str = "/totallynottuco/hololive-dreams-planner-media/main/leaderboards/v1";
 const FEED_LIMIT: usize = 3_000_000;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(900);
 static CHECKED: [Mutex<Option<(PathBuf, Instant, bool)>>; 3] = [const { Mutex::new(None) }; 3];
+static CACHE_WRITE: Mutex<()> = Mutex::new(());
+static GAME_REFRESH: AtomicBool = AtomicBool::new(false);
+
+struct GameRefresh;
+
+impl GameRefresh {
+    fn begin() -> store::Result<Self> {
+        GAME_REFRESH.compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .map(|_| Self).map_err(|_| "A leaderboard refresh is already running.".into())
+    }
+}
+
+impl Drop for GameRefresh {
+    fn drop(&mut self) { GAME_REFRESH.store(false, Ordering::Release); }
+}
 
 #[derive(Clone, Copy, Deserialize, Serialize, PartialEq, Eq, PartialOrd, Ord)]
 #[serde(rename_all = "lowercase")]
@@ -18,6 +34,9 @@ impl Region {
     }
     fn game_code(self) -> u8 {
         match self { Self::Global => 2, Self::Japan => 1, Self::Asia => 3 }
+    }
+    fn label(self) -> &'static str {
+        match self { Self::Global => "Global", Self::Japan => "Japan", Self::Asia => "Asia" }
     }
 }
 
@@ -54,6 +73,14 @@ struct Collection { snapshot: Option<Snapshot>, error: Option<String> }
 
 fn valid_member(id: &str) -> bool {
     id.strip_prefix("chr-").is_some_and(|number| number.len() == 5 && number.bytes().all(|byte| byte.is_ascii_digit()))
+}
+
+fn validate_roster(members: &[String]) -> store::Result<()> {
+    let mut seen = BTreeSet::new();
+    if members.is_empty() || members.len() > 256 || members.iter().any(|id| !valid_member(id) || !seen.insert(id)) {
+        return Err("Invalid leaderboard roster.".into());
+    }
+    Ok(())
 }
 
 fn valid_board(board: &Leaderboard, character: &str, region: Region) -> bool {
@@ -104,6 +131,7 @@ fn cached(path: &Path, region: Region) -> Option<Snapshot> {
 }
 
 fn update_cache(path: &Path, snapshot: Snapshot) -> store::Result<()> {
+    let _writer = CACHE_WRITE.lock().map_err(|error| error.to_string())?;
     let mut boards = cached(path, snapshot.region).map(|saved| saved.boards).unwrap_or_default();
     let mut changed = false;
     for (id, board) in snapshot.boards {
@@ -188,18 +216,48 @@ pub async fn desktop_refresh_holomem_rankings(app: AppHandle, region: Region, fo
     }).await.map_err(|error| error.to_string())?
 }
 
-fn collect(reader: &Path, region: Region, members: &[String]) -> store::Result<Snapshot> {
+#[tauri::command]
+pub async fn desktop_refresh_holomem_from_game(
+    app: AppHandle, members: Vec<String>, region: Region, on_progress: Channel<usize>,
+) -> store::Result<()> {
+    validate_roster(&members)?;
+    let reader = app.path().resource_dir().map_err(|error| error.to_string())?
+        .join("capture/holodori-account-reader.dll");
+    let directory = app.state::<Native>().root.join("leaderboards");
+    let refresh = GameRefresh::begin()?;
+    tauri::async_runtime::spawn_blocking(move || {
+        let _refresh = refresh;
+        let snapshot = collect(region, &members, |id| capture_board(&reader, id), |completed| {
+            let _ = on_progress.send(completed);
+        })?;
+        update_cache(&cache_path(&directory, region), snapshot)
+    }).await.map_err(|error| error.to_string())?
+}
+
+fn capture_board(reader: &Path, id: &str) -> store::Result<Leaderboard> {
+    serde_json::from_value(game_import::capture_leaderboard(reader, id)?).map_err(|error| error.to_string())
+}
+
+fn collect(
+    region: Region, members: &[String], mut capture: impl FnMut(&str) -> store::Result<Leaderboard>,
+    mut progress: impl FnMut(usize),
+) -> store::Result<Snapshot> {
     let mut boards = BTreeMap::new();
     for id in members {
-        let mut board: Leaderboard = serde_json::from_value(game_import::capture_leaderboard(reader, id)?)
-            .map_err(|error| error.to_string())?;
+        let mut board = capture(id)?;
         if board.region != Some(region.game_code()) {
-            return Err(format!("The game session reported region {:?}; the collector requested {}.", board.region, region.slug()));
+            let actual = [Region::Global, Region::Japan, Region::Asia].into_iter()
+                .find(|candidate| board.region == Some(candidate.game_code()));
+            return Err(match actual {
+                Some(actual) => format!("Your Steam game is signed in to {}. Select {} to refresh its rankings.", actual.label(), actual.label()),
+                None => "Could not verify the game’s region. Return to its home screen and try again.".into(),
+            });
         }
         board.rows.sort_by_key(|row| row.rank);
         if !valid_board(&board, id, region) || boards.insert(id.clone(), board).is_some() {
             return Err(format!("The game returned invalid standings for {id}."));
         }
+        progress(boards.len());
     }
     Ok(Snapshot { schema: 1, region, boards })
 }
@@ -214,16 +272,65 @@ pub fn collect_from_cli() -> Option<store::Result<()>> {
         };
         let output = PathBuf::from(args.next().ok_or("Missing collector output path.")?);
         let members = args.map(|id| id.into_string().map_err(|_| "Invalid collector Holomem id.")).collect::<Result<Vec<_>, _>>()?;
-        if members.is_empty() || members.len() > 256 || members.iter().any(|id| !valid_member(id)) {
-            return Err("Invalid collector Holomem roster.".into());
-        }
+        validate_roster(&members)?;
         let reader = std::env::current_exe().map_err(|error| error.to_string())?
             .with_file_name("capture").join("holodori-account-reader.dll");
-        let result = match collect(&reader, region, &members) {
+        let result = match collect(region, &members, |id| capture_board(&reader, id), |_| {}) {
             Ok(snapshot) => Collection { snapshot: Some(snapshot), error: None },
             Err(error) => Collection { snapshot: None, error: Some(error) },
         };
         let bytes = serde_json::to_vec(&result).map_err(|error| error.to_string())?;
         store::atomic(&output, &bytes)
     })())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn game_refresh_rejects_duplicates_and_allows_retry_after_release() {
+        let first = GameRefresh::begin().unwrap();
+        assert_eq!(GameRefresh::begin().err().as_deref(), Some("A leaderboard refresh is already running."));
+        drop(first);
+        assert!(GameRefresh::begin().is_ok());
+    }
+
+    #[test]
+    fn collects_the_entire_roster_in_one_pass() {
+        let members = ["chr-00001".to_owned(), "chr-00002".to_owned(), "chr-00003".to_owned()];
+        validate_roster(&members).unwrap();
+        assert!(validate_roster(&[members[0].clone(), members[0].clone()]).is_err());
+        let mut visited = Vec::new();
+        let mut updates = Vec::new();
+        let snapshot = collect(Region::Japan, &members, |id| {
+            visited.push(id.to_owned());
+            Ok(Leaderboard { character_id: id.into(), captured_at: "2026-11-16T12:00:00.000Z".into(),
+                region: Some(Region::Japan.game_code()), rows: vec![] })
+        }, |completed| updates.push(completed)).unwrap();
+        assert_eq!(visited, members);
+        assert_eq!(updates, [1, 2, 3]);
+        assert_eq!(snapshot.boards.len(), members.len());
+    }
+
+    #[test]
+    fn a_live_refresh_replaces_only_the_newer_board_in_the_shared_cache() {
+        let directory = std::env::temp_dir().join(format!("planner-rankings-{}-{}", std::process::id(), store::now()));
+        let path = cache_path(&directory, Region::Global);
+        let fixture = |boards: &[(&str, &str, u64)]| Snapshot { schema: 1, region: Region::Global,
+            boards: boards.iter().map(|&(id, date, rating)| (id.into(), Leaderboard {
+                character_id: id.into(), captured_at: date.into(), region: Some(2),
+                rows: vec![Standing { rank: 1, rating, name: "Player".into(), fan_mark_id: None, emblems: vec![] }],
+            })).collect() };
+        let older = "2026-11-15T12:00:00.000Z";
+        let newer = "2026-11-16T12:00:00.000Z";
+        update_cache(&path, fixture(&[("chr-00001", older, 100), ("chr-00002", older, 200)])).unwrap();
+        update_cache(&path, fixture(&[("chr-00001", newer, 300)])).unwrap();
+        update_cache(&path, fixture(&[("chr-00001", older, 100)])).unwrap();
+        let snapshot = cached(&path, Region::Global).unwrap();
+        assert_eq!(snapshot.boards["chr-00001"].rows[0].rating, 300);
+        assert_eq!(snapshot.boards["chr-00002"].rows[0].rating, 200);
+        assert!(cached(&path, Region::Japan).is_none());
+        fs::remove_dir_all(directory).unwrap();
+    }
 }

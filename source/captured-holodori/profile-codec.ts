@@ -5,6 +5,7 @@ import { minimumTrainingStage } from '../hololive/vendor/shared/planner';
 import { defaultBoosts } from '../hololive/boosts';
 import { normalizeGoals, rulesFor, type SeelieGoal } from './game';
 import {readSavedLineups} from './saved-lineups';
+import {consolidateCurrentProfile,currentGameInventory,currentOwnership} from './current-account';
 
 export type NativeValues = Record<string, string>;
 export type CapturedFields = Record<string, unknown>;
@@ -34,10 +35,11 @@ const integer = (value:unknown, min:number, max:number, fallback:number) => {
 export function freshProfile(): AppProfileV2 {
   const profile = createDefaultProfile(manifest.metadata.catalogVersion);
   profile.tasks = [];
+  profile.boardProgressVersion = 1;
   profile.boosts = defaultBoosts();
   profile.preferences.autoCheckUpdates = false;
   profile.preferences.theme = 'dark';
-  return profile;
+  return consolidateCurrentProfile(profile);
 }
 export function canonicalProfile(input:unknown):AppProfileV2 {
   const profile = prepareProfile(input, manifest).profile;
@@ -45,7 +47,7 @@ export function canonicalProfile(input:unknown):AppProfileV2 {
   profile.preferences.theme = 'dark';
   // prepareProfile already migrates, repairs, and validates the entire profile.
   // The two known-valid desktop preferences do not need another full parse.
-  return profile;
+  return consolidateCurrentProfile(profile);
 }
 
 // Only immutable serialized inputs are keys. These validated objects remain
@@ -141,7 +143,7 @@ export function profileToCaptured(profile:AppProfileV2):CapturedFields {
   }));
   const inventory=[
     ...resourceKeys.map(key=>({type:key,item:key,tier:0,value:profile.inventory[key]})),
-    ...Object.entries(profile.gameInventory??{}).map(([item,value])=>({type:item,item,tier:0,value})),
+    ...Object.entries(currentGameInventory(profile)).map(([item,value])=>({type:item,item,tier:0,value})),
   ];
   return {goals:normalizedGoals(goals,profile),inactive,notes,custom_items:[],customs:{},inventory,tasks,task_ids:Object.fromEntries(tasks.map(task=>[String(task.id),task.holodoriId])),boosts:clone(profile.boosts || defaultBoosts()),saved_lineups:[]};
 }
@@ -196,7 +198,7 @@ export function capturedToProfile(fields:CapturedFields, previous:AppProfileV2 =
     result.cards[id].notes = String(note);
   }
   const inventory = { ...result.inventory };
-  const gameInventory:Record<string,number>={};
+  const gameInventory:Record<string,number>={...currentGameInventory(previous)};
   for (const key of resourceKeys) inventory[key] = 0;
   for (const entry of fields.inventory as any[]) {
     if (!entry) continue;
@@ -207,6 +209,10 @@ export function capturedToProfile(fields:CapturedFields, previous:AppProfileV2 =
   result.inventory = inventory;
   if(Object.keys(gameInventory).length)result.gameInventory=gameInventory;
   else delete result.gameInventory;
+  if(!result.upgradeBonusManual){
+    const owned=currentOwnership(result);
+    if([...owned??[]].some(id=>previous.cards[id]?.level!==result.cards[id]?.level))delete result.account.upgradeBonusPermyriad;
+  }
   const previousTasks = new Map((previous.tasks || []).map(task=>[task.id,task]));
   const taskIds = (fields.task_ids || {}) as Record<string,string>;
   result.tasks = (fields.tasks as any[]).map((task,index)=>{

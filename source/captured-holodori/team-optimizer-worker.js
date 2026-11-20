@@ -706,24 +706,23 @@ async function planUnitScoreRows(data,payload,rows,selection,onProgress,ports) {
 }
 
 function boardBudgetMessages(data,account,input){
-  const imported=new Map((input.importedMemberRanks??[]).map(row=>[row.characterId,row.level]));
-  const importedBoards=input.importedBoards&&new Map(input.importedBoards.map(row=>
+  const members=new Map((input.budgetMembers??[]).map(row=>[row.characterId,row.level]));
+  const boards=input.budgetBoards&&new Map(input.budgetBoards.map(row=>
     [row.characterId,{nodes:row.releasedSkillTreeNodeGroupIds}]));
   const names=new Map(data.cards.map(card=>[card.characterId,card.character]));
-  const mismatches=[],overrides=[];
+  const mismatches=[];
   for(const row of input.boardPointBalances??[]){
     const id=row.skillTreePointId.replace(/^skill_tree_point-/,'');
-    const rank=imported.get(id),planned=account.ranks[id];
-    const board=importedBoards?importedBoards.get(id):account.boards[id],nodes=data.boards[id];
+    const rank=members.get(id)??account.ranks[id];
+    const board=boards?boards.get(id):account.boards[id],nodes=data.boards[id];
     if(!nodes||!board||!Number.isInteger(rank))continue;
     const byId=new Map(nodes.map(node=>[node.id,node]));
     if(board.nodes.some(node=>!byId.has(node)))continue;
     const spent=[...new Set(board.nodes)].reduce((sum,node)=>sum+byId.get(node).pts,0);
     const name=names.get(id)??id;
     if(boardPointsAtRank(data.boardPointLadder,rank)-spent!==Number(row.quantity))mismatches.push(name);
-    else if(Number.isInteger(planned)&&planned!==rank)overrides.push({characterId:id,name,planned,rank});
   }
-  return {mismatches,overrides};
+  return mismatches;
 }
 let songLengths;
 async function eventSongSeconds(data,options) {
@@ -1015,15 +1014,19 @@ async function prepareFixedLineup(saved,input) {
     throw Error('The saved lineup is missing its event chart or chapter.');
   const payload=prepareReferenceSearch(data,{...input,...assumptions,
     powerUpPreset:saved.powerUpPreset,plannedCards:saved.plannedCards,outfitAssumption,options});
-  const account={...payload.account,owned:{...payload.account.owned},boards:saved.boards,ranks:saved.boardRanks??payload.account.ranks};
+  const currentBoards=input.boards===undefined?saved.boards:payload.account.boards;
+  const boards=saved.boardMode==='none'?{}:saved.boardMode==='saved'&&input.savedBoards?
+    {...currentBoards,...input.savedBoards}:currentBoards;
+  const account={...payload.account,owned:{...payload.account.owned},boards,
+    ranks:input.boards===undefined?saved.boardRanks??payload.account.ranks:payload.account.ranks};
   const current=order.map((card,index)=>{
-    const {level,bloom,sp}=saved.lineup[index];
+    const {level,bloom,sp}=payload.account.owned[card.id]??saved.lineup[index];
     return account.owned[card.id]={owned:true,level:Math.min(card.maxLevel,level),bloom:Math.min(card.maxBloom,bloom),
       ...(sp==null?{}:{sp})};
   });
   if(unresolvedBoardEntries(data,account.boards))throw Error('The current catalog is missing entries from the saved Board setup.');
   if(Object.values(account.boards).some(board=>Object.values(board.cards).some(id=>!account.owned[id])))
-    throw Error('A card assigned to a saved Connect slot is missing from your imported collection.');
+    throw Error('A card assigned to a Connect slot is missing from your current collection.');
   const selection={eventId:saved.eventId,eventChapter:saved.eventChapter,eventPoints:options.eventPoints,pcGameCharts:saved.pc,
     memoryEffect:measuredMemoryEffect(data,payload.options.memories,input.memoryBonusPermil)};
   const jobData=await dataFor(selection);
@@ -1282,11 +1285,9 @@ self.addEventListener('message',async({data:message,ports})=>{
       const unresolved=unresolvedBoardEntries(data,payload.account.boards);
       const boardWarnings=unresolved ? [`${unresolved} imported Board entries are missing from the optimizer catalog. Board estimates may be incomplete.`] : [];
       const notes=[];
-      let boardRankOverrides=[];
       if(payload.boardOpt&&!payload.boardOpt.maxBoardPoints&&!payload.boardOpt.ignoreExisting){
-        const {mismatches,overrides}=boardBudgetMessages(data,payload.account,input);
-        if(mismatches.length)boardWarnings.push(`Board Points do not reconcile for ${mismatches.join(', ')}. Refresh Import data and check for catalog updates in Settings.`);
-        boardRankOverrides=overrides;
+        const mismatches=boardBudgetMessages(data,payload.account,input);
+        if(mismatches.length)boardWarnings.push(`Board Points do not reconcile for ${mismatches.join(', ')}. Check current ranks and Boards in Progress, and catalog updates in Settings.`);
       }
       let selection={objective:input.objective,eventId:options.eventBonus||options.eventPoints?input.eventId:undefined,
         eventChapter:input.eventChapter,eventPoints:options.eventPoints,
@@ -1378,7 +1379,7 @@ self.addEventListener('message',async({data:message,ports})=>{
         }
         const rows=result.results.slice(0,options.topN).map(team=>({...team,score:undefined,maxScore:undefined,unitScore:undefined}));
         if(gpuSearch)compute={backend:'gpu',...gpuSearch.metrics()};
-        notify('result',{results:teamsForUi(data,rows,payload),baseline:result.baseline,excluded,boardWarnings,boardRankOverrides,compute});
+        notify('result',{results:teamsForUi(data,rows,payload),baseline:result.baseline,excluded,boardWarnings,compute});
         return;
       }
       const runFallback=job=>runCpuJob(jobData,job.operation,job.payload);
@@ -1443,7 +1444,7 @@ self.addEventListener('message',async({data:message,ports})=>{
             const ratingLeaders=[];
             const concurrency=gpuSearch?.leaderConcurrency??1;
             const summary={ratingLeaders,leaderTotal:total,results:[],ratingGroups:[],byMax:options.sortBy==='max',
-              excluded,notes,boardWarnings,boardRankOverrides,scoringModel:mobile?'mobile':'website'};
+              excluded,notes,boardWarnings,scoringModel:mobile?'mobile':'website'};
             if(limit)summary.quickTop={limit:requested,screened:null};
             notify('rating-batch',summary);
             let finalists=leaders.map(leaderId=>({leaderId,candidateCharts:referenceRatingCandidates(jobData,ratingInput,leaderId)}));
@@ -1461,7 +1462,7 @@ self.addEventListener('message',async({data:message,ports})=>{
                   forecast:await forecastRating(jobData,queryFor(row.leaderId),ratingInput,row.candidateCharts,scout)};
                 progress(++scanned,total,.2*scanned/total,`Screening leaders · ${scanned} of ${total}`);
               });
-              finalists=shortlistRatingLeaders(screened.filter(Boolean),limit);
+              finalists=shortlistRatingLeaders(screened.filter(Boolean),limit,input.ratingPlacementRows);
               summary.quickTop.screened=total;
               summary.leaderTotal=finalists.length;
               notify('rating-batch',summary);
@@ -1547,7 +1548,7 @@ self.addEventListener('message',async({data:message,ports})=>{
         }
         if(mobile)lastReview={engine:mobile.engine,rows:[]};
         if(gpuSearch)compute={backend:'gpu',...gpuSearch.metrics()};
-        notify('result',{...displayRating(rating,payload,mobile),excluded,notes,boardWarnings,boardRankOverrides,compute,
+        notify('result',{...displayRating(rating,payload,mobile),excluded,notes,boardWarnings,compute,
           scoringModel:wantsMobileRating?(mobile?'mobile':'website'):undefined});
         return;
       }
@@ -1556,7 +1557,7 @@ self.addEventListener('message',async({data:message,ports})=>{
           const mobile=await runReviewedMobile(jobData,payload,input,selection,progress,ports);
           if(mobile){
             if(gpuSearch)compute={backend:'gpu',...gpuSearch.metrics()};
-            notify('result',{...mobile,scoringModel:options.pc?'steam':'mobile',unresolved,excluded,notes,boardWarnings,boardRankOverrides,compute});
+            notify('result',{...mobile,scoringModel:options.pc?'steam':'mobile',unresolved,excluded,notes,boardWarnings,compute});
             return;
           }
         }catch(error){
@@ -1600,7 +1601,7 @@ self.addEventListener('message',async({data:message,ports})=>{
       }
       const results=withDisplayUnitScores(jobData,payload,teamsForUi(data,rows.slice(0,options.topN),payload));
       notify('result',{results,baseline:result.baseline,reviewedCount:0,scoringModel:pcGameEstimate?'game-pc-estimate':wantsReviewed?'website':undefined,
-        evaluated:responses.length,unresolved,excluded,notes,boardWarnings,boardRankOverrides,compute});
+        evaluated:responses.length,unresolved,excluded,notes,boardWarnings,compute});
     }
   }catch(error){notify('error',{message:error instanceof Error?error.message:String(error),
     ...(error?.name==='OptimizerGpuError'?{code:'gpu'}:{})});}

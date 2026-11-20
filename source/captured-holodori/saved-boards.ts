@@ -90,7 +90,7 @@ type BoardResolution='game'|'saved';
 type BoardConflict={owner:string;slots:string[];cards:string[];layout:boolean;missingBaseline:boolean;game:SavedBoard;saved:SavedBoard};
 
 export function reconcileProtectedBoards(previous:SavedBoards,observed:SavedBoards,saved:SavedBoards,
-  protection:Record<string,string>,choices:Record<string,BoardResolution>={}){
+  protection:Record<string,string>,choices:Record<string,BoardResolution>={},bases:SavedBoards=previous){
   const boards={...saved};
   const conflicts=new Map<string,BoardConflict>();
   const drafts=new Set<string>();
@@ -102,7 +102,7 @@ export function reconcileProtectedBoards(previous:SavedBoards,observed:SavedBoar
   };
   for(const [owner,target] of Object.entries(saved)){
     if(!Object.hasOwn(protection,owner))continue;
-    const game=observed[owner],base=previous[owner];
+    const game=observed[owner],base=bases[owner];
     if(!game){unobserved++;continue;}
     drafts.add(owner);
     if(!boardChanges(game,target).length){

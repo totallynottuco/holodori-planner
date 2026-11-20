@@ -19,7 +19,7 @@ export function optimizerDefaults(){
     boardMaterials:{},boardKeep:{},boardProtection:{},
     topN:10,sortBy:'avg',nextLevel:null,nextBloom:0,nextCount:1,nextBlooms:true,nextAcquisition:'any',
     liveBoost:3,passportOverride:null,ratingCharacterId:'',ratingOutfitId:null,ratingOutfitTraining:null,ratingLeaderMode:'auto',ratingInvitedOnly:true,
-    ratingScope:'single',ratingSelectedIds:[],ratingQuickCount:5,ratingBatchInvitedOnly:false,ratingRowsLimit:0,
+    ratingScope:'single',ratingSelectedIds:[],ratingQuickCount:5,ratingBatchInvitedOnly:false,ratingRowsLimit:0,ratingRankBy:'rating',
     ratingAllSongs:false,ratingSongCount:5,ratingTeamsPerSong:3,ratingMaxDifficulty:null,ratingMerge:false,
   };
 }
@@ -29,7 +29,7 @@ const choices={
   nextAcquisition:nextAcquisitionChoices.map(([id])=>id),
   powerUpPreset:['auto','search','allMax','ownedMax','owned'],
   pool:cardPools,plannedPool:cardPools,leaderMode:['auto','fixed','holomem'],
-  ratingScope:['single','selected','quick','all'],ratingQuickCount:ratingQuickCounts,ratingRowsLimit:[0,5,10,20],
+  ratingScope:['single','selected','quick','all'],ratingQuickCount:ratingQuickCounts,ratingRowsLimit:[0,5,10,20],ratingRankBy:['rating','placement'],
   ratingLeaderMode:['auto','fixed','holomem'],boardMode:['optimize','imported','saved','none'],sortBy:['avg','max'],
 };
 function allProfiles(storage){

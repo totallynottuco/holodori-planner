@@ -11,14 +11,14 @@ import {removeProfileFilters} from './card-filters';
 import {saveExtraSongs} from './optimizer-song-unlocks';
 import {loadOptimizerPreferences,removeOptimizerPreferences} from './optimizer-preferences';
 import {checkOptimizerCatalog,countCardsAwaitingOptimizer,optimizerCatalogSource} from './optimizer-catalog-runtime';
-import {editAccountProgress} from './account-progress';
+import {editAccountProgress,validProgressBonus} from './account-progress';
 import {loadAchievementCatalog} from './achievements';
-import {compareAccountImports} from './import-changes';
+import {compareCurrentAccount} from './import-changes';
 import {loadInventoryEvents} from './inventory-events';
 import {readSavedLineups,optimizerBoards} from './saved-lineups';
 import {boardChanges,boardPlanUpdates,checkSavedBoardAssignments,mergeSavedBoards,protectedSavedBoards,reconcileProtectedBoards,validateSavedBoard} from './saved-boards';
 import {preservesBoardProtection} from './board-protection';
-import {currentBoards,currentBoardPoints,currentOwnedCards,currentDreamRank} from './current-account';
+import {boardProgressPatch,currentBoards,currentBoardPoints,currentMembers,currentOwnedCards,currentDreamRank,savedPlanBases} from './current-account';
 import {resolveBoardNodes,resolveBoardConnectEffect} from '../hololive/vendor/shared/account-data';
 import {getCard} from './game';
 (() => {
@@ -241,8 +241,8 @@ import {getCard} from './game';
   }
   function cancelGameImport(){return clearGameImport(false);}
   function gameBoardReview(candidate){
-    const {previous,observed,saved,protection,choices}=candidate.boards;
-    return reconcileProtectedBoards(previous,observed,saved,protection,choices);
+    const {previous,observed,saved,protection,choices,bases}=candidate.boards;
+    return reconcileProtectedBoards(previous,observed,saved,protection,choices,bases);
   }
   function presentGameBoardReview(candidate){
     const {conflicts,completed,pending,unobserved,error}=gameBoardReview(candidate);
@@ -267,17 +267,17 @@ import {getCard} from './game';
       const previous=projectProfile(Object.fromEntries(values),id);
       const preview=previewAccountImport(raw,previous,eventWindows,Date.now());
       if(preview.accountStatus.linkedIdentity&&!preview.accountStatus.identity)throw Error('The game account identity could not be verified for this linked profile. Wait for the main lobby and read the account again.');
-      const lastImport=previous.gameAccountImport?.snapshot;
-      const catalog=lastImport?.tables.missions&&preview.snapshot.tables.missions
+      const catalog=(previous.achievementProgressKnown||Object.keys(previous.achievementProgress??{}).length)&&preview.snapshot.tables.missions
         ? await loadAchievementCatalog().catch(()=>null) : null;
       if(closing||token!==gameReadToken)return;
       if(!gameCandidateIsCurrent(candidate))throw Error('This profile changed while the game was being read. Read the account again before importing.');
-      const changes=compareAccountImports(lastImport,preview.snapshot,catalog?.categories);
+      const changes=compareCurrentAccount(previous,preview.snapshot,catalog?.categories);
       const protection=loadOptimizerPreferences(storage,id).boardProtection;
-      if(Object.keys(protection).length)candidate.boards={
-        previous:currentBoards(previous),observed:optimizerBoards(preview.snapshot.tables.boards),
-        saved:previous.savedBoards??{},protection,choices:{},
-      };
+      if(Object.keys(protection).length){
+        const starting=currentBoards(previous),saved=previous.savedBoards??{};
+        candidate.boards={previous:starting,observed:optimizerBoards(preview.snapshot.tables.boards),
+          saved,protection,choices:{},bases:savedPlanBases(previous,saved,starting)};
+      }
       const boardReview=candidate.boards?presentGameBoardReview(candidate):null;
       candidate.snapshot=preview.snapshot;candidate.eventWindows=eventWindows;gameCandidate=candidate;
       const settings=JSON.parse(storage.getItem('settings')||'{}');
@@ -310,6 +310,7 @@ import {getCard} from './game';
         if(boardReview){
           next.savedBoards=boardReview.boards;
         }
+        if(previous.savedBoards)next.savedBoardBases=savedPlanBases(previous,next.savedBoards??{},currentBoards(previous),optimizerBoards(candidate.snapshot.tables.boards));
         const patch=mergeCapturedAccountImport(existing,profileToCaptured(next),next.gameAccountImport.ownedCardIds,next.gameAccountImport.materialKeys);
         // Serialize and clone everything before mutating synchronous Vue storage.
         const importedFields={...patch,holodori:next};
@@ -414,9 +415,15 @@ import {getCard} from './game';
     const profile=projectProfile(Object.fromEntries(values),id);
     const nodes=edit.kind==='rank'?currentBoards(profile)[edit.characterId]?.nodes:undefined;
     const base=edit.kind==='dream-rank'?{...profile.account,playerLevel:currentDreamRank(profile)}:profile.account;
-    const account=editAccountProgress(base,profile.gameAccountImport?.snapshot.tables.members??[],edit,nodes);
-    if(account===base)return true;
-    const next={...profile,account,...(edit.kind==='dream-rank'?{dreamRankManuallySet:true}:{})};
+    if((edit.kind==='upgrade-bonus'||edit.kind==='memory-bonus')&&!validProgressBonus(edit.kind,edit.value)){
+      notify(edit.kind==='upgrade-bonus'?'Enter an Upgrade bonus from 0% to 50%.':'Enter a valid Memory bonus.');
+      return false;
+    }
+    const account=editAccountProgress(base,currentMembers(profile),edit,nodes);
+    if(edit.kind==='memories'&&profile.memoryBonusManual)account.memoryBonusPermil=profile.account.memoryBonusPermil;
+    if(account===base&&!['upgrade-bonus','memory-bonus'].includes(edit.kind))return true;
+    const next={...profile,account,...(edit.kind==='dream-rank'?{dreamRankManuallySet:true}:{}),
+      ...(edit.kind==='upgrade-bonus'?{upgradeBonusManual:true}:{}),...(edit.kind==='memory-bonus'?{memoryBonusManual:true}:{})};
     methods.setItem(`${id}-holodori`,JSON.stringify(next));
     app.data[`${id}-holodori`]=next;
     ui.profileRevision=(ui.profileRevision||0)+1;
@@ -438,7 +445,7 @@ import {getCard} from './game';
       throw Error('Finish the open Settings action before saving Boards.');
     const profile=projectProfile(Object.fromEntries(values),id);
     const imported=currentBoards(profile);
-    const current={...imported,...profile.savedBoards};
+    const current=imported;
     for(const [owner,board] of Object.entries(boards)){
       if(boardChanges(expected[owner],current[owner]).length&&boardChanges(board,current[owner]).length)
         throw Error('This saved Board changed after the search. Run the optimizer again to edit the latest plan.');
@@ -449,11 +456,20 @@ import {getCard} from './game';
       protectedSavedBoards(imported,profile.savedBoards??{},protection.protection).boards:imported;
     if(!preservesBoardProtection(protection,protectedBase,{...protectedBase,...updates}))
       throw Error('This plan would change a protected Board or Connect card.');
-    const savedBoards={...profile.savedBoards,...updates};
-    checkSavedBoardAssignments({...imported,...savedBoards});
+    const activeProtection=loadOptimizerPreferences(storage,id).boardProtection;
+    if(Object.keys(activeProtection).length){
+      const latest=protectedSavedBoards(current,profile.savedBoards??{},activeProtection).boards;
+      if(!preservesBoardProtection({protection:activeProtection},latest,{...latest,...updates}))
+        throw Error('This change conflicts with your current Board protection.');
+    }
+    const savedBoards=mergeSavedBoards(profile.savedBoards??{},updates);
+    const progress=boardProgressPatch(profile,updates);
+    progress.savedBoardBases=savedPlanBases(profile,savedBoards,current);
+    checkSavedBoardAssignments(currentBoards({...profile,...progress}));
     const key=`${id}-holodori`;
-    methods.setItem(key,JSON.stringify({...profile,savedBoards}));
-    app.data[key]={...(app.data[key]??profile),savedBoards};
+    methods.setItem(key,JSON.stringify({...profile,...progress,savedBoards}));
+    app.data[key]={...(app.data[key]??profile),...progress,savedBoards};
+    ui.profileRevision=(ui.profileRevision||0)+1;
     await flush();
     return updates;
   }
@@ -491,7 +507,8 @@ import {getCard} from './game';
     const next=mergeSavedBoards(current,{[owner]:board});
     checkSavedBoardAssignments(next);
     const otherMoves=Object.entries(next).filter(([key,value])=>key===owner||boardChanges(current[key],value).length);
-    profile.boardEdits={...profile.boardEdits,...Object.fromEntries(otherMoves)};
+    Object.assign(profile,boardProgressPatch(profile,Object.fromEntries(otherMoves)));
+    for(const [id,value] of otherMoves)if(Object.hasOwn(profile.savedBoards??{},id))profile.savedBoards[id]=value;
     if(!profile.account.unlockedCharacterIds.includes(owner))profile.account.unlockedCharacterIds.push(owner);
     updateEditableProfile(id,profile);
     await flush();
@@ -500,11 +517,14 @@ import {getCard} from './game';
     const profile=editableProfile(id);
     if(!getCard(cardId)||typeof owned!=='boolean')return;
     profile.cardOwnership={...profile.cardOwnership,[cardId]:owned};
+    if(!profile.upgradeBonusManual)delete profile.account.upgradeBonusPermyriad;
     if(!owned){
       const affected=Object.entries(currentBoards(profile)).filter(([,board])=>Object.values(board.cards).includes(cardId));
-      for(const [owner,board] of affected)profile.boardEdits={...profile.boardEdits,[owner]:{...board,
+      const updates=Object.fromEntries(affected.map(([owner,board])=>[owner,{...board,
         cards:Object.fromEntries(Object.entries(board.cards).filter(([,card])=>card!==cardId)),
-      }};
+      }]));
+      Object.assign(profile,boardProgressPatch(profile,updates));
+      for(const [owner,board] of Object.entries(updates))if(Object.hasOwn(profile.savedBoards??{},owner))profile.savedBoards[owner]=board;
     }
     updateEditableProfile(id,profile);
   }
@@ -512,16 +532,16 @@ import {getCard} from './game';
     if(!/^gacha_point-[a-z0-9_-]{1,100}$/.test(point)||value!==null&&(!Number.isSafeInteger(value)||value<0))
       throw Error('Enter a nonnegative whole number of Gacha Points.');
     const profile=editableProfile(id);
-    profile.gachaPointEdits={...profile.gachaPointEdits};
-    if(value===null)delete profile.gachaPointEdits[point];
-    else profile.gachaPointEdits[point]=value;
+    profile.gachaPoints={...profile.gachaPoints};
+    if(value===null)delete profile.gachaPoints[point];
+    else profile.gachaPoints[point]=value;
     updateEditableProfile(id,profile);
   }
   function setAchievementProgress(id,missionId,progress,rewardReceivedThresholds){
     if(!Number.isSafeInteger(progress)||progress<0||rewardReceivedThresholds.some(value=>!/^\d+$/.test(value)||BigInt(value)>BigInt(progress)))
       throw Error('Enter a whole number at or above the claimed reward threshold.');
     const profile=editableProfile(id);
-    profile.achievementEdits={...profile.achievementEdits,[missionId]:{progress:String(progress),rewardReceivedThresholds}};
+    profile.achievementProgress={...profile.achievementProgress,[missionId]:{progress:String(progress),rewardReceivedThresholds}};
     updateEditableProfile(id,profile);
   }
   function getSavedLineups(id){

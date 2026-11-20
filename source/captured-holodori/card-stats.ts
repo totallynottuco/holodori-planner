@@ -26,8 +26,8 @@ export function cardStats(cardId:string,level:number,bloomStage:number,source?:G
     if(base.level!==level||base.bloomStage!==bloomStage)return null;
     const cardTotal=Object.values(base.stats).reduce((sum,value)=>sum+value,0);
     const result:CardStats={level,bloomStage,card:base.stats,cardTotal,total:null,totalPower:null,importedAt:source?.snapshot.capturedAt||null,reason:source?'boards-unavailable':'no-import'};
-    let context:Pick<AppProfileV2,'cards'|'account'>|null=source?boardProfile(source.snapshot):null;
-    if(profile&&(!source?.snapshot.tables.boards?.length||Object.keys(profile.boardEdits??{}).length)){
+    let context:Pick<AppProfileV2,'cards'|'account'>|null=!profile&&source?boardProfile(source.snapshot):null;
+    if(profile){
       const boards=currentBoards(profile);
       if(Object.keys(boards).length){
         try{

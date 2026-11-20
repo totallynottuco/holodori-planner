@@ -186,6 +186,26 @@ pub(crate) async fn desktop_app_update_notes(app: tauri::AppHandle) -> Result<Op
 }
 
 #[tauri::command]
+pub(crate) fn desktop_app_update_open_link(url: String) -> Result<()> {
+    let url = tauri::Url::parse(&url).map_err(|_| "Invalid release notes link.")?;
+    if !matches!(url.scheme(), "http" | "https") || url.host_str().is_none()
+        || !url.username().is_empty() || url.password().is_some() {
+        return Err("Invalid release notes link.".into());
+    }
+    #[cfg(windows)]
+    {
+        use std::ptr::{null, null_mut};
+        use windows_sys::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+
+        let target: Vec<u16> = url.as_str().encode_utf16().chain([0]).collect();
+        // Pass the URL directly to Windows' registered browser handler.
+        let result = unsafe { ShellExecuteW(null_mut(), null(), target.as_ptr(), null(), null(), SW_SHOWNORMAL) };
+        if result as isize > 32 { return Ok(()); }
+    }
+    Err("Could not open the link in your browser.".into())
+}
+
+#[tauri::command]
 pub(crate) async fn desktop_app_update_acknowledge(app: tauri::AppHandle, version: String) -> Result<()> {
     if version != env!("CARGO_PKG_VERSION") || !supported() || app.state::<Native>().smoke.is_some() {
         return Ok(());

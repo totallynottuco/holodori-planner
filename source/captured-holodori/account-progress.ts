@@ -6,7 +6,6 @@ import type {AccountState, GameAccountMemberSource} from '../hololive/vendor/sha
 
 export type AccountProgressEdit =
   | {kind:'rank'; characterId:string; value:number}
-  | {kind:'use-imported-ranks'; characterIds:string[]}
   | {kind:'toggle-member'; characterId:string}
   | {kind:'quest'; chapter:number; episode:number}
   | {kind:'memory-bonus' | 'upgrade-bonus'; value:number}
@@ -60,10 +59,6 @@ export function syncImportedMemberRanks(account:AccountState,imported:readonly G
 
 export function editAccountProgress(account:AccountState,imported:readonly GameAccountMemberSource[],edit:AccountProgressEdit,nodes?:string[]):AccountState {
   switch(edit.kind) {
-    case 'use-imported-ranks': {
-      const selected=new Set(edit.characterIds);
-      return syncImportedMemberRanks(account,imported.filter(row=>selected.has(row.characterId)));
-    }
     case 'rank': {
       const importedLevel = imported.find(member => member.characterId === edit.characterId)?.level;
       const rank = accountProgressRank(account,edit.characterId,importedLevel,nodes);
@@ -71,7 +66,7 @@ export function editAccountProgress(account:AccountState,imported:readonly GameA
       const level = bounded(edit.value,rank.min,rank.max,rank.level);
       if (level === rank.level) return account;
       const board = account.boards[edit.characterId] ?? {characterId:edit.characterId,unlockedNodeIds:[],connectAssignments:{}};
-      return {...account,boards:{...account.boards,[edit.characterId]:{...board,characterLevel:level}}};
+      return {...account,boards:{...account.boards,[edit.characterId]:{...board,characterLevel:level,characterExp:undefined}}};
     }
     case 'toggle-member': {
       if (!accountCharactersById.has(edit.characterId)) return account;
@@ -101,9 +96,13 @@ export function editAccountProgress(account:AccountState,imported:readonly GameA
     }
     case 'memory-bonus':
     case 'upgrade-bonus': {
-      if(!Number.isSafeInteger(edit.value)||edit.value<0)return account;
+      if(!validProgressBonus(edit.kind,edit.value))return account;
       const key=edit.kind==='memory-bonus'?'memoryBonusPermil':'upgradeBonusPermyriad';
       return account[key]===edit.value?account:{...account,[key]:edit.value};
     }
   }
+}
+
+export function validProgressBonus(kind:'memory-bonus'|'upgrade-bonus',value:number){
+  return Number.isSafeInteger(value)&&value>=0&&value<=(kind==='upgrade-bonus'?5000:2147483647);
 }

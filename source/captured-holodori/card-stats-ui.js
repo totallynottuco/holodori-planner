@@ -1,7 +1,7 @@
 import {formatNumber,formatDateTime,numberParts} from './regional-formats.js';
 import {cardStats,statNames} from './card-stats';
 import {createCardPreview} from './card-preview';
-import {currentOwnership} from './current-account';
+import {currentOwnership,hasLocalBoards} from './current-account';
 
 /** Approved Seelie Fusion presentation inside the captured card Dialog. */
 export function createCardStats({h,vnode,resolve,withDirectives,vShow}){
@@ -21,7 +21,7 @@ export function createCardStats({h,vnode,resolve,withDirectives,vShow}){
       const stats=this.stats,number=value=>value==null?'—':formatNumber(value);
       if(!stats)return h('p',{class:'text-xs text-gray-400 mt-3','data-card-stats':''},'Stats are unavailable for this card.');
       const source=stats.reason==='no-import'?'Record Holomem Boards in Progress to include Board bonuses.':stats.reason==='boards-unavailable'?'Board bonuses are unavailable for the current layout.':
-        this.profile?.boardEdits&&Object.keys(this.profile.boardEdits).length?'Uses your current Holomem Boards.':stats.importedAt?
+        hasLocalBoards(this.profile)?'Uses your current Holomem Boards.':stats.importedAt?
           `Boards from last import · ${formatDateTime(stats.importedAt)}.`:'Uses your current Holomem Boards.';
       const digits=value=>{
         if(value==null)return [h('span',{},'—')];

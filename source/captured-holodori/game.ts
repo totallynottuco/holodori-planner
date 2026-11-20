@@ -18,6 +18,7 @@ import {
 } from "./conversions";
 import type {
   CardCatalogEntry,
+  AppProfileV2,
   GameAccountSnapshot,
   ResourceKey,
   Rarity,
@@ -68,7 +69,7 @@ export type Cost = {
 export type Costs = Partial<Record<ResourceKey, Cost>>;
 export type GameContext = {
   account?: string;
-  $root?: {data?: Record<string,{gameAccountImport?:{snapshot?:GameAccountSnapshot}}>;materialSupply?:MaterialSupply};
+  $root?: {data?: Record<string,any>;materialSupply?:MaterialSupply};
   getNeed?: (type:string,item:string,tier:number)=>number;
   goals?: SeelieGoal[];
   inventory?: InventoryEntry[];
@@ -334,8 +335,9 @@ function cardGoals(goals: SeelieGoal[], id: string) {
 // card points plus usable stones with target minus current. The master
 // CardPotentialUpgradeItem table supplies the stone only for five-star cards.
 export function bloomRequirements(context: GameContext) {
-  const snapshot=context.$root?.data?.[`${context.account??'main'}-holodori`]?.gameAccountImport?.snapshot;
-  const balances=new Map(snapshot?.tables.cards.map(row=>[row.cardId,row.potentialUpgradePointQuantity]));
+  const profile=context.$root?.data?.[`${context.account??'main'}-holodori`] as AppProfileV2|undefined;
+  const balances=new Map(profile?.currentDataVersion===1?[]:profile?.gameAccountImport?.snapshot.tables.cards.map(row=>[row.cardId,row.potentialUpgradePointQuantity]));
+  for(const [id,card] of Object.entries(profile?.cards??{}))balances.set(id,card.bloomPoints);
   const seen=new Set<string>();
   return (context.goals??[]).flatMap(record=>{
     if(record.type!=='character'||!record.character||seen.has(record.character))return [];
@@ -587,8 +589,9 @@ type MaterialSupply={costs:Costs;jars:MaterialJarPlan;conversions:Conversion[];e
   pendingExchanges:PendingExchange[];exchangeCoinShortfall:number;
   craftable:Partial<Record<ResourceKey,number>>;exchangeOutput:Partial<Record<ResourceKey,number>>};
 export function materialSupply(this:GameContext):MaterialSupply {
-  const snapshot=this.$root?.data?.[`${this.account??'main'}-holodori`]?.gameAccountImport?.snapshot;
-  const stock=materialJarStock(this.inventory??[],snapshot);
+  const profile=this.$root?.data?.[`${this.account??'main'}-holodori`] as AppProfileV2|undefined;
+  const quantities=Object.entries(profile?.gameInventory??{}).map(([item,value])=>({type:item,item,tier:0,value}));
+  const stock=materialJarStock([...quantities,...this.inventory??[]],profile?.currentDataVersion===1?undefined:profile?.gameAccountImport?.snapshot);
   return allocateMaterialSupply(rawTotalCosts(this),key=>held(this,key),stock,true);
 }
 function allocateMaterialSupply(costs:Costs,amount:(key:ResourceKey)=>number,stock:ReadonlyMap<string,bigint>,includePending:boolean):MaterialSupply {

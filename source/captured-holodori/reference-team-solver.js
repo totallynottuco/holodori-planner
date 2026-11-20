@@ -136,7 +136,9 @@ export function referencePowerUpOverride(data,owned,input,currentOwned=owned) {
   const {outfitAssumption}=input;
   if(input.powerUpPreset==='search')
     return referencePowerUpBonus(referenceSearchRoster(data,owned,input),data,'owned');
-  const preset=referencePowerUpPreset(data,currentOwned,input.powerUpPreset);
+  const recorded=input.upgradeBonusPermyriad;
+  const valid=Number.isInteger(recorded)&&recorded>=0&&recorded<=5000;
+  const preset=input.powerUpPreset==='owned'&&valid?recorded:referencePowerUpPreset(data,currentOwned,input.powerUpPreset);
   if(preset!==undefined)return preset;
   const imported=input.upgradeBonusPermyriad;
   const current=Number.isInteger(imported)&&imported>=0&&imported<=5000?imported:

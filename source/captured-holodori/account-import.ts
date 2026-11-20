@@ -5,17 +5,11 @@ import {minimumTrainingStage} from '../hololive/vendor/shared/planner';
 import {boostCap,boostRules,defaultBoosts,sampleBoost,type Boosts} from '../hololive/boosts';
 import {inventoryEventCurrency,inventoryEventTime,type InventoryEventWindow} from './inventory-events';
 import {accountProgressRank,syncImportedMemberRanks} from './account-progress';
-import {consolidateBoardEdits,currentDreamRank,observedDreamRank} from './current-account';
+import {boardProgressPatch,consolidateCurrentProfile,currentAchievementProgress,currentDreamRank,currentGachaPoints,currentGameInventory,currentMembers,currentOwnership,observedDreamRank} from './current-account';
 import {diamondInventoryIds,isGameInventoryId,resourceKeys,type AppProfileV2,type CardCatalogEntry,type GameAccountCardSource,type GameAccountIdentity,type GameAccountImportState,type GameAccountSnapshot,type ResourceKey,type SavedCardState} from '../hololive/vendor/shared/types';
+import {ACCOUNT_RESOURCE_ITEM_IDS,observedGameQuantities} from './account-items';
+export {ACCOUNT_RESOURCE_ITEM_IDS} from './account-items';
 
-/** Reviewed game Item IDs, never inferred from display labels or asset filenames. */
-export const ACCOUNT_RESOURCE_ITEM_IDS:Record<ResourceKey,string>={
-  lessonPoints:'item-card_level_up',cuteBeads:'item-card_limit_break-attribute_1-1',cuteCrystals:'item-card_limit_break-attribute_1-2',
-  pureBeads:'item-card_limit_break-attribute_2-1',pureCrystals:'item-card_limit_break-attribute_2-2',happyBeads:'item-card_limit_break-attribute_3-1',happyCrystals:'item-card_limit_break-attribute_3-2',
-  hololium:'item-card_limit_break-cmn-sr',redCube:'item-skill_tree_leader-1',redHexa:'item-skill_tree_leader-2',blueCube:'item-skill_tree_card-1',blueHexa:'item-skill_tree_card-2',
-  yellowCube:'item-skill_tree_content-1',yellowHexa:'item-skill_tree_content-2',greenCube:'item-skill_tree_allmember-1',greenHexa:'item-skill_tree_allmember-2',
-  hologold:'item-gold',harmonyGardenCoin:'item-mini-game-chase-coin',megaSphereCoin:'item-mini_game_bet_coin',bloomStones:'item-card-potential-upgrade-cmn',
-};
 const copy=<T>(value:T):T=>JSON.parse(JSON.stringify(value));
 const same=(left:unknown,right:unknown)=>JSON.stringify(left)===JSON.stringify(right);
 
@@ -166,7 +160,7 @@ function calculateAccountStats(snapshot:GameAccountSnapshot,warnings:AccountImpo
 }
 
 export function previewAccountImport(input:unknown,previous:AppProfileV2,events:readonly InventoryEventWindow[] = [],localTime?:number):AccountImportPreview {
-  const source=parseAccountSnapshot(input),next=prepareProfile(previous,manifest).profile;
+  const source=parseAccountSnapshot(input),next=consolidateCurrentProfile(prepareProfile(previous,manifest).profile);
   const keep=inventoryEventCurrency(events,inventoryEventTime(source,localTime??Date.parse(source.capturedAt)));
   const snapshot={...source,tables:{...source.tables,
     items:source.tables.items.filter(row=>keep(row.itemId)),
@@ -176,7 +170,7 @@ export function previewAccountImport(input:unknown,previous:AppProfileV2,events:
   const warnings:AccountImportWarning[]=[],cardChanges:AccountCardChange[]=[];
   const accountStatus=accountStatusPreview(snapshot,previous,next,warnings);
   if(source.gachaReadStatus&&!snapshot.balances.gachaPoints)warnings.push({code:'gacha-points-unavailable',
-    message:'Gacha Points did not refresh. The planner will keep the last imported balances for this account.'});
+    message:'Gacha Points did not refresh. Your current balances will be kept.'});
   if(snapshot.balances.free===null||snapshot.balances.paid===null)warnings.push({code:'unavailable-gem-balance',message:'Some gem balances have not loaded in the game. They are retained as unknown; card progress and materials can still be imported.'});
   const counts={sourceCards:snapshot.tables.cards.length,knownCards:0,unknownCards:0,unsupportedCards:0,newCards:0,updatedCards:0,unchangedCards:0,members:snapshot.tables.members.length,knownMembers:0,unknownMembers:0,materials:resourceKeys.length,materialsChanged:0,materialsSkipped:0,unobservedCardsPreserved:0};
   for(const source of snapshot.tables.cards){
@@ -196,48 +190,75 @@ export function previewAccountImport(input:unknown,previous:AppProfileV2,events:
     cardChanges.push(change);
   }
   const owned=new Set(snapshot.tables.cards.map(card=>card.cardId));
-  delete next.cardOwnership;
-  next.boardEdits=consolidateBoardEdits(previous,snapshot);
-  if(!Object.keys(next.boardEdits).length)delete next.boardEdits;
-  if(snapshot.balances.gachaPoints&&next.gachaPointEdits)for(const id of Object.keys(snapshot.balances.gachaPoints))delete next.gachaPointEdits[id];
-  if(snapshot.tables.missions!==undefined)delete next.achievementEdits;
-  else if(previous.gameAccountImport?.snapshot.tables.missions){
-    const retained=Object.fromEntries(previous.gameAccountImport.snapshot.tables.missions.filter(row=>row.missionPassId==='__NONE__')
-      .map(({missionId,progress,rewardReceivedThresholds})=>[missionId,{progress,rewardReceivedThresholds}]));
-    next.achievementEdits={...retained,...next.achievementEdits};
-  }
+  const priorOwnership=currentOwnership(previous);
+  if(snapshot.progress?.upgradeBonusPermyriad===undefined&&!next.upgradeBonusManual&&
+    snapshot.tables.cards.some(row=>previous.cards[row.cardId]?.level!==next.cards[row.cardId]?.level||!priorOwnership?.has(row.cardId)))
+    delete next.account.upgradeBonusPermyriad;
+  next.cardOwnership={...next.cardOwnership,...Object.fromEntries([...owned].map(id=>[id,true]))};
+  next.gachaPoints={...currentGachaPoints(next),...snapshot.balances.gachaPoints};
+  delete next.gachaPointEdits;
+  next.achievementProgress={...currentAchievementProgress(next),...Object.fromEntries((snapshot.tables.missions??[])
+    .filter(row=>row.missionPassId==='__NONE__').map(row=>[row.missionId,{progress:row.progress,rewardReceivedThresholds:row.rewardReceivedThresholds}]))};
+  if(snapshot.tables.missions!==undefined)next.achievementProgressKnown=true;
+  delete next.achievementEdits;
+  const boards=Object.fromEntries((snapshot.tables.boards??[]).map(row=>[row.characterId,{nodes:row.releasedSkillTreeNodeGroupIds,
+    cards:Object.fromEntries(row.connectedSkillTreeNodeGroupIds.map((slot,index)=>[slot,row.connectedSkillTreeNodeCardIds[index]]))}]));
+  Object.assign(next,boardProgressPatch(next,boards));
   counts.unobservedCardsPreserved=Object.keys(next.cards).filter(id=>!owned.has(id)).length;
   const rows=new Map<string,GameAccountSnapshot['tables']['items']>();
   for(const item of snapshot.tables.items){const group=rows.get(item.itemId)||[];group.push(item);rows.set(item.itemId,group);}
-  if(next.gameInventory){
-    next.gameInventory={...next.gameInventory};
-    for(const id of Object.keys(next.gameInventory))if(!keep(id))delete next.gameInventory[id];
-    for(const id of rows.keys())delete next.gameInventory[id];
-    for(const balance of ['free','paid'] as const)
-      if(snapshot.balances[balance]!==null)delete next.gameInventory[diamondInventoryIds[balance]];
+  next.gameInventory=currentGameInventory(next);
+  const knownItems=new Set(snapshot.tables.ownedItems.map(row=>row.itemId));
+  for(const id of Object.keys(next.gameInventory)){
+    if(!keep(id))delete next.gameInventory[id];
+    else if(id.startsWith('item-')&&!rows.has(id)&&!knownItems.has(id))next.gameInventory[id]=0;
   }
+  Object.assign(next.gameInventory,observedGameQuantities(snapshot));
   const inventoryChanges:AccountInventoryChange[]=[],materialKeys:ResourceKey[]=[];
   for(const key of resourceKeys){
     const sourceItemId=ACCOUNT_RESOURCE_ITEM_IDS[key],stacks=rows.get(sourceItemId)||[],prior=next.inventory[key];
     // Nonzero expiration is deliberately not interpreted until the native
     // amount getter's expiration policy is verified. Raw stacks are retained.
-    const authoritative=stacks.every(stack=>stack.expiredTime==='0');
+    const missingQuantity=!stacks.length&&knownItems.has(sourceItemId);
+    const authoritative=!missingQuantity&&stacks.every(stack=>stack.expiredTime==='0');
     let value=prior;
     if(authoritative){
       value=0;
       for(const stack of stacks){const amount=Number(stack.quantity);if(value>Number.MAX_SAFE_INTEGER-amount)throw Error(`The ${key} inventory total exceeds the exact integer range.`);value+=amount;}
       next.inventory[key]=value;materialKeys.push(key);
-    }else{counts.materialsSkipped++;warnings.push({code:'unverified-material-expiration',resourceKey:key,message:`${key}: expiring stacks were retained, and the planner quantity was kept until their native availability is verified.`});}
+    }else{counts.materialsSkipped++;warnings.push(missingQuantity
+      ?{code:'missing-material-quantity',resourceKey:key,message:`${key}: the game listed this item without a quantity. Your current quantity was kept.`}
+      :{code:'unverified-material-expiration',resourceKey:key,message:`${key}: expiring stacks were retained, and the planner quantity was kept until their native availability is verified.`});}
     const status=!authoritative?'skipped':value===prior?'unchanged':'updated';
     if(status==='updated')counts.materialsChanged++;
     inventoryChanges.push({key,sourceItemId,previous:prior,value,delta:value-prior,stackCount:stacks.length,authoritative,status});
   }
   const unlocked=new Set(next.account.unlockedCharacterIds);
-  const previousRanks=new Map(previous.gameAccountImport?.snapshot.tables.members.map(row=>[row.characterId,row.level]));
+  const previousRanks=new Map(currentMembers(previous).map(row=>[row.characterId,row.level]));
   next.account=syncImportedMemberRanks(next.account,snapshot.tables.members);
+  for(const row of snapshot.tables.members)if(!next.account.boards[row.characterId])next.account.boards[row.characterId]={
+    characterId:row.characterId,characterLevel:row.level,unlockedNodeIds:[],connectAssignments:{},layoutKnown:false,
+  };
+  for(const row of snapshot.tables.members){
+    const board=next.account.boards[row.characterId];
+    const characterLevel=accountCharactersById.has(row.characterId)?board.characterLevel:row.level;
+    next.account.boards[row.characterId]={...board,characterLevel,characterExp:characterLevel===row.level?row.exp:undefined};
+  }
+  for(const row of snapshot.tables.boardPoints??[]){
+    const owner=row.skillTreePointId.replace(/^skill_tree_point-/,''),board=next.account.boards[owner];
+    if(!board||!Object.hasOwn(boards,owner))continue;
+    const quantity=Number(row.quantity);
+    if(Number.isSafeInteger(quantity)&&quantity>=0)try{
+      const spent=resolveBoardNodes(owner).filter(node=>board.unlockedNodeIds.includes(node.groupId)).reduce((sum,node)=>sum+node.boardPointCost,0);
+      board.pointBalance={quantity,rank:board.characterLevel,spent};
+    }catch{/* Keep unresolved Board data without inventing a balance. */}
+  }
+  if(snapshot.tables.costumes)next.account.ownedCostumeIds=[...new Set([...next.account.ownedCostumeIds,...snapshot.tables.costumes.map(row=>row.costumeId)])];
+  if(snapshot.tables.songs)next.account.ownedSongIds=[...new Set([...next.account.ownedSongIds??[],...snapshot.tables.songs.map(row=>row.musicId)])];
   const members=snapshot.tables.members.map(source=>{
     const entry=accountCharactersById.get(source.characterId),known=!!entry;
-    if(known){counts.knownMembers++;unlocked.add(source.characterId);}else{counts.unknownMembers++;warnings.push({code:'unknown-member',characterId:source.characterId,message:`${source.characterId}: member progress was retained without guessing a catalog match.`});}
+    unlocked.add(source.characterId);
+    if(known){counts.knownMembers++;}else{counts.unknownMembers++;warnings.push({code:'unknown-member',characterId:source.characterId,message:`${source.characterId}: member progress was retained without guessing a catalog match.`});}
     const previousLevel=previousRanks.get(source.characterId);
     const hadRank=previous.account.boards[source.characterId]!==undefined||previousLevel!==undefined;
     return {
@@ -254,24 +275,16 @@ export function previewAccountImport(input:unknown,previous:AppProfileV2,events:
   if(progress){
     if(progress.quest!==undefined)next.account.storyProgress=progress.quest??{chapter:1,episode:0};
     if(progress.memoriesCollected!==undefined){
-      if(progress.memoriesCollected!==next.account.memoriesCollected&&progress.memoryBonusPermil===undefined)delete next.account.memoryBonusPermil;
+      if(progress.memoriesCollected!==next.account.memoriesCollected&&progress.memoryBonusPermil===undefined&&!next.memoryBonusManual)delete next.account.memoryBonusPermil;
       next.account.memoriesCollected=progress.memoriesCollected;
     }
-    if(progress.memoryBonusPermil!==undefined)next.account.memoryBonusPermil=progress.memoryBonusPermil;
-    if(progress.upgradeBonusPermyriad!==undefined)next.account.upgradeBonusPermyriad=progress.upgradeBonusPermyriad;
+    if(progress.memoryBonusPermil!==undefined){next.account.memoryBonusPermil=progress.memoryBonusPermil;delete next.memoryBonusManual;}
+    if(progress.upgradeBonusPermyriad!==undefined){next.account.upgradeBonusPermyriad=progress.upgradeBonusPermyriad;delete next.upgradeBonusManual;}
   }
   const calculated=calculateAccountStats(snapshot,warnings);
   const identity=accountStatus.identity||accountStatus.linkedIdentity;
   const savedSnapshot=copy(snapshot);
   if(savedSnapshot.balances.gachaPoints)savedSnapshot.balances.gachaPointsObservedAt=snapshot.capturedAt;
-  const previousSnapshot=previous.gameAccountImport?.snapshot;
-  if(previousSnapshot&&identity&&accountStatus.linkedIdentity?.publicUserId===identity.publicUserId){
-    // Keep the last observed points for the same account if the live request fails.
-    if(!savedSnapshot.balances.gachaPoints&&previousSnapshot.balances.gachaPoints){
-      savedSnapshot.balances.gachaPoints=copy(previousSnapshot.balances.gachaPoints);
-      savedSnapshot.balances.gachaPointsObservedAt=previousSnapshot.balances.gachaPointsObservedAt??previousSnapshot.capturedAt;
-    }
-  }
   next.gameAccountImport={schemaVersion:1,snapshot:savedSnapshot,...(identity?{identity:copy(identity)}:{}),ownedCardIds:[...owned],materialKeys,...calculated};
   // Revision, profile ownership, backup and native transaction are the caller's
   // responsibility. This operation is pure and leaves all unobserved state.

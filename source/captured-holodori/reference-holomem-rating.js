@@ -1,5 +1,6 @@
 import {createReferenceScoreContext,evaluateReferenceTeam,isReferenceRatingSong,referenceComboAverage,withReferenceChart} from './reference-rating-math.js';
 import {boardPlanningBaseline,hasBoardProtection} from './board-protection.js';
+import {compareLeaderboardPlaces,projectedLeaderboardPlace} from './leaderboard-placement.js';
 
 const ratingFor = score => Math.ceil(score/5000);
 const sum = values => values.reduce((total,value)=>total+value,0);
@@ -98,10 +99,13 @@ export async function forecastRating(data,payload,input,candidates,{solve,plan,m
   return {current:best(existing),potential:best([...existing,...projected])};
 }
 
-export function shortlistRatingLeaders(forecasts,limit){
+export function shortlistRatingLeaders(forecasts,limit,standings){
   const viable=forecasts.filter(row=>row.forecast);
-  const byPotential=viable.slice().sort((a,b)=>b.forecast.potential-a.forecast.potential||b.forecast.current-a.forecast.current);
-  const byCurrent=viable.slice().sort((a,b)=>b.forecast.current-a.forecast.current);
+  const place=(row,rating)=>projectedLeaderboardPlace(standings?.[row.leaderId],rating);
+  const places=new Map(viable.map(row=>[row,{potential:place(row,row.forecast.potential),current:place(row,row.forecast.current)}]));
+  const compare=(a,b,key)=>compareLeaderboardPlaces(places.get(a)[key],places.get(b)[key])||b.forecast[key]-a.forecast[key];
+  const byPotential=viable.slice().sort((a,b)=>compare(a,b,'potential')||b.forecast.current-a.forecast.current);
+  const byCurrent=viable.slice().sort((a,b)=>compare(a,b,'current'));
   const depth=Math.ceil(limit*1.6)+3, reserve=Math.min(3,Math.ceil(limit/2));
   // Add coverage for strong current Boards without displacing leaders
   // whose strongest case is the affordable layout found by the screen.
@@ -110,9 +114,14 @@ export function shortlistRatingLeaders(forecasts,limit){
     if(chosen.size>=depth+reserve)break;
     chosen.add(row);
   }
-  const cutoff=byPotential[Math.min(byPotential.length,limit)-1]?.forecast.potential??0;
+  const cutoff=byPotential[Math.min(byPotential.length,limit)-1];
+  const cutoffPlace=places.get(cutoff)?.potential;
+  const cutoffRating=cutoff?.forecast.potential??0;
   for(const row of byPotential){
-    if(chosen.size>=depth+reserve||row.forecast.potential<cutoff*.985)break;
+    if(chosen.size>=depth+reserve)break;
+    const close=cutoffPlace?compareLeaderboardPlaces(place(row,row.forecast.potential/.985),cutoffPlace)<=0:
+      row.forecast.potential>=cutoffRating*.985;
+    if(!close)continue;
     chosen.add(row);
   }
   // A viable chart without a scout lineup, for example a Next search that

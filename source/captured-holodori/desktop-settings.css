@@ -1,3 +1,17 @@
+.desktop-release-notes { max-height: 45vh; overflow-y: auto; overflow-wrap: anywhere; }
+.desktop-release-notes > * + * { margin-block-start: .5rem; }
+.desktop-release-notes :is(h3, h4, h5, h6, strong) { color: #e8edf8; font-weight: 600; }
+.desktop-release-notes :is(ul, ol) { padding-inline-start: 1.25rem; }
+.desktop-release-notes ul { list-style: disc; }
+.desktop-release-notes ol { list-style: decimal; }
+.desktop-release-notes li + li { margin-block-start: .25rem; }
+.desktop-release-notes a { color: #c4b5fd; text-decoration: underline; }
+.desktop-release-notes :is(code, pre) { background: #29324b; border-radius: .25rem; }
+.desktop-release-notes code { padding: .1rem .25rem; }
+.desktop-release-notes pre { padding: .5rem .625rem; white-space: pre-wrap; }
+.desktop-release-notes pre code { padding: 0; }
+.desktop-release-notes blockquote { border-inline-start: 2px solid #657493; padding-inline-start: .625rem; }
+
 #settings-profile,
 #settings-profile .desktop-profile-actions,
 #settings-profile .desktop-profile-action-group {

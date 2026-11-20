@@ -47,22 +47,23 @@ function quantityDetails(quantity,compactQuantity,dates=[]) {
 
 /** The game observation seeds the catalog tiles. Local edits overlay it without
  * modifying the raw import or including a duplicate of any planner material. */
-export function projectGameInventory(snapshot,catalog,compactQuantity) {
+export function projectGameInventory(snapshot,catalog,compactQuantity,quantities) {
   const tables = snapshot?.referenceData?.tables;
   const reference = table => (Array.isArray(tables?.[table]) ? tables[table] : [])
     .flatMap(row => typeof row?.data?.id === 'string' ? [[row.data.id,row.data]] : []);
   const labels = new Map(reference('LangItem_Eng').map(([id,data]) => [id,data.text]));
   const items = new Map(reference('Item'));
   const stock = new Map();
+  const observed = new Map();
   const expiries = new Map();
-  const validItem=id=>isGameInventoryId(id)&&!plannerItems.has(id);
+  const validItem=id=>isGameInventoryId(id)&&id.startsWith('item-')&&!plannerItems.has(id);
   for (const {itemId} of snapshot?.tables.ownedItems??[]) {
     if (validItem(itemId)) stock.set(itemId,null);
   }
   for (const {itemId,quantity,expiredTime} of snapshot?.tables.items??[]) {
     if (!validItem(itemId)) continue;
     const amount = BigInt(quantity);
-    stock.set(itemId,(stock.get(itemId) ?? 0n) + amount);
+    observed.set(itemId,(observed.get(itemId)??0n)+amount);
     const time = Number(expiredTime);
     if (Number.isSafeInteger(time) && time >= 1_000_000_000_000 && time < 10_000_000_000_000) {
       const dates = expiries.get(itemId) ?? new Map();
@@ -70,6 +71,8 @@ export function projectGameInventory(snapshot,catalog,compactQuantity) {
       expiries.set(itemId,dates);
     }
   }
+  if(quantities===undefined)for(const [id,value] of observed)stock.set(id,value);
+  else for(const [id,value] of Object.entries(quantities))if(validItem(id))stock.set(id,BigInt(value));
   const tile = (name,image,quantity,dates) => ({
     name,image,tooltip:escapeTooltip(name),...quantityDetails(quantity,compactQuantity,dates),
   });
@@ -83,15 +86,17 @@ export function projectGameInventory(snapshot,catalog,compactQuantity) {
     const category=masterCategory(item?.inventoryItemCategoryType)??local?.category;
     const type=typeof item?.type==='string'?item.type.split('_TYPE_').at(-1):local?.type;
     return [id,{
-      ...tile(typeof label === 'string' && label ? label : local?.name || id,image,stock.has(id)?stock.get(id):0n,expiries.get(id)),
+      ...tile(typeof label === 'string' && label ? label : local?.name || id,image,stock.has(id)?stock.get(id):0n,
+        stock.get(id)===observed.get(id)?expiries.get(id):undefined),
       ...inventoryPlacement(id,category,type),
       order:Number.isFinite(item?.order)?item.order:local?.order,
       hidden:category==='HIDDEN'&&!stock.has(id),
     }];
   });
   return Object.fromEntries([
-    [diamondInventoryIds.free,{...tile('Free Diamonds',iconRoot+'img_resource_thumb_stonefree.webp',snapshot?snapshot.balances.free:0),category:'other'}],
-    [diamondInventoryIds.paid,{...tile('Paid Diamonds',iconRoot+'img_resource_thumb_stonepaid.webp',snapshot?snapshot.balances.paid:0),category:'other'}],
+    ...Object.entries(diamondInventoryIds).map(([kind,id])=>[id,{...tile(kind==='free'?'Free Diamonds':'Paid Diamonds',
+      iconRoot+(kind==='free'?'img_resource_thumb_stonefree.webp':'img_resource_thumb_stonepaid.webp'),
+      quantities===undefined?(snapshot?snapshot.balances[kind]:0):quantities[id]??(snapshot?null:0)),category:'other'}]),
     ...rows,
   ]);
 }
@@ -101,6 +106,7 @@ export function applyGameInventoryEdits(base,inventory,compactQuantity) {
   for(const {item,type,tier,value} of inventory){
     if(!isGameInventoryId(item)||plannerItems.has(item)||type!==item||tier!==0)continue;
     const tile=tiles[item]??{name:item,tooltip:escapeTooltip(item),...inventoryPlacement(item),image:fallbackImage};
+    if(tile.quantity!=null&&Number(tile.quantity)===value)continue;
     tiles[item]={...tile,...quantityDetails(value,compactQuantity),hidden:false};
   }
   return tiles;

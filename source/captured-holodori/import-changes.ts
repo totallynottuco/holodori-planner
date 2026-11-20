@@ -1,10 +1,24 @@
 import {formatNumber} from './regional-formats.js';
 import {accountCharactersById} from '../hololive/vendor/shared/account-data';
-import type {GameAccountSnapshot} from '../hololive/vendor/shared/types';
+import type {AppProfileV2,GameAccountSnapshot} from '../hololive/vendor/shared/types';
 import {achievementProgress,indexAchievementProgress,type AchievementCategory} from './achievements';
 import {characters} from './game';
+import {currentAchievementProgress,currentPointRows,currentBoards,currentMembers,currentOwnedCards} from './current-account';
+import {boardTable} from './saved-boards';
 
 type Boards=NonNullable<GameAccountSnapshot['tables']['boards']>;
+
+export function compareCurrentAccount(profile:AppProfileV2,current:GameAccountSnapshot,categories?:AchievementCategory[]){
+  const members=currentMembers(profile);
+  const boards=currentBoards(profile);
+  const progress=Object.entries(currentAchievementProgress(profile));
+  const previous={...current,tables:{...current.tables,cards:currentOwnedCards(profile),members,
+    boards:boardTable(boards),boardPoints:currentPointRows(profile,members,boards),
+    missions:profile.achievementProgressKnown||progress.length?progress.map(([missionId,row])=>({
+      missionId,...row,missionPassId:'__NONE__',lastProgressTime:'0',ttlBaseTime:'0',
+    })):undefined}};
+  return {...compareAccountImports(previous,current,categories)!,currentProfile:true};
+}
 
 function boardChanges(previous:GameAccountSnapshot,current:GameAccountSnapshot) {
   const before=previous.tables.boards,after=current.tables.boards;

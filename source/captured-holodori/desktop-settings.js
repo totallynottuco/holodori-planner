@@ -144,10 +144,10 @@ export function createDesktopSettings({h,reactive,vnode,resolve,Dialog,Switch,st
     ].filter(Boolean).join(' · ')]);
     return h('section',{class:'mt-3','data-import-changes':''},[
       h('h3',{class:'font-semibold text-sm'},'What changed'),
-      note('Compared with '+formatDateTime(changes.previousAt)),
+      note(changes.currentProfile?'Compared with current app progress.':'Compared with '+formatDateTime(changes.previousAt)),
       boards?h('details',{class:'mt-2 text-sm'},[
         h('summary',{class:'cursor-pointer'},'Holomem Boards · '+(boardCount?boardCount+' changes':'No changes')),
-        boards.incomplete?note('Changes are shown for members present in both imports.'):null,
+        boards.incomplete?note('Changes are shown for members with known current and incoming Boards.'):null,
         boardRows.length?table(['Holomem','Board changes'],boardRows):null,
         boards.connections.length?table(['Connect card','Previous slot','New slot'],boards.connections.map(row=>[row.card,row.from,row.to])):null,
       ]):note('Board comparison unavailable.'),

@@ -5,8 +5,8 @@ import {loadExtraSongs,saveExtraSongs} from './optimizer-song-unlocks';
 import {loadOptimizerPreferences,ratingQuickCounts,saveOptimizerPreferences} from './optimizer-preferences';
 import {boardChangeBadge,boardConnectArtwork,createHolomemBoard} from './holomem-board-ui';
 import {boardNodeLabel,connectCard} from './holomem-board';
-import {accountProgressRank,accountProgressMemoryBonus} from './account-progress';
-import {currentBoards,currentMemberRank,currentOwnedCards,currentGachaPoints,currentUpgradeBonus,currentDreamRank} from './current-account';
+import {accountProgressMemoryBonus} from './account-progress';
+import {currentBoards,currentPointRows,currentMemberRank,currentOwnedCards,currentGachaPoints,currentUpgradeBonus,currentDreamRank,savedPlanBases} from './current-account';
 import {automaticChapter,defaultEvent,eventStatus} from './optimizer-events';
 import {optimizerPowerUpPresets,referencePowerUpOverride,referenceSearchRoster} from './reference-team-solver';
 import {previewTeamPlan} from './team-plan';
@@ -16,7 +16,6 @@ import {boardChanges,boardConnectLocations,boardTable,mergeSavedBoards,projectBo
 import {boardPlanningBaseline,boardProtection,boardProtectionModes,pinsBoardConnects,preservesBoard,retainedConnectorPaths} from './board-protection';
 import {boardBill,optimizerResetLimit,quoteBoardBudget,resetGold} from './board-budget';
 import {createOutfitPreview} from './outfit-preview.js';
-import outfitWaistAnchors from './outfit-waist-anchors.json';
 import {optimizerWorkspaceCatalog,prepareOptimizerWorkspace} from './optimizer-workspace-catalog.js';
 import {previewSoundtrack,rememberPreviewSoundtrack} from './optimizer-preview-audio.js';
 import {createPreviewHitPlayback} from './optimizer-preview-hit-playback.js';
@@ -25,7 +24,7 @@ import {preloadPreviewHitSounds,previewHitSoundTypes} from './optimizer-preview-
 import {loadChartArtwork,chartArtworkCrop,chartArtworkPoint,chartArtworkViewBox,chartArtworkWindows} from './optimizer-chart-artwork.js';
 import {activeGachaCurrencies,nextAcquisitionChoices,quoteCardAcquisitions} from './acquisition-exchanges.js';
 import {isTeamCardEligible} from './team-card-pool';
-import {leaderboardRegions,selectedLeaderboardRegion,ratingWithChart,projectedLeaderboardPlace,formatLeaderboardPlace} from './leaderboard-placement';
+import {leaderboardRegions,selectedLeaderboardRegion,ratingWithChart,projectedLeaderboardPlace,formatLeaderboardPlace,rankedRatingLeaders,leaderboardStandingsUpdated} from './leaderboard-placement';
 import {pickerActionClass as action,renderPickerChoice,renderHolomemChoices} from './optimizer-picker-controls';
 
 export {prepareOptimizerWorkspace};
@@ -45,7 +44,8 @@ const outfitIdPattern=/^\d{5}-[a-z]+-\d{4}-\d{2}$/;
 const outfitUpdateDirectory='/assets/outfit-updates/';
 const outfitIndex=(url,options)=>fetch(url,options).then(response=>response.ok?response.json():{}).catch(()=>({}));
 function loadOutfitPreviews(){
-  outfitPreviews??=outfitIndex('/assets/outfits/index.json');
+  outfitPreviews??=Promise.all([outfitIndex('/assets/outfits/index.json'),outfitIndex('/assets/outfit-waist-anchors.json')])
+    .then(([index,waistAnchors])=>({...index,waistAnchors}));
   outfitUpdates??=outfitIndex(outfitUpdateDirectory+'index.json',{cache:'no-store'}).finally(()=>{outfitUpdates=undefined;});
   return Promise.all([outfitPreviews,outfitUpdates]).then(([bundled,updates])=>{
     const merged={...bundled,rooms:{...bundled.rooms},thumbnails:{...bundled.thumbnails},
@@ -109,7 +109,7 @@ const objectiveDescriptions = {
 const boardChoices = [['imported','Use current Boards'],['saved','Use saved Board plans'],['optimize','Optimize Boards'],['none','Ignore Boards']];
 const boardDescriptions = {
   imported:'Keep your unlocks and Connect cards.',
-  saved:'Use your saved Board plans alongside imported Boards.',
+  saved:'Use your saved Board plans alongside current Boards.',
   optimize:'Preview new unlocks and Connect changes.',
   none:'Search without Board effects.',
 };
@@ -448,7 +448,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         previewSlot:null,previewQuery:'',planTeam:null,planError:'',
         savedLineups:[],savedLineupId:null,lineupNameDraft:null,lineupDeleting:false,lineupError:'',lineupScore:null,lineupScoring:false,resultContext:null,
         lineupValueEdit:null,activeStep:'build',visitedSteps:['build'],resultsChanged:false,eventClock:Date.now(),eventTimer:null,eventPage:0,ratingLeader:null,ratingChart:null,
-        ratingStandings:{},ratingStandingsRegion:null,ratingStandingsCheckedAt:0,ratingStandingsRequest:0,
+        ratingStandings:{},ratingStandingsRegion:null,ratingStandingsCheckedAt:0,ratingStandingsRequest:0,ratingResultsSort:null,
         catalogRefreshPending:false,catalogLoading:false,searchBackend:null,gpuError:false,gachaError:'',connectorIconId:null,
       };
     },
@@ -458,7 +458,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       profile(){return window.__seelieApp?.data?.[`${this.profileId}-holodori`];},
       snapshot(){return this.profile?.gameAccountImport?.snapshot;},
       ownedCostumeIds(){
-        return this.snapshot?.tables.costumes?.map(row=>row.costumeId)??this.profile?.account?.ownedCostumeIds??[];
+        return this.profile?.account?.ownedCostumeIds??[];
       },
       savedLineup(){return this.savedLineups.find(row=>row.id===this.savedLineupId);},
       missingLineupCards(){return this.savedLineup?this.savedLineup.cardIds.filter(id=>!this.ownedById.has(id)):[];},
@@ -541,6 +541,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       ratingMode(){return this.objective==='holomemLb';},
       hasRatingResults(){return !!this.result&&(this.resultContext?.objective??this.objective)==='holomemLb';},
       ratingBatch(){return this.ratingMode&&this.ratingScope!=='single';},
+      ratingRankChoice(){return this.ratingBatch&&['quick','all'].includes(this.ratingScope);},
+      ratingPlacementTarget(){return this.ratingRankChoice&&this.ratingRankBy==='placement';},
       ratingLeaderIds(){return this.availableLeaders.filter(({id})=>this.ratingScope==='selected'?this.ratingSelectedIds.includes(id):
         !this.ratingBatchInvitedOnly||this.invitedLeaderIds.has(id)).map(({id})=>id);},
       unitMode(){return this.objective==='unitScore';},
@@ -599,11 +601,11 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           song.characterIds?.some(id=>leaders.has(id)) && (song.singerType==='SOLO'||song.singerType==='GROUP'&&song.characterIds.length>1));
       },
       automaticSongs(){
-        const imported=new Set(this.snapshot?.tables.songs?.filter(row=>Number(row.releasedTime)<=this.eventClock).map(row=>row.musicId));
+        const unlocked=new Set(this.profile?.account.ownedSongIds??[]);
         const quest=this.profile?.account?.storyProgress;
         const questStep=quest ? quest.chapter*1000+quest.episode : 0;
         const invited=new Set(this.members.map(row=>row.characterId));
-        return new Set(this.songs.filter(({id,unlock})=>imported.has(id)||unlock && (unlock.autoGiven||
+        return new Set(this.songs.filter(({id,unlock})=>unlocked.has(id)||unlock && (unlock.autoGiven||
           unlock.mainQuestUnlock && questStep>=unlock.mainQuestUnlock[0]*1000+unlock.mainQuestUnlock[1] ||
           invited.has(unlock.holomemUnlock))).map(song=>song.id));
       },
@@ -659,11 +661,13 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       connectorIcon(){return game.cardImage(this.connectorIconId,'grid');},
       boardBudget(){
         if(this.effectiveBoards!=='optimize')return null;
-        const imported=this.currentBoardLayouts;
         const limits={stock:this.boardStock,maxResets:this.boardMaxResets,infiniteMaterials:this.boardUnlimited};
         const refundResets=!(this.boardIgnoreExisting&&this.boardNoRefund);
         const protectedPlans=this.protectedBoardSetup?.plans??{};
-        const starting=this.protectedBoardSetup?.boards??imported;
+        const current=this.currentBoardLayouts;
+        const starting=this.protectedBoardSetup?.boards??current;
+        // Score the current layout, but reserve the unconfirmed cost of protected plans.
+        const imported={...current,...savedPlanBases(this.profile,protectedPlans,current)};
         const flexible=Object.entries(starting).filter(([owner])=>!Object.hasOwn(this.boardProtection,owner));
         try{
           const reserved=boardBill(imported,protectedPlans,refundResets);
@@ -737,13 +741,13 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
     },
     watch:{
       hasRatingResults(ready){if(ready)void this.refreshRatingStandings();},
+      ratingPlacementTarget(active){if(active)void this.refreshRatingStandings();},
       searching(active){if(!active&&this.catalogRefreshPending)this.refreshOptimizerCatalog();},
       profile(next,previous){if(!next&&previous)this.clearResult();},
       snapshot(){this.reconcile();this.inputsChanged();this.clearLineupScore();},
       'profile.account'(next,previous){if(next!==previous){this.reconcile();this.inputsChanged();this.clearLineupScore();}},
-      'profile.boardEdits'(){this.inputsChanged();this.clearLineupScore();},
       'profile.cardOwnership'(){this.reconcile();this.inputsChanged();this.clearLineupScore();},
-      'profile.gachaPointEdits'(){this.inputsChanged();},
+      'profile.gachaPoints'(){this.inputsChanged();},
       passport(){if(this.resultContext?.objective==='eventPoints')this.inputsChanged();},
       useGpu(){this.inputsChanged();},
     },
@@ -758,11 +762,13 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         if(this.hasRatingResults&&this.$route.path==='/team-optimizer')void this.refreshRatingStandings();
       },60_000);
       window.addEventListener('holodori-optimizer-catalog-updated',this.refreshOptimizerCatalog);
+      window.addEventListener(leaderboardStandingsUpdated,this.reloadLiveRatingStandings);
     },
     beforeUnmount(){
       clearInterval(this.eventTimer);
       this.ratingStandingsRequest++;
       window.removeEventListener('holodori-optimizer-catalog-updated',this.refreshOptimizerCatalog);
+      window.removeEventListener(leaderboardStandingsUpdated,this.reloadLiveRatingStandings);
       this.stopWorker();
       this.clearLineupScore();
     },
@@ -770,7 +776,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       const cards=Object.keys(accountManifest.cardConnectEffectIds)
         .filter(id=>id!==this.connectorIconId&&game.getCard(id)?.rarity===5);
       if(cards.length)this.connectorIconId=cards[Math.floor(Math.random()*cards.length)];
-      if(this.hasRatingResults)void this.refreshRatingStandings();
+      if(this.hasRatingResults||this.ratingPlacementTarget)void this.refreshRatingStandings();
       const origin=placementOrigins.get(this);
       if(!origin)return;
       placementOrigins.delete(this);
@@ -783,6 +789,27 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
     },
     deactivated(){if(this.pickerVisible)this.closePicker();},
     methods:{
+      async readRatingStandings(region){
+        const standings=await window.__TAURI__?.core.invoke('desktop_holomem_rating_standings',{region});
+        return Object.freeze(standings??{});
+      },
+      async reloadLiveRatingStandings({detail:region}){
+        if(region!==this.ratingStandingsRegion)return;
+        const request=++this.ratingStandingsRequest;
+        try{
+          const standings=await this.readRatingStandings(region);
+          if(request===this.ratingStandingsRequest)this.ratingStandings=standings;
+        }catch{}
+      },
+      async ratingPlacementSnapshot(region,leaders){
+        const cached=await this.readRatingStandings(region).catch(()=>({}));
+        if(leaders.some(id=>cached[id]?.rows.length))return cached;
+        try{
+          if(await window.__TAURI__?.core.invoke('desktop_refresh_holomem_rankings',{region,force:false}))
+            return await this.readRatingStandings(region);
+        }catch{}
+        return cached;
+      },
       async refreshRatingStandings(){
         const region=selectedLeaderboardRegion(sessionStorage);
         const now=Date.now();
@@ -794,8 +821,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         const invoke=window.__TAURI__?.core.invoke;
         if(!invoke)return;
         const read=async()=>{
-          const standings=await invoke('desktop_holomem_rating_standings',{region});
-          if(request===this.ratingStandingsRequest)this.ratingStandings=Object.freeze(standings??{});
+          const standings=await this.readRatingStandings(region);
+          if(request===this.ratingStandingsRequest)this.ratingStandings=standings;
         };
         try {
           await read();
@@ -935,6 +962,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         this.result = null;
         this.ratingLeader=null;
         this.ratingChart=null;
+        this.ratingResultsSort=null;
         this.resultContext = null;
         this.resultsChanged=false;
         this.searchBackend = null;
@@ -1230,7 +1258,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           worker.onmessage=({data})=>{if(data.type==='lineup-score')finish(worker,data.score,data.error);};
           worker.onerror=()=>finish(worker,null,'Could not recalculate this lineup.');
           const holoPassport=window.__seelieApp?.data?.[`${this.profileId}-boosts`]?.holoPassport??this.profile?.boosts?.holoPassport??false;
-          const message={type:'score-lineup',lineup:clone(this.savedLineup),
+          const lineup={...this.savedLineup,...(this.savedLineup.plannedCards?{plannedCards:this.plannedCards}:{})};
+          const message={type:'score-lineup',lineup:clone(lineup),
             input:{...this.accountScoreInput(),liveBoost:this.savedLineup.liveBoost,holoPassport}};
           message.source=await window.__holodoriDesktop.optimizerCatalogSource(clone(this.optimizerSource)??null);
           if(lineupWorkers.get(this)===worker)worker.postMessage(message);
@@ -1378,7 +1407,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         const account=this.profile?.account;
         const memoryCount=account?.memoriesCollected??0;
         return {cards:this.ownedCards.map(({cardId,level,potentialUpgradeCount,levelLimitBreakCount})=>({cardId,level,potentialUpgradeCount,levelLimitBreakCount})),
-          members:clone(this.members),ownedCostumeIds:clone(this.ownedCostumeIds),dreamRank:currentDreamRank(this.profile),memoryCount,
+          members:clone(this.members),ownedCostumeIds:clone(this.ownedCostumeIds),boards:clone(boardTable(this.currentBoardLayouts)),
+          savedBoards:clone(this.profile?.savedBoards??{}),dreamRank:currentDreamRank(this.profile),memoryCount,
           memoryBonusPermil:account?accountProgressMemoryBonus(account):undefined,
           upgradeBonusPermyriad:this.upgradeBonus};
       },
@@ -1390,8 +1420,9 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         const plannedCards=this.rosterSource==='planned'?clone(this.plannedCards):undefined;
         const scoring=this.accountScoreInput();
         const chart = this.ratingMode||this.unitMode?null:this.chart;
-        const importedBoards=this.snapshot?.tables.boards;
         const imported=this.currentBoardLayouts;
+        const currentMembers=clone(this.members);
+        const currentPoints=currentPointRows(this.profile,currentMembers,imported);
         const boardMode=this.effectiveBoards;
         const protectedSetup=this.protectedBoardSetup;
         const boards=boardMode==='saved'?boardTable(mergeSavedBoards(imported,this.profile.savedBoards)):
@@ -1420,7 +1451,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         const eventId=this.eventMode?this.event?.id:undefined;
         const eventChapter=this.objective==='eventPoints'?this.currentChapter??undefined:undefined;
         const boardOpt=this.boardOpt;
-        const existing={...imported,...this.profile?.savedBoards};
+        const existing=imported;
         const boardPlanBase={...existing};
         const startingBoards=optimizerBoards(boards);
         if(boardOpt?.preserveConnects){
@@ -1432,8 +1463,11 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           const protectedBoard=protectedSetup?.boards?.[owner];
           if(protectedBoard)boardPlanBase[owner]=protectedBoard;else delete boardPlanBase[owner];
         }
+        const ratingRankBy=this.ratingRankChoice?this.ratingRankBy:'rating';
+        const ratingPlacementRegion=ratingRankBy==='placement'?selectedLeaderboardRegion(sessionStorage):null;
         this.resultContext={profileId:this.profileId,connectPool,mode:this.mode,nextAcquisition:this.nextAcquisition,
           objective:this.objective,ratingLeaderId:this.ratingMode?this.activeLeaderId:null,
+          ratingRankBy,ratingPlacementRegion,
           charts:chart?[chart]:[],pc,anyDiffMin:options.anyDiffMin,
           anyDiffMax:options.anyDiffMax,anyDiffTypes:options.anyDiffTypes,sortBy:options.sortBy,eventId,eventChapter,
           ...(this.customPool||this.effectivePool==='allMaxed'?{cardAssumptions:{cardPool:this.effectivePool,
@@ -1464,12 +1498,12 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           ratingMaxDifficulty:this.ratingDifficulty,ratingAllSongs:this.ratingAllSongs,ratingMerge:this.ratingMerge,ratingSongIds:this.ratingSongIds,
           chartKey:chart?.key??'',customLevel:this.customLevel,customBloom:this.customBloom,
           noDelevel:this.keepHigherLevel,noDebloom:this.keepHigherBloom,
-          ...scoring,boards:clone(boards),savedBoardMode:boardMode==='saved',boardPointBalances:clone(this.snapshot?.tables.boardPoints),
-          importedBoards:clone(importedBoards),
+          ...scoring,boards:clone(boards),savedBoardMode:boardMode==='saved',boardPointBalances:currentPoints,
+          budgetBoards:clone(boardTable(imported)),
           ...(Object.keys(protectedSetup?.plans??{}).length?{
             protectedSavedOwners:Object.keys(protectedSetup.plans),
           }:{}),
-          importedMemberRanks:clone(this.snapshot?.tables.members),
+          budgetMembers:currentMembers,
           powerUpPreset:this.powerUpPreset,
           lockedCardIds:this.mode==='best'?[]:[...this.lockedCardIds],leaderCharacterId:this.activeLeaderId || undefined,
           useBoards:this.effectiveBoards!=='none',boardOpt,resultLimit:this.topN,
@@ -1477,9 +1511,18 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             nextCount:this.nextCount,nextBlooms:this.nextBlooms,nextAcquisition} : {}),
         }};
         try{
-          message.source=await window.__holodoriDesktop.optimizerCatalogSource(clone(this.optimizerSource)??null);
-          if(nextAcquisition)nextAcquisition.catalog=message.source?.exchangeCatalog;
+          const [source,standings]=await Promise.all([
+            window.__holodoriDesktop.optimizerCatalogSource(clone(this.optimizerSource)??null),
+            ratingPlacementRegion?this.ratingPlacementSnapshot(ratingPlacementRegion,message.input.ratingLeaderIds):null,
+          ]);
           if(workers.get(this)!==worker)return;
+          message.source=source;
+          if(standings){
+            this.resultContext.ratingPlacementStandings=standings;
+            if(message.input.ratingQuickLimit)message.input.ratingPlacementRows=Object.fromEntries(
+              message.input.ratingLeaderIds.filter(id=>standings[id]?.rows.length).map(id=>[id,standings[id].rows]));
+          }
+          if(nextAcquisition)nextAcquisition.catalog=message.source?.exchangeCatalog;
           const sharedGpu=useGpu&&this.ratingBatch&&this.ratingLeaderIds.length>1;
           if(sharedGpu)message.gpuHost=true;
           worker.postMessage(message,sharedGpu||useGpu&&!standaloneGpu?[]:this.createSearchPorts(useBoardWorkers,standaloneGpu));
@@ -1710,7 +1753,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       const pickerOptions = ()=>{
         if(this.picker==='chart')return button('Any song',()=>this.choose('chartKey',''),{'aria-pressed':!chart});
         if(this.picker==='boardProtection')return h('div',{class:'holo-team-picker-actions'},[
-          caption('Preserves saved layouts, or imported Boards if no plan is saved. No resets still allows additions.'),
+          caption('Preserves saved layouts, or current Boards if no plan is saved. No resets still allows additions.'),
           h('div',{class:'holo-team-options'},[
             protectedBoards?pickerClear('Clear protections',()=>this.change('boardProtection',{})):null,
             button('Done',()=>this.closePicker(),{class:primary}),
@@ -1848,7 +1891,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             },[
               room?h('img',{class:'holo-outfit-room',src:room,alt:'',decoding:'async'}):null,
               this.outfitStageReady&&this.pickerVisible&&media?vnode(OutfitPreview,{key:this.outfitMedia.updated?.[asset]??asset,
-                asset:this.outfitMedia.updated?.[asset]??asset,waistAnchor:outfitWaistAnchors[asset],updated:!!this.outfitMedia.updated?.[asset],
+                asset:this.outfitMedia.updated?.[asset]??asset,waistAnchor:this.outfitMedia.waistAnchors?.[asset],updated:!!this.outfitMedia.updated?.[asset],
                 atlases:media,reactions:this.outfitMedia.reactions?.[asset]}):null,
             ]),
               outfit?h('div',{class:'holo-outfit-caption','aria-live':'polite'},[
@@ -1930,14 +1973,12 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       const upgrades = team => {
         const changes=team.pulls??team.upgrades;
         if(!changes?.length)return null;
-        const balances=this.snapshot?.balances;
-        const observedAt=balances?.gachaPointsObservedAt??this.snapshot?.capturedAt;
         const quoted=quoteCardAcquisitions(changes,this.gachaPoints,this.eventClock,this.optimizerSource?.exchangeCatalog);
         const status=(price,limitReached=false)=>h('span',{
           class:['holo-encore-acquisition-status',price.short==null?'text-gray-400':'',
             !limitReached&&price.short===0n?'holo-encore-acquisition-covered':''],
           title:price.balance==null?'Enter a balance in Lineup or import game data.':
-            `${formatNumber(price.balance)} Pt${Object.hasOwn(this.profile?.gachaPointEdits??{},price.point)?' recorded manually':observedAt?' · '+formatDateTime(observedAt):''}`,
+            `${formatNumber(price.balance)} Pt`,
         },limitReached?'Exceeds exchange limit':price.short==null?'Balance unknown':
           price.short>0n?`${formatNumber(price.short)} Pt short`:'Points covered');
         return h('div',{class:'holo-encore-acquisition text-xs text-gray-300'},[
@@ -2016,7 +2057,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           const original=context?.boardPlanBase??{};
           const saved=context?.boardPlanSaved??{};
           const base={...original,...saved};
-          const connectLocations=boardConnectLocations({...this.currentBoardLayouts,...this.profile?.savedBoards});
+          const connectLocations=boardConnectLocations(this.currentBoardLayouts);
            const protection={protection:context?.boardProtection,preserveConnects:context?.preserveConnects};
            const starting=context?.boardPlanConnectBase??original;
            const pinnedCards=new Set(Object.entries(starting).flatMap(([owner,board])=>
@@ -2209,7 +2250,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                   const editToolbar=node('div',{class:'holo-team-board-toolbar holo-team-board-edit'},[
                         node('div',{class:'holo-team-options holo-encore-segments holo-team-board-protection',role:'group',
                           'aria-label':`Board protection for ${memberName(change.owner)}`,
-                          title:'Keeps the saved layout on your next search, or the imported Board if there is no saved plan.'},[
+                          title:'Keeps the saved layout on your next search, or the current Board if there is no saved plan.'},[
                           node('span',{},'Protect on next search'),
                           ...protectionChoices(change.owner,disabled||state.pending),
                         ]),
@@ -3042,10 +3083,12 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       const planResult = team => this.openTeamPlan(team);
       const resultMode=this.resultContext?.mode??this.mode;
       const resultObjective=this.resultContext?.objective??this.objective;
-      const placementRegion=leaderboardRegions[this.ratingStandingsRegion];
+      const placementRegionId=this.resultContext?.ratingPlacementRegion??this.ratingStandingsRegion;
+      const placementRegion=leaderboardRegions[placementRegionId];
+      const placementStandings=this.resultContext?.ratingPlacementStandings??this.ratingStandings;
       const singleRatingLeader=this.resultContext?.ratingLeaderId;
       const placementBadge=(leaderId,rating,compact=false)=>{
-        const standings=this.ratingStandings[leaderId];
+        const standings=placementStandings[leaderId];
         const place=projectedLeaderboardPlace(standings?.rows,rating);
         if(!place)return null;
         const label=formatLeaderboardPlace(place);
@@ -3055,7 +3098,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           event.preventDefault();
           event.stopPropagation();
           placementOrigins.set(this,event.currentTarget);
-          void this.$router.push({path:'/leaderboards',query:{holomem:leaderId,region:this.ratingStandingsRegion,rating:String(rating)}});
+          void this.$router.push({path:'/leaderboards',query:{holomem:leaderId,region:placementRegionId,rating:String(rating)}});
         },{class:'holo-rating-placement',
           'aria-label':`${text} on the ${placementRegion} leaderboard`,
           title:`Projected ${placementRegion} placement with ${count(rating)} total rating. ${detail} Standings captured ${formatDateTime(standings.capturedAt)}.`.trim(),
@@ -3139,28 +3182,37 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       const batchRows=this.result?.ratingLeaders;
       const quick=this.result?.quickTop,limit=quick?.limit??this.ratingRowsLimit;
       const leaderboard=()=>{
-        const ranked=batchRows.filter(row=>!row.status);
+        const completed=batchRows.filter(row=>!row.status);
         const skipped=batchRows.filter(row=>row.status);
-        if(!this.searching)ranked.sort((a,b)=>b.ratingTotal-a.ratingTotal||a.name.localeCompare(b.name));
+        const preferred=this.resultContext?.ratingRankBy??'rating';
+        const showPlacement=completed.some(row=>placementStandings[row.leaderId]?.rows.length);
+        const field=showPlacement?(this.ratingResultsSort?.field??preferred):'rating';
+        const reversed=this.ratingResultsSort?.field===field&&this.ratingResultsSort.reversed;
+        const ranked=this.searching?completed.map(row=>({row})):rankedRatingLeaders(completed,placementStandings,field,reversed);
         const visible=limit?ranked.slice(0,limit):ranked;
-        const leader=visible.find(row=>row.leaderId===this.ratingLeader)??visible[0];
+        const leader=(visible.find(({row})=>row.leaderId===this.ratingLeader)??visible[0])?.row;
         const groups=leader?.ratingGroups??[];
         const chart=groups.find(group=>group.songId===this.ratingChart)??groups[0];
         const ratingLabel=this.result.byMax?'Max rating':'Rating';
-        const showPlacement=visible.some(row=>this.ratingStandings[row.leaderId]?.rows.length);
-        let rank=0;
+        const sortHeader=(key,label,column)=>button([
+          label,field===key&&!this.searching?h('span',{'aria-hidden':'true'},(key==='placement')!==reversed?'↑':'↓'):null,
+        ],()=>{this.ratingResultsSort={field:key,reversed:field===key&&!reversed};},{
+          class:`${column} holo-rating-sort`,disabled:this.searching,'aria-pressed':field===key,
+          'aria-label':`Sort by ${label}`,
+          title:field===key?`Sorted ${reversed?'worst':'best'} first. Click to reverse.`:`Sort by ${label}`,
+        });
         return h('div',{class:'holo-rating-layout'},[
+          !this.searching&&preferred==='placement'&&!showPlacement&&completed.length?
+            caption(`No ${placementRegion} standings for these results. Ranked by rating.`):null,
           leader?h('div',{class:'holo-rating-columns'},[
             h('div',{class:`holo-rating-list${showPlacement?' holo-rating-list-placement':''}`,role:'group','aria-label':'Ranked leaders'},[
               this.searching?caption('Final ranks appear when the search ends.'):null,
-              h('div',{class:'holo-rating-row holo-rating-label text-gray-400','aria-hidden':'true'},[
+              h('div',{class:'holo-rating-row holo-rating-label text-gray-400'},[
                 h('span',{class:'holo-rating-index'},'Rank'),h('span',{class:'holo-rating-name-column'},'Holomem'),
-                showPlacement?h('span',{class:'holo-rating-place-column',title:`Projected ${placementRegion} leaderboard placement`},`${placementRegion} place`):null,
-                h('span',{class:'holo-rating-total'},ratingLabel),
+                showPlacement?sortHeader('placement',`${placementRegion} place`,'holo-rating-place-column'):null,
+                sortHeader('rating',ratingLabel,'holo-rating-total'),
               ]),
-              ...visible.map((row,index)=>{
-                if(row.ratingTotal!==ranked[index-1]?.ratingTotal)rank=index+1;
-                const tied=row.ratingTotal===ranked[index-1]?.ratingTotal||row.ratingTotal===ranked[index+1]?.ratingTotal;
+              ...visible.map(({row,rank,tied})=>{
                 const selectLeader=event=>{
                   const {left}=event.currentTarget.getBoundingClientRect();
                   this.ratingLeader=row.leaderId;
@@ -3395,6 +3447,10 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         target:[
               objectiveChoices(),
               this.ratingMode?choices('ratingScope','Rating scope',ratingScopes):null,
+              this.ratingRankChoice?h('div',{class:'holo-team-field'},[
+                h('span',{class:'holo-team-label font-semibold'},'Rank leaders by'),
+                choices('ratingRankBy','Rank leaders by',[['rating','Highest rating'],['placement','Best projected place']]),
+              ]):null,
               ...(this.eventMode?eventTarget():[]),
               this.unitMode||this.eventMode ? null : this.ratingMode ? h('div',{class:'holo-encore-inline-fields holo-encore-rating-fields'},[
                 this.ratingBatch?null:field('Rating leader',searchChoice('leader','Choose a Holomem',chartTitle,false,leader&&memberIcon(leader.id)),
@@ -3585,13 +3641,12 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             disabled:disabled||!this.catalog,value:this.powerUpPreset,onChange:event=>this.change('powerUpPreset',event.target.value)},
           this.powerUpChoices.map(([id,label])=>h('option',{key:id,value:id},label)))],
           this.effectiveBoards==='optimize'?['Board Points',this.boardMaxPoints?'Maximum assumed':
-            !this.boardIgnoreExisting&&this.snapshot?.tables.boardPoints?.length?'Checked against import':'From rank and unlocks']:null,
+            'Current account']:null,
           this.effectiveBoards==='optimize'&&protectedBoards?['Protected Boards',count(protectedBoards)]:null,
           this.ratingMode?['Song access',this.ratingAllSongs?'All eligible songs assumed':
             `${this.automaticSongs.size} automatic · ${this.ratingExtraSongs.length} manual`]:null,
         ])]),
       ]);
-      const rankOverrides=this.result?.boardRankOverrides??[];
       const progressFraction=Number.isFinite(this.progress?.fraction)?Math.max(0,Math.min(.99,this.progress.fraction)):0;
       const searchMeter=()=>h('div',{class:'holo-encore-search-progress'},[
         h('div',{class:'holo-encore-search-status text-sm text-gray-400'},[
@@ -3600,10 +3655,6 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         ]),
         h('progress',{class:'holo-encore-meter',max:1,value:progressFraction,'aria-label':'Team search progress'}),
       ]);
-      const ranksToSync=rankOverrides.filter(({characterId,planned,rank})=>{
-        const bounds=this.profile?.account&&accountProgressRank(this.profile.account,characterId,rank);
-        return bounds&&rank>=bounds.min&&rank<=bounds.max&&planned!==rank;
-      }).map(row=>row.characterId);
       return h('section',{class:'holo-team','aria-label':'Team Optimizer'},[
         h('header',{class:`${headingClass} holo-encore-header`},[
           h('h1',{class:titleClass},'Team Optimizer'),
@@ -3649,14 +3700,6 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             this.result.boardWarnings?.length?h('div',{class:'holo-encore-notice',role:'status'},[
               icon('information-circle'),
               h('ul',{class:'holo-team-board-warnings'},this.result.boardWarnings.map(warning=>h('li',{key:warning},warning))),
-            ]):null,
-            rankOverrides.length?h('div',{class:'holo-encore-notice'},[
-              icon('information-circle'),
-              h('span',{},`Board Points use your planner ranks: ${rankOverrides
-                .map(({name,planned,rank})=>`${name} ${planned} (imported ${rank})`).join(', ')}.`),
-              ranksToSync.length?button('Use imported ranks',()=>window.__holodoriDesktop.setAccountProgress(this.profileId,{
-                kind:'use-imported-ranks',characterIds:ranksToSync,
-              })):button('Review ranks',()=>this.$router.push('/progress')),
             ]):null,
             resultBaseline ?
               caption(`Current best · ${count(this.result.baseline)} ${unitUpgrades?'Unit Score':'estimated average song score'}`) : null,
