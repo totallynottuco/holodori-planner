@@ -162,7 +162,7 @@ fn checkTrades(@builtin(global_invocation_id) id: vec3u) {
 // Rectangular maximum-weight assignment. Each socket has a dummy column
 // available so a zero-value placement can stay empty. One invocation owns
 // the alternating paths, prices, and column claims for a complete layout.
-const connectShader=`
+const connectShader=(rows,columns)=>`
 struct Size { rows: u32, cards: u32, columns: u32, padding: u32 }
 @group(0) @binding(0) var<storage,read> weights: array<i32>;
 @group(0) @binding(1) var<storage,read> reserved: array<u32>;
@@ -170,12 +170,12 @@ struct Size { rows: u32, cards: u32, columns: u32, padding: u32 }
 @group(0) @binding(3) var<storage,read_write> result: array<u32>;
 @compute @workgroup_size(1)
 fn matchConnects() {
-  var rowPrice: array<i32, 161>;
-  var colPrice: array<i32, 769>;
-  var claim: array<u32, 769>;
-  var previous: array<u32, 769>;
-  var distance: array<i32, 769>;
-  var used: array<bool, 769>;
+  var rowPrice: array<i32, ${rows+1}>;
+  var colPrice: array<i32, ${columns+1}>;
+  var claim: array<u32, ${columns+1}>;
+  var previous: array<u32, ${columns+1}>;
+  var distance: array<i32, ${columns+1}>;
+  var used: array<bool, ${columns+1}>;
   for (var row = 1u; row <= size.rows; row++) {
     result[row-1u] = 0u;
     claim[0] = row;
@@ -320,7 +320,8 @@ export async function createGpuDispatcher(gpu=globalThis.navigator?.gpu) {
 
 export async function createGpuSearchKernels(gpu,dispatcher) {
   const {pipeline,dispatch,close}=dispatcher??await createGpuDispatcher(gpu);
-  let team,teamRanges,board,connect,trade;
+  let team,teamRanges,board,trade;
+  const connectPipelines=new Map();
   const timings={teamDispatch:0,teamRead:0,teamPasses:0};
   async function checkBoardBatch(moves,available,{unlimited=false}={}){
     const width=available.length+3,count=moves.length/width;
@@ -421,10 +422,12 @@ export async function createGpuSearchKernels(gpu,dispatcher) {
       const rows=weights.length,cards=reserved.length;
       if(!rows||!cards)return new Uint32Array(rows);
       const columns=rows+cards;
-      if(rows>160||columns>768||!reserved.every(value=>value===0||value===1)||weights.some(row=>row.length!==cards||
+      if(!reserved.every(value=>value===0||value===1)||weights.some(row=>row.length!==cards||
         row.some(value=>!uint(value)||value>10000000)))throw Error('Connect assignment exceeds the GPU kernel range.');
-      connect??=pipeline(connectShader,'matchConnects');
-      return dispatch(await connect,[weights.flat(),reserved,[rows,cards,columns,0]],rows,[1]);
+      const capacity=n=>2**Math.ceil(Math.log2(n));
+      const key=capacity(rows)+','+capacity(columns);
+      if(!connectPipelines.has(key))connectPipelines.set(key,pipeline(connectShader(capacity(rows),capacity(columns)),'matchConnects'));
+      return dispatch(await connectPipelines.get(key),[weights.flat(),reserved,[rows,cards,columns,0]],rows,[1]);
     },
     async checkTrades(trades,stock,{unlimited=false}={}){
       if(!trades.length)return new Uint32Array();

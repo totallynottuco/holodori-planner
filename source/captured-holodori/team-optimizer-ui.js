@@ -1446,7 +1446,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         const roster=Object.fromEntries((plannedCards??scoring.cards).map(card=>[card.cardId,{
           owned:true,level:card.level,bloom:card.potentialUpgradeCount,
         }]));
-        const connectPool=Object.fromEntries(Object.entries(referenceSearchRoster(this.powerUpData,roster,scenario))
+        const connectPool=Object.fromEntries(Object.entries({...Object.fromEntries(scoring.cards.map(card=>
+          [card.cardId,{bloom:card.potentialUpgradeCount}])),...referenceSearchRoster(this.powerUpData,roster,scenario)})
           .map(([id,entry])=>[id,entry.bloom]));
         const eventId=this.eventMode?this.event?.id:undefined;
         const eventChapter=this.objective==='eventPoints'?this.currentChapter??undefined:undefined;
@@ -2108,6 +2109,9 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           };
           const reserved=budgetFor([]);
           const selectedBudget=changed.length?budgetFor(changed):reserved;
+          const selectionValid=changed.every(([,result])=>!result.error);
+          const canFund=quote=>quote?.fits!==false||
+            (selectedBudget?.fits&&selectionValid&&!quote.error&&!quote.overResets&&!quote.short.hologold);
           const difference=(after,before)=>Object.fromEntries([...new Set([...Object.keys(after),...Object.keys(before)])]
             .map(key=>[key,(after[key]??0)-(before[key]??0)]));
           const itemIds=Object.fromEntries(boardItems.map(item=>[item.key,item.id]));
@@ -2124,7 +2128,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                 return [change.owner,result.board];
               }));
               const quote=budgetFor(rows);
-              if(quote&&!quote.fits)throw Error(quote.error||'These changes exceed the shared Board budget.');
+              if(!canFund(quote))throw Error(quote.error||'These changes exceed the shared Board budget.');
               const applied=await window.__holodoriDesktop.saveBoardPlans(context?.profileId,updates,
                 {...(context?.boardPlanExisting??original),...saved},protection);
               Object.assign(saved,applied);
@@ -2138,7 +2142,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             finally{state.pending=false;}
           };
           const saveAll=button(state.pending?'Saving…':'Save all Boards',()=>save(changed),
-            {class:primary,disabled:state.pending||!changed.length||selectedBudget?.fits===false||changed.some(([,result])=>!!result.error)});
+            {class:primary,disabled:state.pending||!changed.length||selectedBudget?.fits===false||!selectionValid});
           const sortMembers=check('Sort by Holomems',this.boardSortHolomems,value=>{
             this.boardSortHolomems=!!value;
             this.saveOptions();
@@ -2247,6 +2251,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                   ];
                   if(!preview)return memberAccordion(null);
                   const rowBudget=!isSaved&&hasChanges?budgetFor([[change,result]]):null;
+                  const funded=canFund(rowBudget);
                   const editToolbar=node('div',{class:'holo-team-board-toolbar holo-team-board-edit'},[
                         node('div',{class:'holo-team-options holo-encore-segments holo-team-board-protection',role:'group',
                           'aria-label':`Board protection for ${memberName(change.owner)}`,
@@ -2263,11 +2268,11 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                               button('Clear selection',()=>{state.selected[change.owner]=[];},{disabled:state.pending||!picked.size}),
                             ]):null,
                           ]),
+                          rowBudget?.fits===false&&!result.error?node('small',{role:'status'},
+                            funded?'Uses refunds from other selected Boards.':'Selected changes exceed the shared Board budget.'):null,
                           button(editing?'Save selected ('+count(picked.size)+')':'Save Board',
                             ()=>save([[change,result]]),{class:primary,
-                              disabled:state.pending||!hasChanges||!!result.error||rowBudget?.fits===false,
-                              title:rowBudget?.fits===false?(selectedBudget?.fits?
-                                'Use Save all Boards to include the other selected changes and refunds.':'This Board exceeds the shared budget.'):undefined}),
+                              disabled:state.pending||!hasChanges||!!result.error||!funded}),
                         ]),
                       ]);
                   const error=result.error?node('p',{class:'text-xs text-red-400',role:'status'},result.error):null;

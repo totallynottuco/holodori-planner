@@ -42,11 +42,33 @@ function call(solver,name,value,read) {
 }
 let lastData;
 const byRarity=new WeakMap();
+const byLineupPool=new WeakMap();
 export function hasBoardBonusTargets(boardOpt) {
   return Object.keys(boardOpt?.keep?.targets??{}).length>0;
 }
 
 export async function runReferenceJob(data,job,payload,onProgress) {
+  const budget=payload.boardOpt;
+  if(budget&&!budget.infiniteMaterials){
+    // The native solver treats an omitted material as unrestricted.
+    const materials=Object.fromEntries(Object.keys(data.boardItems).map(id=>[id,budget.materials?.[id]??0]));
+    payload={...payload,boardOpt:{...budget,infiniteMaterials:false,materials}};
+  }
+  // The native solver has one ownership map. Its card catalog determines
+  // lineup candidates, while Connect definitions are indexed separately.
+  const extras=payload.options?.boardConnectEntries;
+  if(extras){
+    const connectOnly=Object.keys(extras).filter(id=>!payload.account.owned[id]?.owned).sort();
+    const key=connectOnly.join('|');
+    let variant=byLineupPool.get(data);
+    if(variant?.key!==key){
+      const excluded=new Set(connectOnly);
+      variant={key,data:{...data,cards:data.cards.filter(card=>!excluded.has(card.id))}};
+      byLineupPool.set(data,variant);
+    }
+    data=variant.data;
+    payload={...payload,account:{...payload.account,owned:{...extras,...payload.account.owned}}};
+  }
   const filter=teamRarityFilter(payload.options??{});
   if(filter&&job!=='_hd_plan'){
     const options=payload.options;
@@ -205,19 +227,17 @@ export function prepareReferenceSearch(data,input) {
     board.characterId,{nodes:board.releasedSkillTreeNodeGroupIds,
       cards:Object.fromEntries(board.connectedSkillTreeNodeGroupIds.map((slot,index)=>[slot,board.connectedSkillTreeNodeCardIds[index]])
         .filter(([,id])=>pinsBoardConnects(input.boardOpt,board.characterId)||
-          !(input.plannedCards||input.savedBoardMode)||owned[id]?.owned))},
+          !input.savedBoardMode||owned[id]?.owned||currentOwned[id]?.owned))},
   ]));
   let boardOpt=input.useBoards!==false&&input.boardOpt?.branches?.length?input.boardOpt:null;
   const rank=boardOpt?.maxBoardPoints?1_000_000:input.dreamRank??0;
   if(boardOpt?.preserveConnects&&boardOpt.ignoreExisting&&!boardOpt.connectorPaths){
     boardOpt={...boardOpt,connectorPaths:retainedConnectorPaths(boards,owner=>data.boards[owner],rank)};
   }
-  if((boardOpt?.preserveConnects||boardOpt?.protection)&&input.plannedCards){
-    const pinned=new Set(Object.entries(boards).flatMap(([owner,board])=>
-      pinsBoardConnects(boardOpt,owner)?Object.values(board.cards):[]));
-    const entries=Object.fromEntries(input.cards.filter(card=>pinned.has(card.cardId)&&!owned[card.cardId])
+  if(input.useBoards!==false&&input.plannedCards){
+    const entries=Object.fromEntries(input.cards.filter(card=>data.connects[card.cardId]&&!owned[card.cardId])
       .map(card=>[card.cardId,{owned:true,level:card.level,bloom:card.potentialUpgradeCount,sp:card.levelLimitBreakCount}]));
-    if(Object.keys(entries).length)options.pinnedConnectEntries=entries;
+    if(Object.keys(entries).length)options.boardConnectEntries=entries;
   }
   return {
     account:{dreamRank:rank,owned,boards,ranks,ownedCostumeIds:outfitAssumption?

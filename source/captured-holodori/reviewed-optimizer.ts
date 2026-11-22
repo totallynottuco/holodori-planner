@@ -16,7 +16,7 @@ type Board = { nodes: string[]; cards: Record<string, string> };
 type Scenario = {
   account: { owned: Record<string, Entry>; boards: Record<string, Board>; ranks: Record<string, number> };
   options: { scoringMode: 'chart' | 'generic'; memories: number; powerUpOverride?: number; pc?: boolean;
-    pinnedConnectEntries?: Record<string, Entry> };
+    boardConnectEntries?: Record<string, Entry> };
 };
 type SelectedChart = { key: string; level: number; notes: number };
 type Team = {
@@ -62,7 +62,7 @@ export async function prepareReviewedOptimizer(scenario: Scenario, memoryPermil:
   const base = createDefaultProfile(data.metadata.catalogVersion);
   base.account.memoriesCollected = options.memories;
   base.account.unlockedCharacterIds = scoped(() => Object.keys(account.ranks).filter(id => accountCharactersById.has(id)));
-  for (const [id, entry] of Object.entries({...options.pinnedConnectEntries,...account.owned})) {
+  for (const [id, entry] of Object.entries({...options.boardConnectEntries,...account.owned})) {
     base.cards[id] = cardState(id, entry);
   }
   const observed = { memoryPermil, upgradePermyriad: options.powerUpOverride };
@@ -80,7 +80,7 @@ export async function prepareReviewedOptimizer(scenario: Scenario, memoryPermil:
       }
       if (board.nodes.some(id => !nodes.has(id))) throw Error('An unlocked node is outside the reviewed Mobile Board catalog.');
       for (const [slot, card] of Object.entries(board.cards)) {
-        const entry = entries?.[card] ?? account.owned[card] ?? options.pinnedConnectEntries?.[card];
+        const entry = entries?.[card] ?? account.owned[card] ?? options.boardConnectEntries?.[card];
         if (!nodes.has(slot) || !entry || !resolveBoardConnectEffect(card, entry.bloom))
           throw Error('A Connect assignment is outside the reviewed Mobile Board catalog.');
       }
@@ -202,3 +202,4 @@ export async function prepareReviewedOptimizer(scenario: Scenario, memoryPermil:
     }),
   };
 }
+

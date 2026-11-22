@@ -310,7 +310,7 @@ function gu(e, a) {
 function Rc(e, a, o, n, r, l, prepared) {
   var I, te, q;
   const prior = e.boardEffects && prepared?.perOwnerSongs && prepared.owned === a &&
-    prepared.ranks === n && prepared.boardDreamRank === l && prepared.options.pinnedConnectEntries === r.pinnedConnectEntries
+    prepared.ranks === n && prepared.boardDreamRank === l && prepared.options.boardConnectEntries === r.boardConnectEntries
     ? prepared
     : undefined;
   const d = prepared?.stats ?? new Map(),
@@ -324,7 +324,7 @@ function Rc(e, a, o, n, r, l, prepared) {
     }
   const g = [];
   const perOwnerSongs = e.boardEffects ? new Map(prior?.perOwnerSongs) : null;
-  const connectRoster = prior?.connectRoster ?? (r.pinnedConnectEntries ? {...r.pinnedConnectEntries,...a} : a);
+  const connectRoster = prior?.connectRoster ?? (r.boardConnectEntries ? {...r.boardConnectEntries,...a} : a);
   for (const H of e.boardOwners ?? Object.keys(e.boards)) {
     if (prior && prior.boards[H] === o[H]) {
       g.push(...perOwnerSongs.get(H));
@@ -1348,6 +1348,8 @@ export function referenceRangeCharts(data, { anyDiffMin, anyDiffMax, anyDiffType
   );
 }
 export {
+  oD as referenceBoardNodeValues,
+  um as referenceBoardTargetMatches,
   Rc as createReferenceScoreContext,
   hm as withReferenceChart,
   Ci as evaluateReferenceTeam,

@@ -1,4 +1,6 @@
 import {evaluateUnitScore,unitScoreContext} from './unit-score-search';
+import {referenceBoardTargetMatches} from './reference-rating-math';
+import {boardChanges} from './saved-boards';
 
 const directions=[[1,0],[-1,0],[0,1],[0,-1]];
 const statKinds=new Set(['param','performance','technique','sense','paramPermil','performancePermil',
@@ -16,7 +18,7 @@ function geometryFor(nodes,dreamRank) {
   const byPosition=new Map(visible.map(node=>[position(node.x,node.y),node]));
   const adjacency=new Map(visible.map(node=>[node,directions.map(([x,y])=>
     byPosition.get(position(node.x+x,node.y+y))).filter(Boolean)]));
-  const geometry={dreamRank,byId,root:byPosition.get('0,0'),neighbors:node=>adjacency.get(node)};
+  const geometry={dreamRank,byId,byPosition,root:byPosition.get('0,0'),neighbors:node=>adjacency.get(node)};
   boardGeometry.set(nodes,geometry);
   return geometry;
 }
@@ -99,9 +101,8 @@ export function boardResetCuts(nodes,save,dreamRank){
 function affectsTeam(node,owner,order,leader) {
   if(node.songTrigger||!statKinds.has(node.kind)&&!skillKinds.has(node.kind))return false;
   if(node.charTrigger==='WORK'||node.charTrigger==='SET_LIVE_LEADER'&&owner!==leader)return false;
-  if(node.targetType==='SKILL_TREE_CHARACTER')return order.some(card=>card.characterId===owner);
-  if(node.targetType==='CHARACTER_GROUPING')return order.some(card=>card.groupingIds.includes(node.targetGrouping));
-  return node.targetType==='ALL'||order.some(card=>card.characterId===owner);
+  if(node.kind==='paramGroup')return order.some(card=>card.groupingIds.includes(node.targetGrouping));
+  return order.some(card=>referenceBoardTargetMatches(node,owner,card));
 }
 
 export function boardPointsAtRank(ladder,rank) {
@@ -153,14 +154,9 @@ export function improveUnitScoreBoards(data,payload,team) {
   const owners=Object.keys(ranks).filter(id=>data.boards[id]);
   let saves=boardOpt.ignoreExisting?{}:account.boards;
   let current=team;
-  const changes=new Map(),bought={};
-  const ownedConnects=Object.keys(account.owned).filter(id=>account.owned[id]?.owned&&data.connects[id])
-    .sort((a,b)=>connectStrength(b)-connectStrength(a));
-  function connectStrength(id){
-    const card=data.connects[id],entry=account.owned[id];
-    const level=card.level2Bloom&&entry.bloom>=card.level2Bloom?1:0;
-    return (card.levels[level]?.permil??0)*card.extent.length;
-  }
+  const starting=saves,bought={};
+  const connectRoster={...payload.options.boardConnectEntries,...account.owned};
+  const ownedConnects=Object.keys(connectRoster).filter(id=>connectRoster[id]?.owned&&data.connects[id]);
   function affordable(materials) {
     return boardOpt.infiniteMaterials||Object.entries(materials).every(([id,cost])=>
       (bought[id]??0)+cost<=(boardOpt.materials[id]??0));
@@ -170,8 +166,8 @@ export function improveUnitScoreBoards(data,payload,team) {
   // formula. Short paths can cross a neutral node to reach a useful effect.
   for(let step=0;step<10;step++){
     const candidates=[];
-    const assigned=new Set(Object.values(saves).flatMap(board=>Object.values(board.cards)));
-    const spareConnects=ownedConnects.filter(id=>!assigned.has(id)).slice(0,3);
+    const placed=new Map(Object.entries(saves).flatMap(([owner,board])=>
+      Object.entries(board.cards).map(([socket,id])=>[id,{owner,socket}])));
     for(const owner of owners){
       const save=saves[owner]??{nodes:[],cards:{}};
       const graph=boardGraph(data.boards[owner],save,account.dreamRank);
@@ -181,10 +177,23 @@ export function improveUnitScoreBoards(data,payload,team) {
       const frontier=[],visited=new Set(graph.active);
       for(const id of graph.active){
         const node=graph.byId.get(id);
-        if(node.socket&&!save.cards[id]&&graph.neighbors(node).some(other=>
-          graph.active.has(other.id)&&affectsTeam(other,owner,order,team.leaderChar))){
-          for(const cardId of spareConnects)candidates.push({owner,save,budget,spent,path:[],points:0,materials:{},
-            socket:id,cardId,priority:connectStrength(cardId)/20});
+        if(node.socket){
+          const seen=new Set();
+          for(const cardId of ownedConnects){
+            if(cardId===save.cards[id])continue;
+            const prior=placed.get(cardId);
+            if(prior&&!Object.hasOwn(ranks,prior.owner))continue;
+            const card=data.connects[cardId];
+            const affected=card.extent.map(([x,y])=>graph.byPosition.get(position(node.x+x,node.y+y)))
+              .filter(other=>other&&graph.active.has(other.id)&&affectsTeam(other,owner,order,team.leaderChar));
+            if(!affected.length)continue;
+            const strength=card.levels[card.level2Bloom&&connectRoster[cardId].bloom>=card.level2Bloom?1:0]?.permil??0;
+            const key=prior?cardId:strength+':'+affected.map(other=>other.id).sort().join(',');
+            if(!strength||seen.has(key))continue;
+            seen.add(key);
+            candidates.push({owner,save,budget,spent,path:[],points:0,materials:{},socket:id,cardId,prior,
+              priority:strength*sum(affected,other=>other.value*(skillKinds.has(other.kind)?8:1))/1000});
+          }
         }
         for(const next of graph.neighbors(node))if(!visited.has(next.id))frontier.push([next]);
       }
@@ -203,12 +212,19 @@ export function improveUnitScoreBoards(data,payload,team) {
         if(path.length<3)for(const next of graph.neighbors(node))if(!visited.has(next.id))frontier.push([...path,next]);
       }
     }
-    candidates.sort((a,b)=>moveValue(b)-moveValue(a));
+    candidates.sort((a,b)=>moveValue(b)-moveValue(a)||Number(!!a.prior)-Number(!!b.prior));
     let best;
     for(const move of candidates.slice(0,32)){
       const next={nodes:[...move.save.nodes,...move.path.filter(node=>node.pts>0).map(node=>node.id)],
         cards:move.socket?{...move.save.cards,[move.socket]:move.cardId}:move.save.cards};
       const boards={...saves,[move.owner]:next};
+      if(move.prior){
+        const {owner,socket}=move.prior,source=boards[owner];
+        const cards={...source.cards},displaced=move.save.cards[move.socket];
+        if(displaced)cards[socket]=displaced;
+        else delete cards[socket];
+        boards[owner]={...source,cards};
+      }
       const context=unitScoreContext(data,payload,boards,ranks);
       const result=evaluateUnitScore(context,order,team.outfitId,team.leaderChar);
       if(result.displayUnitScore>(best?.result.displayUnitScore??current.displayUnitScore))best={move,boards,result};
@@ -218,12 +234,16 @@ export function improveUnitScoreBoards(data,payload,team) {
     saves=boards;
     current=result;
     for(const [id,amount] of Object.entries(move.materials))bought[id]=(bought[id]??0)+amount;
-    const previous=changes.get(move.owner)??{owner:move.owner,buys:[],resets:[],connects:[]};
-    changes.set(move.owner,{...previous,buys:[...previous.buys,...move.path.filter(node=>node.pts>0).map(node=>node.id)],
-      connects:move.socket?[...previous.connects,{socket:move.socket,cardId:move.cardId}]:previous.connects,
-      ptsBudget:move.budget,ptsSpent:move.spent+move.points});
   }
   if(current===team)return team;
-  return {...current,plan:{changes:[...changes.values()],resetCount:0,bought,refunded:{},saves,ranks,
+  const changes=Object.entries(saves).flatMap(([owner,board])=>{
+    if(board===starting[owner])return [];
+    const edits=boardChanges(starting[owner],board);
+    return edits.length?[{owner,buys:edits.filter(e=>e.kind==='buy').map(e=>e.id),resets:[],
+      connects:edits.filter(e=>e.kind==='connect').map(e=>({socket:e.id,cardId:e.card??null})),
+      ptsBudget:boardPointsAtRank(data.boardPointLadder,ranks[owner]),
+      ptsSpent:boardReachability(data.boards[owner],board,account.dreamRank).spent}]:[];
+  });
+  return {...current,plan:{changes,resetCount:0,bought,refunded:{},saves,ranks,
     ignoredExisting:boardOpt.ignoreExisting,before:team,after:current,leaderChar:team.leaderChar,outfitId:team.outfitId}};
 }

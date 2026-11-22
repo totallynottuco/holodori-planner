@@ -12,6 +12,7 @@ import {overlayGameOptimizerCards} from './game-optimizer-cards';
 import {hasGpuBoardBonusTargets} from './gpu-board-bonus-targets';
 import {decodeChartGeometry} from './optimizer-chart-hit-events.js';
 import {boardPlanningBaseline,hasBoardProtection} from './board-protection';
+import {retainReferenceConnects} from './board-connect-retention';
 import {isTeamCardEligible,teamRarityFilter} from './team-card-pool';
 
 let source=null;
@@ -23,8 +24,12 @@ const gpuSearches=new WeakMap();
 const cpuBoardPlanners=new WeakMap();
 async function runCpuJob(data,operation,payload,onProgress){
   const {account,boardOpt,options}=payload;
-  const filtered=operation==='_hd_solve'&&options.goal==='next'&&(payload.extras.nextAcquisition||teamRarityFilter(options));
-  if(!filtered&&!hasBoardProtection(boardOpt))return runReferenceJob(data,operation,payload,onProgress);
+  const filtered=operation==='_hd_solve'&&options.goal==='next'&&
+    (payload.extras.nextAcquisition||teamRarityFilter(options)||options.boardConnectEntries);
+  if(!filtered&&!hasBoardProtection(boardOpt)){
+    const response=await runReferenceJob(data,operation,payload,onProgress);
+    return retainReferenceConnects(data,payload,response);
+  }
   const lineupJob=(query,progress)=>runReferenceJob(data,'_hd_solve',{
     ...query,boardOpt:null,limits:{...query.limits,jointBoards:false},
     account:{...query.account,boards:boardPlanningBaseline(query.account.boards,query.boardOpt)},
@@ -750,7 +755,7 @@ function teamsForUi(data,rows,payload) {
     ...(row.plan?{boardCards:Object.fromEntries([...new Set(Object.values(row.plan.saves??{}).flatMap(save=>Object.values(save.cards)))].flatMap(id=>{
       const card=cards.get(id),pull=nextPulls(row).find(entry=>entry.id===id);
       const entry=pull&&card?nextCardEntry(card,extras,pull,account.owned[id]):
-        account.owned[id]??payload.options.pinnedConnectEntries?.[id];
+        account.owned[id]??payload.options.boardConnectEntries?.[id];
       return entry?[[id,entry.bloom]]:[];
     }))}:{}),
   }));
@@ -1025,7 +1030,7 @@ async function prepareFixedLineup(saved,input) {
       ...(sp==null?{}:{sp})};
   });
   if(unresolvedBoardEntries(data,account.boards))throw Error('The current catalog is missing entries from the saved Board setup.');
-  if(Object.values(account.boards).some(board=>Object.values(board.cards).some(id=>!account.owned[id])))
+  if(Object.values(account.boards).some(board=>Object.values(board.cards).some(id=>!account.owned[id]&&!payload.options.boardConnectEntries?.[id])))
     throw Error('A card assigned to a Connect slot is missing from your current collection.');
   const selection={eventId:saved.eventId,eventChapter:saved.eventChapter,eventPoints:options.eventPoints,pcGameCharts:saved.pc,
     memoryEffect:measuredMemoryEffect(data,payload.options.memories,input.memoryBonusPermil)};

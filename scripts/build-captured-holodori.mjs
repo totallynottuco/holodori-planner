@@ -569,17 +569,27 @@ const result=await build({entryPoints:{main:path.join(stage,'entry.js'),'team-op
         if(identity[field]===card[field])delete card[field];
       }
     }
+    const animations=[];
     data.cards=data.cards.map(card=>{
       const row=columns.map(key=>card[key]);
-      if(columns.some(key=>!Object.hasOwn(card,key)))return card;
+      if(columns.some(key=>!Object.hasOwn(card,key))||!card.id.startsWith('card-'))return card;
+      row[0]=card.id.slice(5);
+      const animation=JSON.stringify(card.animation);
+      if(!animations.includes(animation))animations.push(animation);
+      row[columns.indexOf('animation')]=animations.indexOf(animation);
       for(const key of columns)delete card[key];
       if(Object.keys(card).length)row.push(card);
       return row;
     });
     return {loader:'js',contents:`const data=${JSON.stringify(data)},members=${JSON.stringify(members)};
       const columns=${JSON.stringify(columns)};
+      const animations=${JSON.stringify(animations)};
       data.cards=data.cards.map(row=>{
         const card=Array.isArray(row)?{...row[columns.length],...Object.fromEntries(columns.map((key,index)=>[key,row[index]]))}:row;
+        if(Array.isArray(row)){
+          card.id='card-'+card.id;
+          card.animation=JSON.parse(animations[card.animation]);
+        }
         card.assetId??=card.id.slice(5);
         for(const field of ${JSON.stringify(fields)})card[field]??=members[card.id.slice(5,10)][field];
         return card;

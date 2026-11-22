@@ -7,6 +7,7 @@ import {refineBoardExchanges} from './gpu-board-exchanges';
 import {hasGpuBoardBonusTargets,improveGpuBoardBonuses} from './gpu-board-bonus-targets';
 import {searchGpuNextUpgrades} from './gpu-next-upgrades';
 import * as cpuBoardKernels from './cpu-board-kernels';
+import {restoreUnusedConnects} from './board-connect-retention';
 import {boardPlanningBaseline,boardProtection,pinsBoardConnects,preservesBoard,preservesBoardProtection} from './board-protection';
 import {isTeamCardEligible} from './team-card-pool';
 
@@ -605,12 +606,13 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
     }
     const pinnedCards=new Set(Object.entries(originalBoards).flatMap(([owner,board])=>
       pinsBoardConnects(boardOpt,owner)?Object.values(board.cards):[]));
-    const rankedConnects=Object.keys(account.owned).filter(id=>account.owned[id].owned&&data.connects[id]&&
+    const connectRoster={...payload.options.boardConnectEntries,...account.owned};
+    const rankedConnects=Object.keys(connectRoster).filter(id=>connectRoster[id].owned&&data.connects[id]&&
       (!boardOpt.preserveConnects||!pinnedCards.has(id)))
       .sort((a,b)=>connectValue(b)-connectValue(a));
     const connectPatternsById=new Map(rankedConnects.map(id=>[id,JSON.stringify([data.connects[id].extent,connectPermil(id)])]));
     function connectorEntry(id){
-      return account.owned[id]??payload.options.pinnedConnectEntries?.[id];
+      return connectRoster[id];
     }
     function connectValue(id){
       const card=data.connects[id];
@@ -764,13 +766,13 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
       const placed=new Map();
       for(const [member,save] of Object.entries(layout))for(const [socket,id] of Object.entries(save.cards))
         placed.set(id,{member,socket,save});
-      const value=(socket,id,weights)=>id&&data.connects[id]&&account.owned[id]?.owned?
+      const value=(socket,id,weights)=>id&&data.connects[id]&&connectorEntry(id)?.owned?
         socketFootprint(socket,id).reduce((sum,key)=>sum+(weights.get(key)??0),0)*connectPermil(id)/1000:0;
       const proposals=[];
       for(const socket of sockets){
         if(pinnedSlot(owner,socket.id))continue;
         const incumbent=board.cards[socket.id];
-        if(incumbent&&(!data.connects[incumbent]||!account.owned[incumbent]?.owned))continue;
+        if(incumbent&&(!data.connects[incumbent]||!connectorEntry(incumbent)?.owned))continue;
         const before=value(socket,incumbent,target.weights);
         for(const cardId of rankedConnects){
           if(cardId===incumbent||!changedSockets.has(socket.id)&&
@@ -832,23 +834,27 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
           for(const id of Object.values(board.cards))reserved.add(id);
           continue;
         }
-        for(const socket of data.boards[owner]){
+        const potentialCells=new Set(data.boards[owner].filter(node=>field.active.has(node.id)&&
+          (priorityFor(node,owner)>0||!unit&&node.kind==='songBonus'&&matchingCharts(node,owner).length))
+          .map(node=>position(node.x,node.y)));
+        for(const socket of socketNodes.get(owner)){
           if(!socket.socket||!field.active.has(socket.id))continue;
           const incumbent=board.cards[socket.id];
-          if(incumbent&&(pinnedSlot(owner,socket.id)||!data.connects[incumbent]||!account.owned[incumbent]?.owned)){
+          if(incumbent&&(pinnedSlot(owner,socket.id)||!data.connects[incumbent]||!connectorEntry(incumbent)?.owned)){
             reserved.add(incumbent);
             continue;
           }
           const estimate=rankedConnects.map(id=>{
-            const weight=socketFootprint(socket,id).reduce((sum,key)=>sum+(field.weights.get(key)??0),0);
-            return Math.round(weight*connectPermil(id)/1000);
+            // Removing the incumbent can reopen a capped bonus, so the
+            // current layout's remaining headroom cannot rule out a card.
+            return socketFootprint(socket,id).some(key=>potentialCells.has(key));
           });
           if(incumbent||estimate.some(Boolean))
             slots.push({owner,socket:socket.id,board,incumbent,estimate,spent:field.spent});
         }
         for(const [id,card] of Object.entries(board.cards))if(!field.active.has(id))reserved.add(card);
       }
-      if(!slots.length||slots.length>160||slots.length+rankedConnects.length>768)return false;
+      if(!slots.length)return false;
       const scoreValue=row=>row.tieScore??row.value;
       const outfit=after.outfitId;
       // Exact marginal weight for each distinct footprint and Bloom tier.
@@ -910,7 +916,8 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
         best={boards,row};
         return true;
       }
-      if(changed.length&&!evaluate(changed.map(index=>[index,moved[index]]))){
+      const jointGain=changed.length&&evaluate(changed.map(index=>[index,moved[index]]));
+      if(changed.length&&(!jointGain||!boardOpt.litePlan)){
         // Additive socket weights can overestimate a complete assignment.
         // Split it into independent paths and cycles before exact scoring;
         // moving one card without the rest of its cycle would duplicate it.
@@ -929,8 +936,13 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
           components.push({indices,gain});
         }
         components.sort((a,b)=>b.gain-a.gain);
-        for(const {indices} of components.slice(0,24))
-          evaluate(indices.map(index=>[index,moved[index]]));
+        if(components.length>1){
+          const joint=best;
+          best={boards:saves,row:after};
+          for(const {indices} of components)
+            evaluate(indices.map(index=>[index,moved[index]]));
+          if(compare(joint.row,best.row)>0)best=joint;
+        }
       }
       if(orderAware){
         // Covered windows overlap, and the winning global match can hide a
@@ -1073,7 +1085,7 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
           return {plan:null};
         for(const [socket,id] of Object.entries(next.cards)){
           if(used.has(id)||!nodeMaps.get(owner).get(socket)?.socket||!reachable.active.has(socket)||
-            (!account.owned[id]?.owned&&previous.cards[socket]!==id))
+            (!connectorEntry(id)?.owned&&previous.cards[socket]!==id))
             return {plan:null};
           used.add(id);
         }
@@ -1139,7 +1151,7 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
           }
         }
         const canDetach=(node,save)=>!!node?.socket&&!pinnedSlot(owner,node.id)&&
-          (canDetachInactiveSocket(node,owner,save)||red&&node.pts&&(!save.cards[node.id]||account.owned[save.cards[node.id]]?.owned));
+          (canDetachInactiveSocket(node,owner,save)||red&&node.pts&&(!save.cards[node.id]||connectorEntry(save.cards[node.id])?.owned));
         const mustKeep=node=>node.branch&&!branches.has(node.branch)||protectedNode(node,keep)||
           boardOpt.maxResets===0&&originalNodes.get(owner).has(node.id);
         const variants=new Map();
@@ -1822,7 +1834,7 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
             const active=keepCoverage.size&&!frontier.active.has(socket.id)?
               new Set([...frontier.active,socket.id]):frontier.active;
             const newNodes=new Map(path.path.map(node=>[node.x+','+node.y,priorityFor(node,owner)]));
-            const boost=id=>id&&data.connects[id]&&account.owned[id]?socketFootprint(socket,id).reduce((sum,key)=>
+            const boost=id=>id&&data.connects[id]&&connectorEntry(id)?.owned?socketFootprint(socket,id).reduce((sum,key)=>
               sum+(newNodes.get(key)??affected.get(key)??0),0)*connectPermil(id)/1000:0;
             const current=boost(save.cards[socket.id]),priorities=new Map(),offers=new Map();
             sockets.push({offer(cardId){
@@ -2112,6 +2124,17 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
     const orderStart=performance.now();
     const rotations=order.map((_,index)=>[...order.slice(index),...order.slice(0,index)]);
     const finalPayload=payload.trio?{...payload,targetCharts:undefined}:payload;
+    if(!boardOpt.ignoreExisting){
+      let retained;
+      saves=restoreUnusedConnects(data,account,saves,(candidate,owner,previous)=>{
+        if(!preservesCoverage(owner,previous[owner],candidate[owner],connectField(owner,previous[owner],after).active))return false;
+        retained??=bestOutfit(scorer(finalPayload,previous,ranks).score);
+        const row=bestOutfit(scorer(finalPayload,candidate,ranks).score);
+        if(compare(row,retained)<0)return false;
+        retained=row;
+        return true;
+      });
+    }
     if(boardOpt.litePlan){
       for(let left=0;left<order.length;left++)for(let right=left+1;right<order.length;right++){
         const alternative=order.slice();
