@@ -87,7 +87,7 @@ export interface LiveSkillAttempt {
 }
 
 /** Consumes the existing validated team/timeline boundary. No input is mutated. */
-export function resolveLiveSkillModel(timeline: ChartTimelineReport, chart: OptimizerDecodedChart, data: ScoringData, staticModifiers: 'additive-assumption' | 'verified-only' = 'additive-assumption', includeJudgementEnhance = false, identity?: Parameters<typeof resolveLiveLife>[3]) {
+export function resolveLiveSkillSchedule(timeline: ChartTimelineReport, chart: OptimizerDecodedChart, data: ScoringData, staticModifiers: 'additive-assumption' | 'verified-only', includeJudgementEnhance = false, identity?: Parameters<typeof resolveLiveLife>[3]) {
   if (!['additive-assumption', 'verified-only'].includes(staticModifiers)) throw new Error('Unknown static modifier policy')
   if (chart.identity.chartKey !== timeline.chart.identity.chartKey || chart.platform !== timeline.chart.identity.platform
     || chart.identity.indexSha256 !== data.metadata.chartIndexSha256 || chart.identity.eventBlobSha256 !== data.metadata.chartBlobSha256
@@ -98,7 +98,6 @@ export function resolveLiveSkillModel(timeline: ChartTimelineReport, chart: Opti
   const life = resolveLiveLife(chart, team.skills, data, identity)
   const modifierReports = resolveStaticSkillModifiers(team, staticModifiers)
   const mode = timeline.activeMode === 'recorded' ? 'recorded' as const : 'expected' as const
-  const dependencies = new Set<string>()
   const scheduleReasons: string[] = []
   const noteCountBefore = (time: ExactFraction) => {
     let low = 0, high = notes.times.length
@@ -204,6 +203,13 @@ export function resolveLiveSkillModel(timeline: ChartTimelineReport, chart: Opti
         ...(includeJudgementEnhance ? { judgementEnhance: enhances(skill, start) } : {}) })
     }
   }
+  return { notes, team, life, modifierReports, mode, scheduleReasons, schedules, attempts, specialWindows, effectValue, within, specialAt, enhances }
+}
+
+export function resolveLiveSkillModel(timeline: ChartTimelineReport, chart: OptimizerDecodedChart, data: ScoringData, staticModifiers: 'additive-assumption' | 'verified-only' = 'additive-assumption', includeJudgementEnhance = false, identity?: Parameters<typeof resolveLiveLife>[3]) {
+  const { notes, team, life, modifierReports, mode, scheduleReasons, schedules, attempts, specialWindows, effectValue, within, specialAt, enhances } =
+    resolveLiveSkillSchedule(timeline, chart, data, staticModifiers, includeJudgementEnhance, identity)
+  const dependencies = new Set<string>()
   type Candidate = { attemptId: string; probability: Resolution<ExactFraction>; supportedScoreUpPermil: Resolution<ExactFraction> }
   const events: Array<{ timeMicroseconds: number; noteCount: number; candidates: Candidate[]; specialSupportPermil: Resolution<ExactFraction>; expectedScoreUpPermil: Resolution<ExactFraction> }> = []
   let low = zero, high = zero
@@ -257,6 +263,10 @@ export function resolveLiveSkillModel(timeline: ChartTimelineReport, chart: Opti
     conventions: { timerOriginMicroseconds: 0, firstCheck: 'after-floored-millisecond-interval', repeatedChecks: 'float32-addition-to-previous-deadline', window: '[start,end)',
       spProbabilityAtActiveCheck: '(start,end]', updateOrder: LIVE_SKILL_UPDATE_ORDER, comboConditions: 'at-check-before-notes', independentChecks: mode === 'expected', staticModifiers },
     schedules, attempts, events, activeNoteMass: exposure, life,
+    specialWindows: specialWindows.map(({ skill, start, end }) => ({
+      ownerId: skill.ownerId, start, end, support: effectValue(skill, SP_SUPPORT, start),
+      rate: effectValue(skill, PROBABILITY, start),
+    })),
     judgementEnhancements, judgementReasons: [...judgementReasons],
     deferredEffects: team.skills.filter(skill => skill.kind === 'active' || skill.kind === 'special').flatMap(skill => skill.branches.flatMap(branch =>
       data.activeEffects[branch.effectGroupId].filter(effect => effect.type === 'LIFE_RECOVERY' && life.minimum.status === 'unresolved' || effect.type === 'JUDGEMENT_ENHANCE' && !includeJudgementEnhance).map(effect => ({ ownerId: skill.ownerId, skillId: skill.skillId, effectType: effect.type, sourceValue: effect.value,

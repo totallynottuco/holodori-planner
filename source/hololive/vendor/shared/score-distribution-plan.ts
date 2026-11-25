@@ -41,6 +41,7 @@ export function compileExpectedScoreDistribution(trace: ReturnType<typeof resolv
         const input = {
         platform: chart.platform, overallPower: power, evaluationCoefficientPermil: LIVE_SCORE_CLIENT.evaluationCoefficientPermil,
         songCoefficientPermil, difficultyLevel: chart.difficultyLevel, notesPerfectCoefficientSumPermil: trace.denominator.completePerfectSumPermil,
+        chartScoreCoefficientPermyriad: trace.denominator.chartScoreCoefficientPermyriad,
         noteJudgementCoefficientPermil: chart.eventWeightsPermil[i], comboBonusRatio: Math.fround(Math.fround(officialComboMultiplierPermil(i + 1) - 1000) / 1000),
         skillScoreUpRatio: ratio, boardSongBonusPermil: board
         } as const

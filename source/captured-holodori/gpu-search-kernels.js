@@ -1,7 +1,8 @@
 import {evaluateReferenceTeam,withReferenceChart} from './reference-rating-math';
 import {boardFrontierPaths,boardPointsAtRank} from './unit-score-board-search';
 import {boardPlanningBaseline,boardProtection} from './board-protection';
-import {isTeamCardEligible} from './team-card-pool';
+import {eligibleTeamOutfits as eligibleGpuOutfits,isTeamCardEligible} from './team-card-pool';
+export {eligibleGpuOutfits};
 
 const workgroupSize=64;
 
@@ -465,14 +466,6 @@ function fitsOutfit(outfit,lineup){
   });
 }
 
-export function eligibleGpuOutfits(data,{account,options},leader=options.leaderChar){
-  return Object.entries(data.costumes).filter(([id,outfit])=>
-    (!leader||outfit.characterId===leader)&&
-    (!options.leaderInvitedOnly||options.leaderAllHolomems||Object.hasOwn(account.ranks,outfit.characterId))&&
-    (options.leaderMode==='fixed'?id===options.outfitId:
-      options.leaderMode==='holomem'?(options.focusCardIds??[]).includes(outfit.cardId):
-      outfit.isDefault||account.owned[outfit.cardId]?.owned||account.ownedCostumeIds?.includes(id)));
-}
 function projectedActiveBoards(data,payload,context,cards){
   const {account,boardOpt}=payload;
   if(!boardOpt?.branches?.includes('blue'))return null;
@@ -550,7 +543,11 @@ export async function shortlistGpuTeams(kernels,data,payload,context,score,{limi
     const active=activeSkillLevel(card.active,bloom),special=activeSkillLevel(card.special,bloom);
     const potential=active?.cooldown>0?
       Math.max(active.scoreUp,active.upScoreUp??0)*active.prob*active.duration/active.cooldown:0;
-    return Math.round(potential*5+(special?.scoreUp??0)*(special?.duration??0)*2+(special?.actRateUp??0)*25);
+    const passive=activeSkillLevel(card.passive,bloom);
+    const chance=[passive,...passive?.additionalEffects??[]].reduce((sum,effect)=>
+      sum+(effect?.stat==='activeChance'?effect.value*(effect.targetCount??5):0),0);
+    const support=Math.max(special?.scoreUp??0,special?.upScoreUp??0);
+    return Math.round(potential*5+support*(special?.duration??0)*2+((special?.actRateUp??0)+chance)*25);
   });
   const locked=(options.focusCardIds??[]).map(id=>byId.get(id));
   if(locked.length>5||locked.some(id=>id==null)||new Set(locked.map(id=>stats[id][0])).size!==locked.length)
@@ -563,6 +560,12 @@ export async function shortlistGpuTeams(kernels,data,payload,context,score,{limi
     const fixed=new Set(locked.map(index=>cards[index].characterId));
     const base=locked.map(index=>cards[index]);
     const powers=new Map(cards.map((card,index)=>[card.id,stats[index][1]+skillWeights[index]]));
+    if(options.challengeStage){
+      const featured=new Set(options.challengeStage.bonusCharacterIds);
+      const teamPower=stats.map(row=>row[1]).sort((a,b)=>b-a).slice(0,5).reduce((sum,n)=>sum+n,0);
+      for(const card of cards)if(featured.has(card.characterId))
+        powers.set(card.id,powers.get(card.id)+teamPower*options.challengeStage.bonusPermil/1000);
+    }
     const candidates=cards.filter(card=>!fixed.has(card.characterId));
     const fields={PERFORMANCE_UP_PERMIL_UP:'performance',TECHNIQUE_UP_PERMIL_UP:'technique',
       SENSE_UP_PERMIL_UP:'sense'};
@@ -720,6 +723,23 @@ export async function shortlistGpuTeams(kernels,data,payload,context,score,{limi
     for(const row of result.teams)skillOrders.set(row.order.slice().sort((a,b)=>a-b).join(','),
       {order:row.lastOrder??row.order,power:row.power});
     outfitOrders.set('skill',skillOrders);
+    // Retain strong proposals at each attainable bonus-member count. A
+    // weaker individual card can make an entire Challenge Live lineup win.
+    if(options.challengeStage){
+      const featured=new Set(options.challengeStage.bonusCharacterIds);
+      const bonusPool=pool.filter(i=>featured.has(cards[i].characterId));
+      const available=new Set(bonusPool.map(i=>cards[i].characterId)).size;
+      const open=5-locked.length;
+      for(let count=1;count<=Math.min(open,available);count++){
+        const slots=[...locked.map(i=>[i]),...Array.from({length:open},(_,i)=>
+          (i<count?bonusPool:pool).slice(0,width))];
+        const sweep=await kernels.searchTeams(weighted,slots,{deduplicate:true});
+        examined+=sweep.examined;
+        const candidates=new Map();
+        for(const {order,power} of sweep.teams)candidates.set(order.slice().sort((a,b)=>a-b).join(','),{order,power});
+        outfitOrders.set('challenge:'+count,candidates);
+      }
+    }
     if(boardScores.length||payload.boardOpt&&!payload.ratingScout){
       // Explore lineups without requiring each skill to look strong in
       // isolation. Attribute- and generation-gated skills need partners.

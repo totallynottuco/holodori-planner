@@ -7,6 +7,10 @@ export const STATIC_SKILL_MODIFIER_TYPES = [
 ] as const
 export type StaticSkillModifierType = typeof STATIC_SKILL_MODIFIER_TYPES[number]
 export type StaticModifierPolicy = 'verified-only' | 'additive-assumption'
+export function singleSourceModifier(values: readonly number[]): number | null {
+  const nonzero = values.filter(value => value !== 0)
+  return nonzero.length > 1 ? null : nonzero[0] ?? 0
+}
 const known = (value: number): Resolution<number> => ({ status: 'resolved', value })
 const missing = (reasons: string[]): Resolution<number> => ({ status: 'unresolved', value: null, reasons: [...new Set(reasons)] })
 
@@ -42,7 +46,7 @@ export function resolveStaticSkillModifier(team: TeamParameterReport, skill: Ski
   const total = sources.reduce((sum, row) => sum + BigInt(row.value.value!), 0n)
   if (total > BigInt(Number.MAX_SAFE_INTEGER)) throw new Error('Static skill modifier exceeds the safe integer range')
   const estimate = known(Number(total))
-  const multiple = sources.filter(row => row.value.value !== 0).length > 1
+  const multiple = singleSourceModifier(sources.map(row => row.value.value!)) === null
   if (multiple && policy === 'verified-only') return finish(estimate, missing([`static-modifier-composition:${skill.ownerId}:${type}`]), 'The source values are known, but their combined server value is unverified. The additive estimate is shown separately and is not used in strict scoring.')
   return finish(estimate, estimate, multiple ? 'Assumes these sources add. Server composition and rounding remain unverified.' : 'Only one nonzero source applies; no cross-source stacking assumption is needed.')
 }

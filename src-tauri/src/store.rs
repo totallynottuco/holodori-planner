@@ -80,7 +80,7 @@ pub struct Backup {
 const RESTORE_JOURNAL: &str = "pending-restore.json";
 const RESTORE_NEXT_ART: &str = "restore-next-artwork";
 const RESTORE_PREVIOUS_ART: &str = "restore-previous-artwork";
-const MAX_RESTORE_BYTES: usize = 256_000_000;
+pub(crate) const MAX_RESTORE_BYTES: usize = 256_000_000;
 
 fn check_restore_size(backup: &Backup) -> Result<()> {
     struct Counter(usize);

@@ -1,15 +1,15 @@
-import {createReferenceScoreContext,evaluateReferenceTeam,referenceTeamScoreBonus,referenceUnitScore,
+import {createReferenceScoreContext,evaluateReferenceTeam,referenceTeamScoreBonus,referenceMobileEffectWarnings,referenceUnitScore,
   referenceUnitSkillInputs} from './reference-rating-math';
+import {finalistOrders} from './finalist-orders.js';
+import {createFinalistContext} from './finalist-context.js';
 import {boardPlanningBaseline} from './board-protection';
-import {isTeamCardEligible} from './team-card-pool';
+import {eligibleTeamOutfits,isTeamCardEligible} from './team-card-pool';
 
 const powerComponents=['parameters','board','passive','memory','powerUp','leader'];
 const lineupKey=order=>order.map(card=>card.id).sort().join('|');
-const cachedUnitLineup=(...args)=>args.at(-1)();
 
 export function referenceUnitScoreInput(context,order,outfitId,leaderChar,prepareGpu=false) {
-  const team=evaluateReferenceTeam(context,order,outfitId,leaderChar,false,null,undefined,
-    context.options.scoringMode==='unit'?cachedUnitLineup:undefined);
+  const team=evaluateReferenceTeam(context,order,outfitId,leaderChar,false,null,undefined,context.options.scoringMode==='unit');
   const power=powerComponents.reduce((total,key)=>total+team.breakdown[key],0);
   if(prepareGpu){
     const {members,eOutfit}=referenceUnitSkillInputs(context,order,outfitId,leaderChar);
@@ -35,6 +35,29 @@ export function compareUnitScore(a,b) {
     a.outfitId.localeCompare(b.outfitId);
 }
 
+export function finalizeUnitScoreOrders(data,payload,rows) {
+  const cards=new Map(data.cards.map(card=>[card.id,card]));
+  const baseBoards=boardPlanningBaseline(payload.account.boards,payload.boardOpt);
+  const options={...payload.options,scoringMode:'unit',songId:null,eventBonus:false,eventPoints:false};
+  return rows.map(row=>{
+    const context=createFinalistContext(data,payload,row,cards,options);
+    let winner,winningOrder;
+    for(const order of finalistOrders(row.order.map(id=>cards.get(id)))){
+      const result=evaluateUnitScore(context,order,row.outfitId,row.leaderChar);
+      if(!winner||result.displayUnitScore>winner.displayUnitScore){winner=result;winningOrder=order;}
+    }
+    const warnings=referenceMobileEffectWarnings(context,winningOrder,row.outfitId,row.leaderChar);
+    const result={...row,...winner,effectWarnings:warnings,
+      ...('value' in row?{value:winner.displayUnitScore}:{})};
+    if(row.plan){
+      const before=createFinalistContext(data,payload,row,cards,options,baseBoards,payload.account.ranks);
+      result.plan={...row.plan,before:evaluateUnitScore(before,winningOrder,row.outfitId,row.leaderChar),
+        after:{...row.plan.after,...winner,...('value' in row.plan.after?{value:winner.displayUnitScore}:{})}};
+    }
+    return result;
+  }).sort(compareUnitScore);
+}
+
 export function searchUnitScore(data,payload,seeds,{progress=()=>{}}={}) {
   const {options,account,boardOpt}=payload;
   const context=unitScoreContext(data,payload,boardPlanningBaseline(account.boards,boardOpt));
@@ -45,13 +68,7 @@ export function searchUnitScore(data,payload,seeds,{progress=()=>{}}={}) {
   const lockedMembers=new Set(lockedCards.map(card=>card?.characterId));
   if(lockedCards.some(card=>!card)||lockedMembers.size!==locked.size||locked.size>5)return [];
 
-  const outfits=Object.entries(data.costumes).filter(([id,outfit])=>{
-    if(options.leaderChar&&options.leaderChar!==outfit.characterId)return false;
-    if(options.leaderInvitedOnly&&!options.leaderAllHolomems&&!Object.hasOwn(account.ranks,outfit.characterId))return false;
-    if(options.leaderMode==='fixed')return id===options.outfitId;
-    if(options.leaderMode==='holomem')return locked.has(outfit.cardId);
-    return outfit.isDefault||account.owned[outfit.cardId]?.owned||account.ownedCostumeIds?.includes(id);
-  });
+  const outfits=eligibleTeamOutfits(data,payload);
   const outfitMap=new Map(outfits);
   if(!outfits.length)return [];
   const eligible=(order,outfit)=>!options.leaderNoOverlap||!order.some(card=>card.characterId===outfit.characterId);

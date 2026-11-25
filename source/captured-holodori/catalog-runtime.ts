@@ -28,6 +28,7 @@ function frozenSnapshot<T>(value: T): T {
 const baseline = frozenSnapshot(progressionManifest);
 const baselineAccount = frozenSnapshot(accountManifest);
 let activeCandidateId: string | null = null;
+let activeAssetIds = new Set(baseline.cards.map(card => card.assetId));
 
 export type CatalogBootstrap = {
   candidate: CatalogCandidate | null;
@@ -49,6 +50,7 @@ type PreloadStatus = {
   revision: number;
   checkedAt: number;
   added: number;
+  cardArtIds?: string[];
   lastChanges: {
     fromRevision: number;
     toRevision: number;
@@ -171,6 +173,7 @@ export function activateBootstrap(
     }
     installCatalogData(overlay, urls);
     activeCandidateId = overlay.candidateId;
+    activeAssetIds = new Set(overlay.assetIds);
     return {
       overlay,
       warning:
@@ -207,8 +210,16 @@ export function createCatalogUpdater(options: Options) {
     disposed = false,
     pendingId: string | null = null;
   let optimizerBusy = false, preloadsBusy = false;
+  let stagedAssetIds: Set<string> | undefined;
   let checkedCardIds: string[] | undefined;
-  const snapshot = () => ({ ...state, busy: state.busy || optimizerBusy || preloadsBusy, warnings: [...state.warnings] });
+  const snapshot = () => {
+    const known = stagedAssetIds ?? activeAssetIds;
+    const waiting = state.preloads?.cardArtIds?.filter(id => !known.has(id)).length ?? 0;
+    const message = state.phase === "current" && waiting
+      ? `${waiting} preloaded ${waiting === 1 ? "card is" : "cards are"} waiting for published card data.`
+      : state.message;
+    return { ...state, message, busy: state.busy || optimizerBusy || preloadsBusy, warnings: [...state.warnings] };
+  };
   const publish = (patch: Partial<CatalogState>) => {
     state = { ...state, ...patch, enabled: options.getEnabled() };
     if (!disposed) options.onState(snapshot());
@@ -245,7 +256,11 @@ export function createCatalogUpdater(options: Options) {
         checkedAt,
         warnings: overlay.warnings,
       });
-      if (candidate.candidateId === activeCandidateId) {
+      // Native verification removes missing or corrupt artwork records. Even
+      // the current revision needs to go through preparation in that case.
+      const cached = (candidate.candidateId === activeCandidateId || candidate.candidateId === pendingId)
+        && overlay.newAssetIds.every(id => kinds.every(kind => validRecord(candidate.assets[`${kind}:${id}`], id, kind)));
+      if (cached && candidate.candidateId === activeCandidateId) {
         publish({
           phase: "current",
           busy: false,
@@ -253,7 +268,7 @@ export function createCatalogUpdater(options: Options) {
         });
         return snapshot();
       }
-      if (candidate.candidateId === pendingId) {
+      if (cached && candidate.candidateId === pendingId) {
         publish({
           phase: "ready",
           busy: false,
@@ -356,6 +371,7 @@ export function createCatalogUpdater(options: Options) {
       )
         throw Error("Catalog update was not committed.");
       pendingId = overlay.candidateId;
+      stagedAssetIds = new Set(overlay.assetIds);
       publish({
         phase: "ready",
         busy: false,
@@ -419,7 +435,7 @@ export function createCatalogUpdater(options: Options) {
         missingCards ? `${missingCards} ${missingCards === 1 ? "card is" : "cards are"} awaiting optimizer data. New outfits and event options appear as their rules become available.` : null,
         result.mobileError ? "Could not check for updates to verified Mobile scoring data." : null];
       publish({ optimizerNotice: notices.filter(Boolean).join(" ") || null });
-      if (result.updated) publish({message:state.phase==="ready"?
+      if (result.updated && (state.phase==="current" || state.phase==="ready")) publish({message:state.phase==="ready"?
         "Optimizer data updated. Reload to apply the card catalog.":"Optimizer data updated."});
       return snapshot();
     }).finally(() => {

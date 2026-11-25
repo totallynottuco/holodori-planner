@@ -25,7 +25,7 @@ function outfitPotential(outfit,order,stats){
       gain+=order.reduce((sum,card)=>sum+totalStats(stats.get(card.id)),0)*permil*.25;
       continue;
     }
-    if(targetCount)targets.sort((a,b)=>totalStats(b)-totalStats(a));
+    if(targetCount&&targetType!=='ATTRIBUTE')targets.sort((a,b)=>totalStats(b)-totalStats(a));
     for(const stat of targets.slice(0,targetCount||targets.length)){
       const amount=type==='PERFORMANCE_UP_PERMIL_UP'?stat.performance:
         type==='TECHNIQUE_UP_PERMIL_UP'?stat.technique:

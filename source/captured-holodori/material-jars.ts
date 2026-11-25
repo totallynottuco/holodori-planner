@@ -1,6 +1,6 @@
 import type {GameAccountSnapshot,ResourceKey} from '../hololive/vendor/shared/types';
 import {inventoryEventTime} from './inventory-events';
-import {conversionRecipes,exchangeOutput,fundMaterialExchanges} from './conversions';
+import {upgradeRecipes,exchangeOutput,fundMaterialExchanges} from './conversions';
 
 const attributes=['cute','pure','happy'] as const;
 const families=['Beads','Crystals'] as const;
@@ -139,14 +139,14 @@ const beadBundles=jars[0];
 const bundleAmounts=beadBundles.map(jar=>BigInt(jar.amount));
 
 export function remainingBeadBundles(jarStock:ReadonlyMap<string,bigint>,directJars:MaterialJarPlan) {
-  const stock=beadBundles.map(jar=>(jarStock.get(jar.id)??0n)-sum(conversionRecipes.map(({from})=>
+  const stock=beadBundles.map(jar=>(jarStock.get(jar.id)??0n)-sum(upgradeRecipes.map(({from})=>
     BigInt(directJars[from]?.uses.find(use=>use.id===jar.id)?.quantity??0))));
   return stock;
 }
 
 /** Allocate still-sealed bundles by whole exchanges, after direct bead goals. */
 export function planBundleExchanges(crystalNeeds:number[],surplusBeads:number[],stock:bigint[],available:number,outputLimits:number[]) {
-  const input=conversionRecipes[0].input;
+  const input=upgradeRecipes[0].input;
   const directLimits=surplusBeads.map((beads,index)=>Math.min(outputLimits[index],Math.floor(beads/input)));
   const maxBatches=crystalNeeds.map((need,index)=>Math.min(available,outputLimits[index],Math.ceil(need/exchangeOutput)));
   const demand=maxBatches.map((count,index)=>BigInt(Math.max(0,count*input-surplusBeads[index])));
@@ -166,7 +166,7 @@ export function planBundleExchanges(crystalNeeds:number[],surplusBeads:number[],
   const used=allocateFamily(demand,stock,bundleAmounts,undefined,(_,candidate)=>score(candidate,fundedBy(candidate)),sum(stock)<=12n?12n:4n);
   const funded=fundedBy(used);
   const additions:MaterialJarPlan={};
-  for(const [color,recipe] of conversionRecipes.entries()){
+  for(const [color,recipe] of upgradeRecipes.entries()){
     const need=BigInt(Math.max(0,funded[color]*input-surplusBeads[color]));
     if(!need)continue;
     const trimmed=allocateFamily([need,0n,0n],used.map(counts=>counts[color]),bundleAmounts);
@@ -179,12 +179,12 @@ export function planBundleExchanges(crystalNeeds:number[],surplusBeads:number[],
 export function planCrystalSupply(needs:number[],surplusBeads:number[],stock:ReadonlyMap<string,bigint>,
   unusedBundles:bigint[],available:number,outputLimits:number[]) {
   const bundleYield=sum(unusedBundles.map((count,index)=>count*bundleAmounts[index]));
-  const input=BigInt(conversionRecipes[0].input);
+  const input=BigInt(upgradeRecipes[0].input);
   const batchLimits=(budget:bigint)=>surplusBeads.map((beads,index)=>Number(min(
     BigInt(Math.min(outputLimits[index],available)),(BigInt(beads)+budget)/input)));
   const loose=batchLimits(0n);
   const possible=batchLimits(bundleYield);
-  const byCrystal=<T>(values:T[])=>Object.fromEntries(conversionRecipes.map(({to},index)=>[to,values[index]]));
+  const byCrystal=<T>(values:T[])=>Object.fromEntries(upgradeRecipes.map(({to},index)=>[to,values[index]]));
   const needsByCrystal=byCrystal(needs);
   const crystalCount=sum(jars[1].map(jar=>stock.get(jar.id)??0n));
   const smallStock=crystalCount+sum(unusedBundles)<=8n;
@@ -204,7 +204,7 @@ export function planCrystalSupply(needs:number[],surplusBeads:number[],stock:Rea
   function evaluatePlan(limits:number[],evaluate?:AllocationEvaluator) {
     const crystals=planMaterialJars(needsByCrystal,stock,{available,limits:byCrystal(limits),evaluate,
       splitLimit:smallStock||!bundleYield?12n:4n});
-    const remaining=conversionRecipes.map(({to},index)=>needs[index]-(crystals[to]?.covered??0));
+    const remaining=upgradeRecipes.map(({to},index)=>needs[index]-(crystals[to]?.covered??0));
     const result=resolve(remaining);
     const entries=Object.values(crystals);
     return {...result,crystals,score:score(remaining,result,sum(entries.map(entry=>BigInt(entry.extra))),

@@ -4,6 +4,7 @@ import {createDesktopSettings,showStartupError} from './desktop-settings.js';
 import {createAppUpdates} from './app-updates.js';
 import {hydrateValues,hydrateWorkspace,nativePatch,readCaptured,profileExport,parseProfileExport,profileToCaptured,projectProfile,capturedFields,canonicalProfile,freshProfile} from './profile-codec';
 import {previewAccountImport,applyAccountImport,mergeCapturedAccountImport} from './account-import';
+import {savedAccountSnapshots} from './saved-account-snapshot';
 import {runNativeSmoke} from './native-smoke';
 import {defaultBoosts,setPassport as changePassport} from '../hololive/boosts';
 import {activateBootstrap,createCatalogUpdater} from './catalog-runtime';
@@ -139,17 +140,23 @@ import {getCard} from './game';
     }while(operations.size||failedOperations.size||pending.size);
   }
   async function action(id,fn){
-    if(ui.busy||closing||appUpdates?.busy()||(ui.gameImport&&id!=='game-import')||(ui.deleteStage&&!id.startsWith('delete-')))return;ui.busy=id;message('');
+    if(ui.busy||closing||appUpdates?.busy()||(ui.gameImport&&id!=='game-import'&&id!=='game-source')||(ui.deleteStage&&!id.startsWith('delete-')))return;ui.busy=id;message('');
     let finish;const completion=new Promise(resolve=>{finish=resolve;});actionCompletion=completion;
     try{
-      try{if(!ui.deletePending)await flush();}catch(e){fail(e);if(id==='game-import')ui.gameImportError=gameCandidate?.applied?'The imported changes are waiting to save. Try Retry save again.':'Save your existing changes before importing the game account.';if(id==='game-read')ui.gameReadError='Save your pending changes before reading the game account.';if(id.startsWith('delete-'))ui.deleteError='Save your pending changes before deleting data.';return;}
+      try{if(!ui.deletePending)await flush();}catch(e){fail(e);if(id==='game-import'||id==='game-source')ui.gameImportError=gameCandidate?.applied?'The imported changes are waiting to save. Try Retry save again.':'Save your existing changes before importing the game account.';if(id==='game-read'||id==='game-file')ui.gameReadError='Save your pending changes before reading the game account.';if(id.startsWith('delete-'))ui.deleteError='Save your pending changes before deleting data.';return;}
       try{await fn();}catch(e){
         const label={backup:'create the backup',export:'export the backup',chooseRestore:'open the backup',restore:'restore the backup',folder:'open the data folder','profile-export':'export the profile','profile-delete':'delete the profile'}[id]||'complete this action';
         if(id.startsWith('delete-')){ui.deleteError=String(e.message||e);}
         else if(id==='restore'){ui.restorePending=String(e).includes('Desktop restore is pending');ui.restoreError=ui.restorePending?'Restore was interrupted. Try Finish restore, or close and reopen the app to complete recovery.':'Could not restore this backup. Try again or choose another file.';ui.restoreDetails=String(e);}
         else if(id==='profile-import')ui.profileImportError=String(e.message||e);
         else if(id==='game-import')ui.gameImportError=gameCandidate?.applied?'The imported changes are waiting to save. Try Retry save again.':String(e.message||e);
-        else if(id==='game-read'){ui.gameReadError=String(e.message||e);message('Could not read the game account. Reach the Steam lobby and try again.',true,ui.gameReadError);}
+        else if(id==='game-source')ui.gameImportError=String(e.message||e);
+        else if(id==='game-read'||id==='game-file'){
+          const reason=String(e.message||e);
+          ui.gameReadError=reason;
+          if(reason.length<=240&&!/[\r\n]/.test(reason))message(reason,true);
+          else message(id==='game-file'?'Could not read the saved account snapshot.':'Could not read the game account.',true,reason);
+        }
         else if(id==='profile-delete')ui.profileActionError='Could not delete the profile. Try again.';
         else if(id!=='profile-export')message(`Could not ${label}. Try again.`,true,String(e));
       }
@@ -254,52 +261,83 @@ import {getCard} from './game';
     ui.gameImport.boardReview=presentGameBoardReview(gameCandidate);
     ui.gameImportError='';
   }
-  async function readGameAccount(){
+  function readGameAccount(){return readAccount(false);}
+  function readSavedGameAccount(){return readAccount(true);}
+  async function readAccount(fromFile){
     if(ui.profileImport||ui.restore||ui.gameImport)return null;
     const id=window.__seelieApp?.account||storage.getItem('account')||'main';
-    await action('game-read',async()=>{
-      const token=++gameReadToken,signature=gameSignature(id),expectedRevision=revision;
+    await action(fromFile?'game-file':'game-read',async()=>{
+      const candidate={id,token:++gameReadToken,signature:gameSignature(id),revision,applied:false};
       ui.gameReadError='';ui.gameImportError='';
-      const [raw,eventWindows]=await Promise.all([invoke('desktop_capture_game_account'),loadInventoryEvents(invoke)]);
-      if(closing||token!==gameReadToken)return;
-      const candidate={id,signature,revision:expectedRevision,applied:false};
-      if(!gameCandidateIsCurrent(candidate))throw Error('This profile changed while the game was being read. Read the account again before importing.');
-      const previous=projectProfile(Object.fromEntries(values),id);
-      const preview=previewAccountImport(raw,previous,eventWindows,Date.now());
-      if(preview.accountStatus.linkedIdentity&&!preview.accountStatus.identity)throw Error('The game account identity could not be verified for this linked profile. Wait for the main lobby and read the account again.');
-      const catalog=(previous.achievementProgressKnown||Object.keys(previous.achievementProgress??{}).length)&&preview.snapshot.tables.missions
-        ? await loadAchievementCatalog().catch(()=>null) : null;
-      if(closing||token!==gameReadToken)return;
-      if(!gameCandidateIsCurrent(candidate))throw Error('This profile changed while the game was being read. Read the account again before importing.');
-      const changes=compareCurrentAccount(previous,preview.snapshot,catalog?.categories);
-      const protection=loadOptimizerPreferences(storage,id).boardProtection;
-      if(Object.keys(protection).length){
-        const starting=currentBoards(previous),saved=previous.savedBoards??{};
-        candidate.boards={previous:starting,observed:optimizerBoards(preview.snapshot.tables.boards),
-          saved,protection,choices:{},bases:savedPlanBases(previous,saved,starting)};
+      if(!fromFile){
+        const [raw,eventWindows]=await Promise.all([invoke('desktop_capture_game_account'),loadInventoryEvents(invoke)]);
+        await previewGameAccount(candidate,raw,eventWindows);
+        return;
       }
-      const boardReview=candidate.boards?presentGameBoardReview(candidate):null;
-      candidate.snapshot=preview.snapshot;candidate.eventWindows=eventWindows;gameCandidate=candidate;
-      const settings=JSON.parse(storage.getItem('settings')||'{}');
-      const profileName=settings.account_names?.[id]||(id==='main'?'Main':id);
-      const available=[];
-      const points=preview.snapshot.balances.gachaPoints;
-      if(points)available.push({key:'gachaPoints',label:'Gacha Point balances',count:Object.keys(points).length});
-      for(const [key,label] of [['songs','Song records'],['costumes','Live outfits']]){
-        const rows=preview.snapshot.tables[key];if(rows)available.push({key,label,count:rows.length});
+      const file=await invoke('desktop_pick_account_snapshot');
+      if(!file||closing||candidate.token!==gameReadToken)return;
+      const sources=savedAccountSnapshots(file.text);
+      candidate.fileName=file.fileName;
+      if(sources.length===1){
+        await previewGameAccount(candidate,sources[0].snapshot,await loadInventoryEvents(invoke),sources[0].profileName);
+        return;
       }
-      for(const [key,label]of Object.entries({boards:'Holomem boards',boardPoints:'Board point records',missions:'Mission progress',counts:'Account counters',achievementCategories:'Achievement categories',achievementGroups:'Achievement groups',missionGroups:'Mission groups',missionDefinitions:'Mission definitions',missionProgressDefinitions:'Mission progress definitions',boardDefinitions:'Board definitions'})){
-        const rows=preview.snapshot.tables[key];if(rows!==undefined)available.push({key,label,count:Array.isArray(rows)?rows.length:rows&&typeof rows==='object'?Object.keys(rows).length:0});
-      }
-      ui.gameImport={profileName,capturedAt:preview.snapshot.capturedAt,accountStatus:preview.accountStatus,counts:preview.counts,cardChanges:preview.cardChanges,inventoryChanges:preview.inventoryChanges,members:preview.members,warnings:preview.warnings,available,changes,boardReview};
+      if(!gameCandidateIsCurrent(candidate))throw Error('This profile changed while the file was being opened. Choose the file again.');
+      const choices=sources.map(({profileName,snapshot})=>({profileName,identity:snapshot.accountStatus?.identity,capturedAt:snapshot.capturedAt,build:snapshot.process.steamBuildId}));
+      candidate.sources=sources;gameCandidate=candidate;
+      ui.gameImport={choices,fileName:file.fileName};
     });
     return ui.gameImport;
   }
-  async function confirmGameImport(){
-    if(!gameCandidate||!ui.gameImport)return;
+  async function chooseSavedAccount(index){
+    const candidate=gameCandidate,source=candidate?.sources?.[index];
+    if(!source||!ui.gameImport?.choices||!Number.isInteger(index))return;
+    await action('game-source',async()=>{
+      ui.gameImportError='';
+      await previewGameAccount(candidate,source.snapshot,await loadInventoryEvents(invoke),source.profileName);
+    });
+  }
+  async function previewGameAccount(candidate,raw,eventWindows,sourceProfileName){
+    const {id,token,fileName}=candidate;
+    if(closing||token!==gameReadToken)return;
+    if(!gameCandidateIsCurrent(candidate))throw Error('This profile changed while the account was being read. Open the import again.');
+    const previous=projectProfile(Object.fromEntries(values),id);
+    const preview=previewAccountImport(raw,previous,eventWindows,Date.now());
+    if(preview.accountStatus.linkedIdentity&&!preview.accountStatus.identity)throw Error(fileName?'The account identity in this snapshot could not be verified for this linked profile.':'The game account identity could not be verified for this linked profile. Wait for the main lobby and read the account again.');
+    const catalog=(previous.achievementProgressKnown||Object.keys(previous.achievementProgress??{}).length)&&preview.snapshot.tables.missions
+      ? await loadAchievementCatalog().catch(()=>null) : null;
+    if(closing||token!==gameReadToken)return;
+    if(!gameCandidateIsCurrent(candidate))throw Error('This profile changed while the account was being read. Open the import again.');
+    const changes=compareCurrentAccount(previous,preview.snapshot,catalog?.categories);
+    const protection=loadOptimizerPreferences(storage,id).boardProtection;
+    if(Object.keys(protection).length){
+      const starting=currentBoards(previous),saved=previous.savedBoards??{};
+      candidate.boards={previous:starting,observed:optimizerBoards(preview.snapshot.tables.boards),
+        saved,protection,choices:{},bases:savedPlanBases(previous,saved,starting)};
+    }
+    const boardReview=candidate.boards?presentGameBoardReview(candidate):null;
+    candidate.snapshot=preview.snapshot;candidate.eventWindows=eventWindows;delete candidate.sources;gameCandidate=candidate;
+    const previousAt=previous.gameAccountImport?.snapshot.capturedAt;
+    candidate.newerCaptureAt=fileName&&Date.parse(previousAt)>Date.parse(preview.snapshot.capturedAt)?previousAt:null;
+    const settings=JSON.parse(storage.getItem('settings')||'{}');
+    const profileName=settings.account_names?.[id]||(id==='main'?'Main':id);
+    const available=[];
+    const points=preview.snapshot.balances.gachaPoints;
+    if(points)available.push({key:'gachaPoints',label:'Gacha Point balances',count:Object.keys(points).length});
+    for(const [key,label] of [['songs','Song records'],['costumes','Live outfits']]){
+      const rows=preview.snapshot.tables[key];if(rows)available.push({key,label,count:rows.length});
+    }
+    for(const [key,label]of Object.entries({boards:'Holomem boards',boardPresets:'Saved Board presets',challengeLive:'Challenge Live records',fishing:'Fishing progress',fishingBaits:'Fishing bait stock',fishingFish:'Fish-book records',pukaStages:'Puka Puka Fight stages',pukaMembers:'Puka Holomem records',pukaPieces:'Puka piece assignments',pukaPieceStats:'Puka piece records',pukaSummary:'Puka summary',boardPoints:'Board point records',missions:'Mission progress',counts:'Account counters',achievementCategories:'Achievement categories',achievementGroups:'Achievement groups',missionGroups:'Mission groups',missionDefinitions:'Mission definitions',missionProgressDefinitions:'Mission progress definitions',boardDefinitions:'Board definitions'})){
+      const rows=preview.snapshot.tables[key];if(rows!==undefined)available.push({key,label,count:Array.isArray(rows)?rows.length:rows&&typeof rows==='object'?Object.keys(rows).length:0});
+    }
+    ui.gameImport={profileName,fileName,sourceProfileName,steamBuildId:preview.snapshot.process.steamBuildId,newerCaptureAt:candidate.newerCaptureAt,capturedAt:preview.snapshot.capturedAt,accountStatus:preview.accountStatus,counts:preview.counts,cardChanges:preview.cardChanges,inventoryChanges:preview.inventoryChanges,members:preview.members,warnings:preview.warnings,available,changes,boardReview};
+  }
+  async function confirmGameImport(allowOlder=false){
+    if(!gameCandidate?.snapshot||!ui.gameImport||ui.gameImport.choices)return;
     await action('game-import',async()=>{
       const candidate=gameCandidate;
       if(!candidate.applied){
+        if(candidate.newerCaptureAt&&allowOlder!==true)throw Error('Review the capture dates and choose Import older progress to apply this snapshot.');
         if(!gameCandidateIsCurrent(candidate))throw Error('This profile changed after the preview. Cancel and read the game account again.');
         const boardReview=candidate.boards?gameBoardReview(candidate):null;
         if(boardReview?.error||boardReview?.conflicts.some(({owner})=>!candidate.boards.choices[owner]))
@@ -397,7 +435,7 @@ import {getCard} from './game';
     appUpdates=createAppUpdates({h,reactive,vnode,Dialog,invoke,flush,enabled:appUpdatesEnabled,
       blocked:()=>!!(closing||storageBlocked||ui.busy||ui.gameImport||ui.restore||ui.profileImport||ui.deleteStage||mediaBusy())});
     desktop.appUpdateDialog=appUpdates.dialog;
-    desktopSettings=createDesktopSettings({h,reactive,vnode,resolve,Dialog,Switch,state:ui,invoke,action,message,appUpdates,restore:{cancel:cancelRestore,confirm:confirmRestore},profiles:{confirm:confirmProfileImport,cancel:cancelProfileImport},gameAccount:{read:readGameAccount,confirm:confirmGameImport,cancel:cancelGameImport,chooseBoard:chooseGameBoard},deleteData:{open:openDeleteData,next:advanceDeleteData,cancel:cancelDeleteData,confirm:confirmDeleteData},catalog:{check:()=>catalogUpdater.checkUpdates(),setEnabled:enabled=>catalogUpdater.setEnabled(enabled).catch(fail),reload:reloadCatalog},options:{getProfileSummary:()=>desktop.getProfileSummary(),setPreferences,setPassport}});ui=desktopSettings.state;desktop.settingsComponent=desktopSettings.component;
+    desktopSettings=createDesktopSettings({h,reactive,vnode,resolve,Dialog,Switch,state:ui,invoke,action,message,appUpdates,restore:{cancel:cancelRestore,confirm:confirmRestore},profiles:{confirm:confirmProfileImport,cancel:cancelProfileImport},gameAccount:{read:readGameAccount,readFile:readSavedGameAccount,chooseSource:chooseSavedAccount,confirm:confirmGameImport,cancel:cancelGameImport,chooseBoard:chooseGameBoard},deleteData:{open:openDeleteData,next:advanceDeleteData,cancel:cancelDeleteData,confirm:confirmDeleteData},catalog:{check:()=>catalogUpdater.checkUpdates(),setEnabled:enabled=>catalogUpdater.setEnabled(enabled).catch(fail),reload:reloadCatalog},options:{getProfileSummary:()=>desktop.getProfileSummary(),setPreferences,setPassport}});ui=desktopSettings.state;desktop.settingsComponent=desktopSettings.component;
   }
   function setPreferences(patch){
     if(ui.busy||ui.gameImport||ui.restore||ui.profileImport||ui.deleteStage)return;
@@ -595,7 +633,7 @@ import {getCard} from './game';
   }
   function getProfileSummary(id=storage.getItem('account')||'main'){const {artwork,...summary}=profileRead(id).summary;return JSON.parse(JSON.stringify(summary));}
   function getArtworkSettings(cardId,id=storage.getItem('account')||'main'){const summary=profileRead(id).summary;return {animation:summary.artwork[cardId]?.animation||'inherit',signature:summary.artwork[cardId]?.signature||'inherit',cardAnimationsDefault:summary.preferences.cardAnimationsDefault};}
-  const desktop=window.__seelieDesktop=window.__holodoriDesktop={flush,flushEdits,prepareProfileSwitch,validateRestore,requestClose,trackOperation,nativeArt,install,onMounted,finishStartup,readGameAccount,confirmGameImport,cancelGameImport,openDeleteData,advanceDeleteData,cancelDeleteData,confirmDeleteData,checkCatalog:()=>catalogUpdater.checkUpdates(),reloadCatalog,trackDebounce:fn=>debounces.add(new WeakRef(fn)),get revision(){return revision;},get settingsState(){return ui;},showData,exportProfile,uploadProfile,deleteProfile,getProfile,getProfileSummary,getArtworkSettings,setCardArtworkPreferences,setAccountProgress,saveTeamGoals,saveBoardPlans,saveCurrentBoard,setCardOwnership,setGachaPoints,setAchievementProgress,getSavedLineups,saveLineups};
+  const desktop=window.__seelieDesktop=window.__holodoriDesktop={flush,flushEdits,prepareProfileSwitch,validateRestore,requestClose,trackOperation,nativeArt,install,onMounted,finishStartup,readGameAccount,readSavedGameAccount,chooseSavedAccount,confirmGameImport,cancelGameImport,openDeleteData,advanceDeleteData,cancelDeleteData,confirmDeleteData,checkCatalog:()=>catalogUpdater.checkUpdates(),reloadCatalog,trackDebounce:fn=>debounces.add(new WeakRef(fn)),get revision(){return revision;},get settingsState(){return ui;},showData,exportProfile,uploadProfile,deleteProfile,getProfile,getProfileSummary,getArtworkSettings,setCardArtworkPreferences,setAccountProgress,saveTeamGoals,saveBoardPlans,saveCurrentBoard,setCardOwnership,setGachaPoints,setAchievementProgress,getSavedLineups,saveLineups};
   desktop.optimizerCatalogSource=source=>optimizerCatalogSource(invoke,source,source?.gameCatalog??optimizerGameCatalog);
   desktop.optimizerWorkspaceSource=()=>optimizerCatalogSource(invoke,undefined,optimizerGameCatalog);
   const eventBanners=new Map();

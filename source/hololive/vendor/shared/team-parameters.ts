@@ -29,6 +29,8 @@ export interface ParameterContribution {
   unit: 'flat' | 'permil' | 'source-value'
   stats: CardStat[]
   recipientCardIds: string[]
+  /** Server-selected passive recipients when more lineup members match than the master limit. */
+  possiblePassiveRecipientIds?: string[]
   status: 'active' | 'inactive' | 'unresolved'
   reason: string | null
   connectBonusPermil: number
@@ -129,7 +131,7 @@ export function cardSkillLevels(cardId: string, bloomStage: number, data: Scorin
 /** Pure static calculation. Callers supply a prepared profile and verified scoring data. */
 export interface ObservedFormationBonuses {memoryPermil?:number;upgradePermyriad?:number}
 
-export function resolveTeamParameters(profile: AppProfileV2, input: TeamSelection, data: ScoringData, observed?: ObservedFormationBonuses): TeamParameterReport {
+export function resolveTeamParameters(profile: AppProfileV2, input: TeamSelection, data: ScoringData, observed?: ObservedFormationBonuses, platform?: 'mobile' | 'pc'): TeamParameterReport {
   const selection = teamSelectionSchema.parse(input)
   if (new Set(selection.memberCardIds).size !== 5) throw new Error('The lineup must contain five different cards')
   const selected = selection.memberCardIds.map(cardId => {
@@ -188,13 +190,19 @@ export function resolveTeamParameters(profile: AppProfileV2, input: TeamSelectio
     }
     for (const branch of branches) for (const effect of data.passiveEffects[branch.effectGroupId]) {
       const target = data.targets[effect.targetId]
-      const eligible = selected.filter(card => target.type === 'ALL' || target.type === 'SELF' && card.characterId === ownerCharacterId || target.type === 'ATTRIBUTE' && accountManifest.cardParameterProfiles[card.id].attribute === target.attribute || target.type === 'CHARACTER_GROUPING' && inGroup(target.groupId!, card.characterId)).map(card => card.id)
+      const matching = selected.filter(card => target.type === 'ALL' || target.type === 'SELF' && card.characterId === ownerCharacterId || target.type === 'ATTRIBUTE' && accountManifest.cardParameterProfiles[card.id].attribute === target.attribute || target.type === 'CHARACTER_GROUPING' && inGroup(target.groupId!, card.characterId)).map(card => card.id)
+      // Android 1.3.0 verifies both predicates for leader skills. For card attribute passives, the
+      // optimizer also uses formation order and reports the unverified server-side selection.
+      const ordered = target.type === 'ATTRIBUTE' || (platform === 'mobile' && kind === 'leader' && target.type === 'CHARACTER_GROUPING')
+      const eligible = ordered && target.targetCount !== null ? matching.slice(0, target.targetCount) : matching
       const ambiguous = branch.status !== 'inactive' && target.targetCount !== null && eligible.length > target.targetCount
       const id = `${skill.id}:${levelNumber}:${branch.kind}:${effect.number}`
       const parameter = parameterEffect(effect.type)
       const status = branch.status === 'inactive' || eligible.length === 0 ? 'inactive' : ambiguous || branch.status === 'deferred' || branch.status === 'unresolved' ? 'unresolved' : 'active'
       const reason = branch.status === 'inactive' ? branch.reason : eligible.length === 0 ? 'No eligible lineup member' : ambiguous ? `Recipient selection is unverified: ${target.targetCount} of ${eligible.length} eligible members` : branch.reason
-      contributions.push({ id, system: kind, sourceId: skill.id, ownerCharacterId, description: effect.description, type: effect.type, value: effect.value, ...parameter, recipientCardIds: eligible, status, reason, connectBonusPermil: 0, originalValue: effect.value })
+      contributions.push({ id, system: kind, sourceId: skill.id, ownerCharacterId, description: effect.description, type: effect.type, value: effect.value, ...parameter, recipientCardIds: eligible,
+        ...(kind === 'passive' && branch.status !== 'inactive' && target.targetCount !== null && matching.length > target.targetCount ? { possiblePassiveRecipientIds: matching } : {}),
+        status, reason, connectBonusPermil: 0, originalValue: effect.value })
       if (status === 'unresolved') issues.push({ id, sourceId: skill.id, reason: reason!, affects: eligible.flatMap(cardId => parameter.stats.length ? parameter.stats.map(stat => `${cardId}.${stat}`) : [`${cardId}.skillModifiers`]) })
     }
   }

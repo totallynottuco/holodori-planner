@@ -40,6 +40,7 @@ export function resolveExpectedScoreTrace(timeline: ChartTimelineReport, chart: 
       ? calculateExpectedPerfectGroup({ platform: chart.platform, overallPower: power.value,
         evaluationCoefficientPermil: LIVE_SCORE_CLIENT.evaluationCoefficientPermil, songCoefficientPermil: timeline.team.song.scoreCoefficientPermil,
         difficultyLevel: chart.difficultyLevel, notesPerfectCoefficientSumPermil: evidence.denominator.completePerfectSumPermil,
+        chartScoreCoefficientPermyriad: evidence.denominator.chartScoreCoefficientPermyriad,
         boardSongBonusPermil: boardSongBonus.value
       }, Array.from({ length: event.noteCount }, (_, index) => ({ timeMicroseconds: event.timeMicroseconds,
         noteType: chart.eventNoteTypes[offset + index], perfectCoefficientPermil: chart.eventWeightsPermil[offset + index] })), offset, attempts) : null

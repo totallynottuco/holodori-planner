@@ -1,3 +1,4 @@
+import {sodaPopCoin} from './conversions';
 import {formatNumber} from './regional-formats.js';
 import {materialPlan} from './material-plan';
 import {bloomRequirements,game} from './game';
@@ -16,11 +17,11 @@ export function configureMaterialPlanner(original) {
       },
       hasPlannedRequirements(){return this.bloomPlans.length>0||this.totalCosts.some(cost=>cost.need>0);},
       jarActions(){
-        const {jars,exchanges,pendingExchanges,exchangeCoinShortfall}=game.materialSupplyFor(this);
-        const byTarget=new Map(exchanges.map(exchange=>[exchange.to,exchange]));
-        const pending=new Map(pendingExchanges.map(exchange=>[exchange.to,exchange]));
-        return {exchangeCoinShortfall,items:[...new Set([...Object.keys(jars),...byTarget.keys(),...pending.keys()])].map(item=>({
-          item,uses:[],extra:0,...jars[item],exchange:byTarget.get(item),pending:pending.get(item),remaining:this.getMissing(item,item,0),
+        const {jars,exchanges,pendingExchanges,exchangeCoinShortfall,sodaCoinShortfall}=game.materialSupplyFor(this);
+        const targets=new Set([...Object.keys(jars),...exchanges.map(e=>e.to),...pendingExchanges.map(e=>e.to)]);
+        return {exchangeCoinShortfall,sodaCoinShortfall,items:[...targets].map(item=>({
+          item,uses:[],extra:0,...jars[item],exchanges:exchanges.filter(e=>e.to===item),
+          pending:pendingExchanges.filter(e=>e.to===item),remaining:this.getMissing(item,item,0),
         }))};
       },
     },
@@ -66,17 +67,19 @@ export function createMaterialJarSummary({h}) {
     props:{actions:Object},
     render(){
       if(!this.actions?.items.length)return null;
-      const {items,exchangeCoinShortfall}=this.actions;
-      const title=exchangeCoinShortfall||items.some(action=>action.exchange)?'Material jars and exchanges':'Open material jars';
+      const {items,exchangeCoinShortfall,sodaCoinShortfall}=this.actions;
+      const quoteLine=e=>[...e.inputs.flatMap(({key,quantity})=>[icon(key,quantity),' + ']),icon(e.feeKey,e.fee),' → ',icon(e.to,e.output)];
+      const title=exchangeCoinShortfall||sodaCoinShortfall||items.some(action=>action.exchanges.length)?'Material jars and exchanges':'Open material jars';
       return h('section',{class:'mt-3 rounded-md bg-gray-700/70 p-3','aria-label':title},[
         h('div',{class:'flex flex-wrap items-center justify-between gap-x-3 gap-y-1'},[
           h('h2',{class:'text-sm font-semibold'},title),
           exchangeCoinShortfall?h('p',{class:'inline-flex items-center gap-1 text-xs text-amber-300'},[
             icon('megaSphereCoin',exchangeCoinShortfall),' more Mega Sphere Coins needed',
           ]):null,
+          sodaCoinShortfall?h('p',{class:'inline-flex items-center gap-1 text-xs text-amber-300'},[icon(sodaPopCoin,sodaCoinShortfall),' more Soda Pop Coins needed']):null,
         ]),
         h('div',{class:'mt-2 grid gap-2 sm:grid-cols-2 xl:grid-cols-3'},items.map(action=>{
-          const {exchange,pending,forExchange=0}=action;
+          const {exchanges,forExchange=0}=action;
           const extra=action.extra-forExchange;
           return h('div',{key:action.item,class:'min-w-0 rounded bg-gray-800/70 p-2','data-material-jar':action.item},[
             h('div',{class:'flex items-center gap-2 text-sm font-semibold'},[
@@ -84,19 +87,20 @@ export function createMaterialJarSummary({h}) {
               h('span',{},game.resourceLabels[action.item]),
             ]),
             ...action.uses.map(jar=>bundleRow(jar)),
-            forExchange?h('p',{class:'mt-1 text-xs text-gray-300'},`${formatNumber(forExchange)} beads from bundles for exchange`):null,
-            exchange?h('div',{class:'mt-1 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-xs'},[
-              h('span',{class:'font-semibold'},'Affordable now'),icon(exchange.from,exchange.input),' + ',icon('megaSphereCoin',exchange.fee),' → ',icon(exchange.to,exchange.output),
-            ]):null,
+            forExchange?h('p',{class:'mt-1 text-xs text-gray-300'},`${formatNumber(forExchange)} from jars or bundles for exchange`):null,
+            ...exchanges.map(exchange=>h('div',{class:'mt-1 flex flex-wrap items-center gap-x-1 gap-y-0.5 text-xs'},[
+              h('span',{class:'font-semibold'},'Affordable now'),...quoteLine(exchange),
+            ])),
             h('p',{class:`mt-2 text-xs ${action.remaining?'text-amber-300':'text-gray-300'}`},
               action.remaining?`Still needed: ${formatNumber(action.remaining)}`:
                 extra?`${formatNumber(extra)} extra after ${forExchange?'exchange':'opening'}`:
-                  exchange?'Covered after exchange':forExchange?'All bundle beads allocated':'Covered after opening'),
-            pending?h('div',{class:'mt-2 border-t border-gray-600 pt-2 text-gray-300'},[
+                  exchanges.length?'Covered after exchange':forExchange?'All materials allocated':'Covered after opening'),
+            ...action.pending.map(pending=>h('div',{class:'mt-2 border-t border-gray-600 pt-2 text-gray-300'},[
               h('p',{class:'text-xs'},[h('span',{class:'font-semibold text-amber-300'},'Once funded'),
                 ` · ${formatNumber(pending.covered)} more covered`]),
+              h('p',{class:'mt-1 flex flex-wrap items-center gap-1 text-xs'},quoteLine(pending)),
               ...pending.bundles.map(jar=>bundleRow(jar,'Open ')),
-            ]):null,
+            ])),
           ]);
         })),
       ]);

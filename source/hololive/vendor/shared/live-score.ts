@@ -1,10 +1,10 @@
 /** Recovered Android and Steam note arithmetic. This kernel accepts resolved
  * inputs; it does not decide skill stacking, activation timing or note order.
  */
-export const STEAM_NOTE_SCORE_MODEL_VERSION = 'steam-26258973-note-score-v1'
+export const STEAM_NOTE_SCORE_MODEL_VERSION = 'steam-chart-permyriad-note-score-v2'
 export const STEAM_PERFECT_NOTE_WEIGHTS = Object.freeze([1000, 1000, 1000, 100, 100, 1000, 1000])
 
-export const LIVE_SCORE_MODEL_VERSION = 'android-1.1.0-note-score-v1'
+export const LIVE_SCORE_MODEL_VERSION = 'android-1.3.0-chart-permyriad-note-score-v2'
 
 export const LIVE_SCORE_CLIENT = Object.freeze({
   packageName: 'game.qualiarts.hololive.dreams.com',
@@ -22,6 +22,7 @@ export interface LiveNoteScoreInputs {
   overallPower: number
   evaluationCoefficientPermil: number
   songCoefficientPermil: number
+  chartScoreCoefficientPermyriad?: number
   difficultyLevel: number
   /** Sum of PERFECT coefficients over the client's entire NoteDataList,
    * including inactive hold relays. A scoring-event-only sum is insufficient.
@@ -32,6 +33,7 @@ export interface LiveNoteScoreInputs {
   /** Already resolved coefficient passed to CalcScore; not a sum of skills. */
   skillScoreUpRatio: number
   boardSongBonusPermil: number
+  towerBonusPermil?: number
 }
 
 const F = Math.fround
@@ -45,6 +47,39 @@ function ratio(value: number, label: string) {
 /** CalcUtility.FloatFromPermil: integer -> float32 -> divide -> float32. */
 function permil(value: number) { return F(F(value) / 1000) }
 
+function chartBase(power: number, evaluation: number, song: number, level: number, sum: number) {
+  const musicCoefficient = F(1 + F(permil(song) * F(level - 5)))
+  const perfectCoefficientSum = permil(sum)
+  if (musicCoefficient <= 0) throw new Error('Music coefficient must be positive')
+  const scaledPower = F(permil(evaluation) * F(power))
+  const songScaledPower = F(scaledPower * musicCoefficient)
+  return { musicCoefficient, perfectCoefficientSum, scaledPower, songScaledPower, base: F(songScaledPower / perfectCoefficientSum) }
+}
+
+function noteStages(base: number, combo: number, strength: number, weight: number, boardFactor: number, chartFactor: number) {
+  const afterCombo = F(F(1 + F(combo)) * base)
+  const afterSkills = F(F(1 + F(strength)) * afterCombo)
+  const afterJudgement = F(permil(weight) * afterSkills)
+  const beforeCeiling = F(F(boardFactor * afterJudgement) * chartFactor)
+  return { afterCombo, afterSkills, afterJudgement, beforeCeiling }
+}
+
+function towerFactor(permils: number) {
+  integer(permils, 'Challenge Live bonus')
+  return F(1 + permil(permils))
+}
+
+/** Reuse the native award stages across a chart. The Board dialog can supply a
+ * fractional projected permil here when the server formation integer is unknown. */
+export function projectedMobileNoteAward(power: number, song: number, level: number, sum: number, chart: number, board: number, tower = 0) {
+  integer(power, 'Overall Power', 0, Number.MAX_SAFE_INTEGER)
+  ratio(board, 'Projected Board song bonus')
+  const { base } = chartBase(power, LIVE_SCORE_CLIENT.evaluationCoefficientPermil, song, level, sum)
+  const boardFactor = F(1 + permil(board)), chartFactor = F(F(chart) / 10_000), stageFactor = towerFactor(tower)
+  return (combo: number, strength: number, weight: number) =>
+    Math.ceil(F(noteStages(base, combo, strength, weight, boardFactor, chartFactor).beforeCeiling * stageFactor))
+}
+
 export function calculateLiveNoteScore(input: LiveNoteScoreInputs) {
   if (input.platform !== 'mobile' && input.platform !== 'pc') throw new Error('Unsupported note score platform')
   integer(input.overallPower, 'Overall Power', 0, Number.MAX_SAFE_INTEGER)
@@ -57,20 +92,21 @@ export function calculateLiveNoteScore(input: LiveNoteScoreInputs) {
   ratio(input.comboBonusRatio, 'Combo bonus')
   ratio(input.skillScoreUpRatio, 'Skill bonus')
 
-  const musicCoefficient = F(1 + F(permil(input.songCoefficientPermil) * F(input.difficultyLevel - 5)))
-  const perfectCoefficientSum = permil(input.notesPerfectCoefficientSumPermil)
-  if (musicCoefficient <= 0) throw new Error('Music coefficient must be positive')
-  const scaledPower = F(permil(input.evaluationCoefficientPermil) * F(input.overallPower))
-  const songScaledPower = F(scaledPower * musicCoefficient)
-  const base = F(songScaledPower / perfectCoefficientSum)
-  const afterCombo = F(F(1 + F(input.comboBonusRatio)) * base)
-  const afterSkills = F(F(1 + F(input.skillScoreUpRatio)) * afterCombo)
-  const afterJudgement = F(permil(input.noteJudgementCoefficientPermil) * afterSkills)
-  const beforeCeiling = F(F(1 + permil(input.boardSongBonusPermil)) * afterJudgement)
+  const base = chartBase(input.overallPower, input.evaluationCoefficientPermil, input.songCoefficientPermil,
+    input.difficultyLevel, input.notesPerfectCoefficientSumPermil)
+  // Android 1.3.0 CalculateFinalScores applies the chart multiplier after the Board bonus, before ceil.
+  const chartCoefficient = input.chartScoreCoefficientPermyriad ?? 10_000
+  integer(chartCoefficient, 'Chart score coefficient')
+  const stages = noteStages(base.base, input.comboBonusRatio, input.skillScoreUpRatio, input.noteJudgementCoefficientPermil,
+    F(1 + permil(input.boardSongBonusPermil)), F(F(chartCoefficient) / 10_000))
+  // CalculateFinalScores rounds the Tower award separately from the ordinary
+  // song award, using the same unrounded subtotal after the chart coefficient.
+  const beforeCeiling = input.towerBonusPermil === undefined ? stages.beforeCeiling :
+    F(stages.beforeCeiling * towerFactor(input.towerBonusPermil))
   const points = Math.ceil(beforeCeiling)
   if (!Number.isSafeInteger(points) || points < 0 || points > INT_MAX) throw new Error('Note award exceeds the client integer range')
   return {
     modelVersion: input.platform === 'pc' ? STEAM_NOTE_SCORE_MODEL_VERSION : LIVE_SCORE_MODEL_VERSION, points,
-    stages: { musicCoefficient, perfectCoefficientSum, scaledPower, songScaledPower, base, afterCombo, afterSkills, afterJudgement, beforeCeiling }
+    stages: { ...base, ...stages, beforeCeiling }
   }
 }

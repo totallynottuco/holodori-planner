@@ -1,6 +1,6 @@
 import {createGpuSearchKernels,eligibleGpuOutfits,shortlistGpuTeams} from './gpu-search-kernels';
 import {boardFrontierPaths,boardPointsAtRank,boardReachability,boardResetCuts} from './unit-score-board-search';
-import {createReferenceScoreContext,evaluateReferenceTeam,referenceBoardSongMatches,referenceCardStats,withReferenceChart} from './reference-rating-math';
+import {createReferenceScoreContext,evaluateReferenceTeam,referenceBoardSongMatches,referenceCardStats,referenceChartBatch,referenceChartMatcher} from './reference-rating-math';
 import {evaluateUnitScore,referenceUnitScoreInput,unitScoreContext} from './unit-score-search';
 import {createGpuObjectiveScorer,createGpuTradeScorer} from './gpu-trade-scoring';
 import {refineBoardExchanges} from './gpu-board-exchanges';
@@ -10,6 +10,8 @@ import * as cpuBoardKernels from './cpu-board-kernels';
 import {restoreUnusedConnects} from './board-connect-retention';
 import {boardPlanningBaseline,boardProtection,pinsBoardConnects,preservesBoard,preservesBoardProtection} from './board-protection';
 import {isTeamCardEligible} from './team-card-pool';
+import {averageChartRows,boardRangeCharts} from './mobile-chart-average';
+import {challengeBonusPermil,screenChallengeScore} from './challenge-score';
 
 const float=new Float32Array(1),bits=new Uint32Array(float.buffer);
 const scoreBits=value=>{float[0]=Math.max(0,value);return bits[0];};
@@ -101,10 +103,12 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
   const timings={screen:0,projection:0,lite:0,full:0,seeded:0,exchangeOnly:0,
     purchases:0,connect:0,paths:0,exchanges:0,order:0};
   const referenceContexts=new WeakMap();
+  const chartMatchers=new WeakMap();
   const layoutScorers=new WeakMap();
-  const timelineScenarios=new WeakMap();
   const timelineOrders=new WeakMap();
-  const skillCache=new Map();
+  const timelineStates=new Map(), timelineRing=new Array(4096);
+  const timelineMemo={forFormation:cachedTimeline};
+  let nextTimeline=0;
   const skillIds=new WeakMap();
   let skillId=0;
   let skillHits=0,skillMisses=0;
@@ -112,26 +116,32 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
     if(!skillIds.has(value))skillIds.set(value,++skillId);
     return skillIds.get(value);
   };
-  function cachedTimeline(scenario,order,blooms,outfit,effects,chance,frequency,passive,capture,compute){
-    let chart=timelineScenarios.get(scenario);
-    if(chart===undefined){
-      chart=[identity(scenario.curve),scenario.seconds,scenario.slots.length,...scenario.slots,
-        identity(scenario.countCurve),scenario.notes].join('|');
-      timelineScenarios.set(scenario,chart);
-    }
+  function cachedTimeline(order,blooms,outfitSupport,effects,chance,frequency,passive,options){
     let lineup=timelineOrders.get(order);
     if(lineup===undefined){
       lineup=order.map(identity).join('|');
       timelineOrders.set(order,lineup);
     }
-    const key=[chart,outfit,lineup,...blooms,...effects,...chance,...frequency,...passive,Number(capture)].join('|');
-    const existing=skillCache.get(key);
-    if(existing){skillHits++;return existing;}
-    skillMisses++;
-    const value=compute();
-    skillCache.set(key,value);
-    if(skillCache.size>4096)skillCache.delete(skillCache.keys().next().value);
-    return value;
+    const mode=options.pc?(options.scoringMode==='chart'?'pc-chart':'pc-range'):'mobile';
+    const key=[mode,outfitSupport,lineup,...blooms,...effects,...chance,...frequency,...passive].join('|');
+    return (scenario,capture,compute)=>{
+      let state=timelineStates.get(key);
+      if(!state)timelineStates.set(key,state=[new Map(),new Map()]);
+      const entries=state[Number(capture)];
+      const existing=entries.get(scenario);
+      if(existing){skillHits++;return existing;}
+      skillMisses++;
+      const value=compute();
+      entries.set(scenario,value);
+      const oldest=timelineRing[nextTimeline];
+      if(oldest){
+        oldest.entries.delete(oldest.scenario);
+        if(!oldest.state[0].size&&!oldest.state[1].size)timelineStates.delete(oldest.key);
+      }
+      timelineRing[nextTimeline]={key,state,entries,scenario};
+      nextTimeline=(nextTimeline+1)%timelineRing.length;
+      return value;
+    };
   }
 
   function scorer(payload,boards=payload.account.boards,ranks=payload.account.ranks,base){
@@ -145,38 +155,52 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
     const context=unit?unitScoreContext(scoringData,payload,boards,ranks,prepared):
       createReferenceScoreContext(scoringData,account.owned,boards,ranks,options,account.dreamRank,prepared);
     if(!prepared)referenceContexts.set(payload,context);
-    const chartContexts=options.lbCharts?.map(({songId,difficulty})=>{
-      const song=songs.get(songId);
-      const chart=song?.difficulties.find(chart=>chart.type===difficulty);
-      if(!chart)throw Error('A rating chart is unavailable.');
-      return withReferenceChart(context,song,chart);
-    });
+    const selection=payload.rangeCharts??options.lbCharts;
+    let chartContexts;
+    if(selection){
+      let match=chartMatchers.get(selection);
+      if(!match){
+        const entries=payload.rangeCharts??selection.map(({songId,difficulty})=>{
+          const song=songs.get(songId);
+          const chart=song?.difficulties.find(chart=>chart.type===difficulty);
+          if(!chart)throw Error('A rating chart is unavailable.');
+          return {song,chart};
+        });
+        chartMatchers.set(selection,match=referenceChartMatcher(scoringData,entries));
+      }
+      chartContexts=match(context);
+    }
     const metric=options.sortBy==='max'?'maxScore':'score';
     const targetCharts=payload.targetCharts;
     const indices=targetCharts??chartContexts?.map((_,index)=>index);
+    const batch=chartContexts?.length?referenceChartBatch(chartContexts):null;
     const evaluate=(chart,order,outfit,leader,capture)=>
-      evaluateReferenceTeam(chart,order,outfit,leader,false,null,capture,cachedTimeline);
+      evaluateReferenceTeam(chart,order,outfit,leader,false,null,capture,timelineMemo);
     const score=(order,outfit,leader)=>{
       if(unit){
         const row=evaluateUnitScore(context,order,outfit,leader);
         return {...row,value:row.displayUnitScore};
       }
       if(chartContexts?.length){
-        const byChart=[];
-        for(const index of indices)byChart[index]=evaluate(chartContexts[index],order,outfit,leader);
+        const byChart=batch(indices,order,outfit,leader,undefined,timelineMemo);
+        if(payload.rangeCharts){
+          const row=averageChartRows(byChart,payload.rangeWeights);
+          return {...row,value:row[metric],songBonuses:byChart.map(chart=>chart.breakdown.songBonus)};
+        }
         const rows=byChart.filter(Boolean).sort((a,b)=>b[metric]-a[metric]);
         const value=rows.slice(0,3).reduce((total,row)=>total+Math.ceil(row[metric]/5000),0);
         return {...rows[0],value,tieScore:rows.slice(0,3).reduce((total,row)=>total+row[metric],0),
           songBonuses:byChart.map(row=>row.breakdown.songBonus),chartScores:byChart.map(row=>row[metric])};
       }
-      const row=evaluate(context,order,outfit,leader);
+      const base=evaluate(context,order,outfit,leader);
+      const row=options.challengeStage?screenChallengeScore(base,options.challengeStage,order):base;
       return {...row,value:row[metric]};
     };
     const timeline=(order,outfit,leader)=>{
       const result=[];
-      for(const chart of targetCharts?targetCharts.map(index=>chartContexts[index]):chartContexts??[context]){
-        evaluate(chart,order,outfit,leader,(windows,base)=>result.push({...windows,base}));
-      }
+      const capture=(windows,base)=>result.push({...windows,base});
+      if(batch)batch(indices,order,outfit,leader,capture,timelineMemo);
+      else evaluate(context,order,outfit,leader,capture);
       return result;
     };
     const gpuTrial=(order,outfit,leader)=>{
@@ -184,7 +208,8 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
       if(chartContexts?.length)return {windows:timeline(order,outfit,leader)};
       const windows=[];
       const row=evaluate(context,order,outfit,leader,(skill,base)=>windows.push({...skill,base}));
-      return {windows,eventBonus:row.breakdown.eventBonus,epPermil:row.epPermil};
+      return {windows,eventBonus:options.challengeStage?challengeBonusPermil(options.challengeStage,order):row.breakdown.eventBonus,
+        epPermil:row.epPermil};
     };
     const result={context,score,timeline,gpuTrial};
     cachedLayouts.set(boards,{ranks,scorer:result});
@@ -193,7 +218,7 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
 
   async function rankObjective(payload,trials){
     objectiveTrials+=trials.length;
-    return scoreObjectives(trials,{sortBy:payload.options.sortBy,merged:!!payload.options.lbCharts?.length,unit});
+    return scoreObjectives(trials,{sortBy:payload.options.sortBy,merged:!!payload.options.lbCharts?.length,rangeWeights:payload.rangeWeights,unit});
   }
 
   async function rankResults(payload,rows){
@@ -220,6 +245,10 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
       return [{row,order,scoring:dataFor(row)}];
     });
     if(eligible.length!==rows.length)return rows;
+    if(cpu){
+      const ranked=eligible.map(({row,order,scoring})=>({...row,...scoring.score(order,row.outfitId,row.leaderChar)}));
+      return ranked.sort((a,b)=>b.value-a.value||(b.tieScore??b.score)-(a.tieScore??a.score));
+    }
     const gpu=await rankObjective(payload,eligible.map(({row,order,scoring})=>scoring.gpuTrial(order,row.outfitId,row.leaderChar)));
     if(!gpu?.length)return rows;
     // Use the accelerated ranking to retain the best candidates, then use
@@ -449,6 +478,10 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
 
   async function plan(payload){
     const start=performance.now();
+    if(payload.boardOpt&&!unit&&!payload.options.pc&&payload.options.scoringMode==='generic'&&!payload.options.lbCharts?.length){
+      const rangeCharts=boardRangeCharts(data,payload);
+      if(rangeCharts.length)payload={...payload,rangeCharts,rangeWeights:rangeCharts.map(chart=>chart.weight)};
+    }
     try{return await planBoards(payload);}
     finally{
       const phase=payload.boardOpt?.litePlan?'lite':payload.exchangeOnly?'exchangeOnly':payload.seedBoards?'seeded':'full';
@@ -504,7 +537,7 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
     const materials=Object.keys(data.boardItems);
     const owners=Object.keys(ranks).filter(id=>data.boards[id]&&boardProtection(boardOpt,id)!=='locked');
     const keep=boardOpt.keep?.targets??{};
-    const charts=(payload.options.lbCharts??[{songId:payload.options.songId}]).map(({songId})=>
+    const charts=payload.rangeCharts?.map(({song})=>song)??(payload.options.lbCharts??[{songId:payload.options.songId}]).map(({songId})=>
       data.songs.find(song=>song.id===songId));
     const teamMembers=new Set(order.map(card=>card.characterId));
     const canDetachInactiveSocket=(node,owner,save)=>{
@@ -633,7 +666,8 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
         if(unit)return 0;
         const headroom=remainingSongBonuses();
         if(songPriorities.has(node))return songPriorities.get(node);
-        const priority=matchingCharts(node,owner).reduce((gain,index)=>gain+Math.max(0,Math.min(node.value,headroom[index])),0)*150;
+        const priority=matchingCharts(node,owner).reduce((gain,index)=>
+          gain+(payload.rangeWeights?.[index]??1)*Math.max(0,Math.min(node.value,headroom[index])),0)*150;
         songPriorities.set(node,priority);
         return priority;
       }
@@ -1821,7 +1855,7 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
             const node=move.path.at(-1);
             if(Object.keys(move.materials).some(id=>!materialKnown.has(id)))continue;
             if(node.socket)socketPaths.set(node.id,move);
-            if(!node.kind||node.charTrigger==='WORK')continue;
+            if(!node.kind||node.charTrigger==='WORK'||!priorityFor(node,owner))continue;
             const priority=move.path.reduce((total,node)=>total+priorityFor(node,owner),0)/(1+move.points);
             if(!priority)continue;
             paths.push({...move,owner,save,budget,spent:frontier.spent,priority});
@@ -1950,7 +1984,7 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
           const frontier=frontierFor(first.owner,board);
           if(!frontier)continue;
           for(const second of frontier.paths){
-            if(!second.path.some(node=>node.kind==='activeFreq')||
+            if(!second.path.some(node=>node.kind==='activeFreq'&&priorityFor(node,first.owner)>0)||
               first.spent+first.points+second.points>first.budget)continue;
             const costs={...first.materials};
             for(const [id,quantity] of Object.entries(second.materials))costs[id]=(costs[id]??0)+quantity;
@@ -2158,7 +2192,7 @@ async function createTeamOptimizer(data,objective,cpu,dispatcher){
         if(songScorePayload){
           const context=createReferenceScoreContext(scoringData,account.owned,boards,ranks,
             songScorePayload.options,account.dreamRank);
-          return evaluateReferenceTeam(context,rewardOrder,row.outfitId,leaderChar,false,null,undefined,cachedTimeline)[estimate];
+          return evaluateReferenceTeam(context,rewardOrder,row.outfitId,leaderChar,false,null,undefined,timelineMemo)[estimate];
         }
         return row.epPermil===undefined?row[estimate]:(row[estimate]/(1+row.epPermil/1000)-120)*15000;
       };

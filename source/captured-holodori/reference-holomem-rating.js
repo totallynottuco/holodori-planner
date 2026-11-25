@@ -1,5 +1,7 @@
-import {createReferenceScoreContext,evaluateReferenceTeam,isReferenceRatingSong,referenceComboAverage,withReferenceChart} from './reference-rating-math.js';
-import {boardPlanningBaseline,hasBoardProtection} from './board-protection.js';
+import {createReferenceScoreContext,evaluateReferenceTeam,isReferenceRatingSong,referenceComboAverage,referenceMobileEffectWarnings,withReferenceChart} from './reference-rating-math.js';
+import {finalistOrders} from './finalist-orders.js';
+import {createFinalistContext} from './finalist-context.js';
+import {boardPlanningBaseline} from './board-protection.js';
 import {compareLeaderboardPlaces,projectedLeaderboardPlace} from './leaderboard-placement.js';
 
 const ratingFor = score => Math.ceil(score/5000);
@@ -44,7 +46,7 @@ function upgradeEntries(cards,owned,extras,row){
   const next = {...owned};
   for(const pull of pulls){
     const card = cards.get(pull.id);
-    next[pull.id] = pull.level>=0?{owned:true,level:pull.level,bloom:pull.bloom}:
+    next[pull.id] = pull.level>=0?{...owned[pull.id],owned:true,level:pull.level,bloom:pull.bloom}:
       {owned:true,level:nextLevel>0?Math.min(nextLevel,card.maxLevel):card.maxLevel,bloom:Math.min(nextBloom??0,card.maxBloom)};
   }
   return next;
@@ -142,7 +144,7 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,refin
   const teamsPerSong = bounded(input.ratingTeamsPerSong,3,1,5);
   const candidateCount = Math.max(songCount+3,10);
   const {account,boardOpt} = payload;
-  const startingBoards=hasBoardProtection(boardOpt)?boardPlanningBaseline(account.boards,boardOpt):account.boards;
+  const startingBoards=boardPlanningBaseline(account.boards,boardOpt);
   const extras = {...payload.extras};
   if(nextMode){
     const maxLevel = Math.max(...data.cards.map(card=>card.maxLevel));
@@ -165,7 +167,7 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,refin
     options:chartOptions(options,candidate.song,candidate.chart,overrides),
   });
   const runChart = async(candidate,phase,overrides={})=>{
-    const query=chartPayload(candidate,{topN:merge?5:teamsPerSong,...overrides});
+    const query=chartPayload(candidate,{topN:merge?5:Math.max(8,teamsPerSong),...overrides});
     if(mobile)return mobile.search(query,phase,[mobileKey(candidate.song,candidate.chart)],{optimize:!merge&&optimizeBoards});
     const result = await solve(query,phase,{rawJoint:true});
     if(result===null)throw Error('The Holomem Rating search did not finish.');
@@ -180,6 +182,9 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,refin
   const screeningContext = (candidate,row)=>nextMode?scoreContext(candidate,
     row.plan?.saves??row.boards??boardPlanningBaseline(account.boards,boardOpt),
     upgradeEntries(cards,account.owned,extras,row),row.plan?.ranks):scoreContext(candidate);
+  const finalistPayload={...payload,extras};
+  const finalistContext=(candidate,row,boards,ranks)=>createFinalistContext(data,finalistPayload,row,cards,
+    chartOptions(options,candidate.song,candidate.chart),boards,ranks);
 
   let work = Math.min(candidates.length,candidateCount),done = 0;
   const phase = label=> (evaluated,total,fraction)=>onProgress(evaluated,total,Math.min(1,(done+(fraction??0))/work),label);
@@ -218,7 +223,7 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,refin
     }
   }
   const screened = [];
-  const songBonusLimit = data.boardLimits?.songBonus??100;
+  const songBonusLimit = data.boardLimits?.songBonus??Infinity;
   for(const candidate of [...candidates].sort((a,b)=>b.referenceScore-a.referenceScore)){
     const threshold = screened[Math.min(songCount,screened.length)-1]?.referenceScore??0;
     const boardHeadroom = optimizeBoards?1+Math.max(0,songBonusLimit-candidate.songBonus)/1000:1;
@@ -230,91 +235,106 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,refin
     const lbCharts = selected.map(({song,chart})=>({songId:song.id,difficulty:chart.type}));
     work=2;
     if(mobile){
-      const keys=selected.map(({song,chart})=>mobileKey(song,chart));
+      // The scout chooses a seed chart. Each lineup can have a different best
+      // difficulty on that song once its Special slots and Board effects apply.
+      const keys=[];
+      const difficulties=selected.map(({song,charts})=>charts.map(chart=>{
+        const key=mobileKey(song,chart);
+        const index=keys.push(key)-1;
+        return {key,index,...chartDescription(song,chart)};
+      }));
       const compareScores=(a,b)=>b.rating-a.rating||b.tieRating-a.tieRating||b.tieScore-a.tieScore;
       const summarize=scores=>{
-        const ranked=scores.map((reviewedScore,index)=>{
-          const {song,chart}=selected[index], score=reviewedScore[mobileMetric];
-          return {...chartDescription(song,chart),key:keys[index],rating:ratingFor(score),score,reviewedScore};
+        const ranked=difficulties.map(charts=>{
+          const {index,...chart}=charts.reduce((best,current)=>
+            scores[current.index][mobileMetric]>scores[best.index][mobileMetric]?current:best);
+          const reviewedScore=scores[index],score=reviewedScore[mobileMetric];
+          return {...chart,rating:ratingFor(score),score,reviewedScore};
         }).sort((a,b)=>b.score-a.score);
         return {...ranked[0].reviewedScore,chartKey:ranked[0].key,
           rating:sum(ranked.slice(0,3).map(chart=>chart.rating)),
           tieRating:sum(ranked.slice(0,songCount).map(chart=>chart.rating)),
           tieScore:sum(ranked.map(chart=>chart.score)),
-          ratingSongs:ranked.slice(0,Math.max(3,songCount)).map(({reviewedScore,key,...chart})=>chart)};
+          ratingSongs:ranked.map(({reviewedScore,key,...chart})=>chart)};
       };
       const query=chartPayload(selected[0],{lbCharts});
       const ranked=await mobile.search(query,phase('Searching for the merged team'),keys,{optimize:optimizeBoards,summarize,compareScores});
-      const results=ranked.map(row=>({...row,rating:row.reviewedScore.rating,ratingSongs:row.reviewedScore.ratingSongs.slice(0,songCount)}));
-      return {...empty,ratingTotal:results[0]?.rating??0,ratingContributors:ranked[0]?.reviewedScore.ratingSongs.slice(0,3),results,scoringCharts:lbCharts};
+      const results=ranked.map(row=>({...row,rating:row.reviewedScore.rating,ratingSongs:row.reviewedScore.ratingSongs.slice(0,songCount),
+        scoringCharts:row.reviewedScore.ratingSongs.map(({songId,difficulty})=>({songId,difficulty}))}));
+      return {...empty,ratingTotal:results[0]?.rating??0,ratingContributors:ranked[0]?.reviewedScore.ratingSongs.slice(0,3),results,
+        scoringCharts:results[0]?.scoringCharts??[]};
     }
     const ranked = (await runChart(selected[0],phase('Searching for the merged team'),{
       lbCharts,topN:Math.max(options.topN,8),
-    })).slice(0,boardCandidates??options.topN);
+    })).slice(0,boardCandidates??Math.max(options.topN,8));
     if(!ranked.length)return empty;
     const plans = optimizeBoards&&!nextMode?await planChart(selected[0],ranked,phase('Planning Boards'),{lbCharts},ranked.length):[];
-    const baseContexts = new Map();
-    const chartContexts = (boards,owned,ranks)=>{
-      const base = scoreContext(selected[0],boards,owned,ranks);
-      return new Map(selected.map(({song,chart})=>[song.id,withReferenceChart(base,song,chart)]));
-    };
-    const baseline = (row,owned)=>{
-      const key = nextMode?pullsFor(row).map(pull=>`${pull.id}:${pull.new?'n':'b'}${pull.copies}`).sort().join('|'):'';
-      if(!baseContexts.has(key))baseContexts.set(key,chartContexts(startingBoards,owned));
-      return baseContexts.get(key);
-    };
+    const compareMerged=(a,b)=>b.rating-a.rating||b.tieRating-a.tieRating||b.tieScore-a.tieScore;
     const rows = [];
     for(const [index,row] of ranked.entries()){
       const applied = plans[index]??(nextMode?row.plan:null);
-      const owned = nextMode?upgradeEntries(cards,account.owned,extras,row):account.owned;
-      const boards = applied?.saves??(nextMode&&row.boards?row.boards:startingBoards);
-      const contexts = boards===startingBoards&&!applied?.ranks?
-        baseline(row,owned):chartContexts(boards,owned,applied?.ranks);
-      const order = (applied?.after.order??row.order).map(id=>cards.get(id));
-      if(order.some(card=>!card))continue;
-      const outfitId = applied?.outfitId??row.outfitId??null;
-      const evaluated = selected.map(({song,chart})=>{
-        const result = evaluateReferenceTeam(contexts.get(song.id),order,outfitId,leader);
-        return {...chartDescription(song,chart),rating:ratingFor(result[scoreKey]),score:result[scoreKey],result};
-      }).sort((a,b)=>b.score-a.score);
+      const team=applied?{...row,...applied.after,plan:applied}:row;
+      const base=finalistContext(selected[0],team);
+      const charts=selected.map(({song,chart})=>({song,chart,context:withReferenceChart(base,song,chart)}));
+      let winner;
+      for(const order of finalistOrders(team.order.map(id=>cards.get(id)))){
+        const evaluated=charts.map(({song,chart,context})=>{
+          const result=evaluateReferenceTeam(context,order,team.outfitId,leader);
+          return {...chartDescription(song,chart),rating:ratingFor(result[scoreKey]),score:result[scoreKey],result};
+        }).sort((a,b)=>b.score-a.score);
+        const trial={evaluated,order,rating:sum(evaluated.slice(0,3).map(chart=>chart.rating)),
+          tieRating:sum(evaluated.slice(0,songCount).map(chart=>chart.rating)),tieScore:sum(evaluated.map(chart=>chart.score))};
+        if(!winner||compareMerged(trial,winner)<0)winner=trial;
+      }
+      const {evaluated,order,rating,tieRating,tieScore}=winner;
       const strongest = evaluated[0];
-      const rating = sum(evaluated.slice(0,3).map(chart=>chart.rating));
-      const result = {...strongest.result,rating,
-        ratingSongs:evaluated.slice(0,songCount).map(({result,...chart})=>chart),
-        ...(row.candidateId?{candidateId:row.candidateId}:{}),...(row.pulls?{pulls:row.pulls}:{}),
-        ...(nextMode&&row.boards?{boards:row.boards}:{}),
-      };
+      const warnings=[...new Set(charts.flatMap(({context})=>referenceMobileEffectWarnings(context,order,team.outfitId,leader)))];
+      const result = {...team,...strongest.result,rating,effectWarnings:warnings,
+        ratingSongs:evaluated.slice(0,songCount).map(({result,...chart})=>chart)};
       if(applied){
-        const prior = applied.ignoredExisting?
-          chartContexts(boardPlanningBaseline(account.boards,boardOpt),owned):baseline(row,owned);
+        const prior=finalistContext(selected.find(({song})=>song.id===strongest.songId),team,startingBoards,account.ranks);
         result.plan={...applied,
-          before:evaluateReferenceTeam(prior.get(strongest.songId),order,outfitId,leader),
-          after:strongest.result,
+          before:evaluateReferenceTeam(prior,order,team.outfitId,leader),
+          after:{...applied.after,...strongest.result},
         };
       }
-      rows.push({result,contributors:evaluated.slice(0,3).map(({result,...chart})=>chart),tieRating:sum(evaluated.slice(0,songCount).map(chart=>chart.rating)),
-        tieScore:sum(evaluated.map(chart=>chart.score))});
+      rows.push({result,rating,tieRating,tieScore,contributors:evaluated.slice(0,3).map(({result,...chart})=>chart)});
     }
-    rows.sort((a,b)=>b.result.rating-a.result.rating||b.tieRating-a.tieRating||b.tieScore-a.tieScore);
-    const results = rows.map(row=>row.result);
+    rows.sort(compareMerged);
+    const results = rows.slice(0,options.topN).map(row=>row.result);
     return {...empty,ratingTotal:results[0]?.rating??0,ratingContributors:rows[0]?.contributors,results,scoringCharts:lbCharts};
   }
 
   const groups = new Map();
   const fundedPlans = new Map();
+  function finalChartRow(candidate,row,plan=row.plan){
+    const team=plan?{...row,...plan.after,plan}:row;
+    if(mobile)return {...team,rating:ratingFor(scoreOf(team))};
+    const context=finalistContext(candidate,team);
+    let best,order;
+    for(const trial of finalistOrders(team.order.map(id=>cards.get(id)))){
+      const result=evaluateReferenceTeam(context,trial,team.outfitId,leader);
+      if(!best||result[scoreKey]>best[scoreKey]){best=result;order=trial;}
+    }
+    const warnings=referenceMobileEffectWarnings(context,order,team.outfitId,leader);
+    const result={...team,...best,rating:ratingFor(best[scoreKey]),effectWarnings:warnings};
+    if(plan){
+      const prior=finalistContext(candidate,team,startingBoards,account.ranks);
+      result.plan={...plan,before:evaluateReferenceTeam(prior,order,team.outfitId,leader),after:{...plan.after,...best}};
+    }
+    return result;
+  }
   function record(candidate,pairs){
-    if(reusePlans&&!mobile&&!nextMode)fundedPlans.set(rankKey(candidate.song,candidate.chart),pairs
-      .filter(({plan})=>plan?.orderExhaustive).map(({row,plan})=>({...row,...plan.after,plan})));
-    const results = pairs.slice(0,teamsPerSong).map(({row,plan})=>{
-      const scored = plan?{...row,...plan.after,plan}:row;
-      return {...scored,rating:ratingFor(scoreOf(scored))};
-    });
+    const ordered=pairs.map(({row,plan})=>finalChartRow(candidate,row,plan??row.plan)).sort((a,b)=>scoreOf(b)-scoreOf(a));
+    if(reusePlans&&!mobile&&!nextMode)fundedPlans.set(rankKey(candidate.song,candidate.chart),ordered.filter(row=>row.plan?.orderExhaustive));
+    const results=ordered.slice(0,teamsPerSong);
     const best = results.length?scoreOf(results[0]):0;
     const rating = ratingFor(best);
     const existing = groups.get(candidate.song.id);
     if(!existing||best>existing.best)groups.set(candidate.song.id,{
       ...chartDescription(candidate.song,candidate.chart),rating,best,results,
     });
+    return results.map(row=>({row,plan:row.plan}));
   }
   function alternate(candidate,pairs){
     if(!pairs.length||candidate.charts.length<2)return null;
@@ -345,11 +365,11 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,refin
     return alternate?{...candidate,chart:alternate}:null;
   }
 
-  record(seed,seeded);
+  const seedFinalists=record(seed,seeded);
   const seedKey = rankKey(seed.song,seed.chart);
   const queue = screened.filter(({song,chart})=>rankKey(song,chart)!==seedKey);
   const visited = new Set([seedKey]);
-  const seedAlternate = alternate(seed,seeded);
+  const seedAlternate = alternate(seed,seedFinalists);
   if(seedAlternate&&!queue.some(({song,chart})=>rankKey(song,chart)===rankKey(seedAlternate.song,seedAlternate.chart)))queue.push(seedAlternate);
   for(const candidate of queue){
     const key = rankKey(candidate.song,candidate.chart);
@@ -361,8 +381,8 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,refin
     done++;
     const pairs = !mobile&&optimizeBoards&&!nextMode&&rows.length?
       combinePlans(rows,await planChart(candidate,rows,phase('Planning Boards'))):rows.map(row=>({row,plan:null}));
-    record(candidate,pairs);
-    const neighbor = alternate(candidate,pairs);
+    const finalists=record(candidate,pairs);
+    const neighbor = alternate(candidate,finalists);
     if(neighbor&&!visited.has(rankKey(neighbor.song,neighbor.chart)))queue.push(neighbor);
   }
   if(reusePlans&&!mobile&&optimizeBoards&&!nextMode&&!Object.keys(boardOpt.keep?.targets??{}).length){
@@ -372,7 +392,6 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,refin
       .flatMap(group=>group.results.filter(row=>row.plan?.orderExhaustive).slice(0,2)).slice(0,12);
     const reusable=byPlan.map(row=>({row,orders:rotations(row.order.map(id=>cards.get(id))),
       context:scoreContext(seed,row.plan.saves,account.owned,row.plan.ranks)}));
-    const baseline=scoreContext(seed,boardPlanningBaseline(account.boards,boardOpt));
     for(const candidate of candidates)for(const chart of candidate.charts){
       let existing=groups.get(candidate.song.id);
       for(const {row,orders,context} of reusable){
@@ -383,13 +402,11 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,refin
           if(after[scoreKey]>best){best=after[scoreKey];winner={after,order};}
         }
         if(!winner)continue;
-        const {after,order}=winner;
-        const before=evaluateReferenceTeam(withReferenceChart(baseline,candidate.song,chart),order,row.outfitId,leader);
-        const rating=ratingFor(after[scoreKey]);
-        const result={...row,...after,rating,plan:{...row.plan,before,after}};
+        const result=finalChartRow({...candidate,chart},row,{...row.plan,after:winner.after});
+        const {rating}=result;
         const alternatives=existing?.difficulty===chart.type?existing.results.filter(item=>
-          item.outfitId!==row.outfitId||item.order.join('|')!==after.order.join('|')):[];
-        existing={...chartDescription(candidate.song,chart),rating,best:after[scoreKey],
+          item.outfitId!==row.outfitId||item.order.join('|')!==result.order.join('|')):[];
+        existing={...chartDescription(candidate.song,chart),rating,best:result[scoreKey],
           results:[result,...alternatives].slice(0,teamsPerSong)};
         groups.set(candidate.song.id,existing);
       }
@@ -428,14 +445,14 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,refin
             .map(pick=>pick&&({...layouts[pick.index],...pick.after}));
           runners.set(group,variants);
         }
-        if(!picked||picked.after[scoreKey]<=group.best)return;
-        const {after}=picked,row=layouts[picked.index],order=after.order.map(id=>cards.get(id));
-        const before=evaluateReferenceTeam(withReferenceChart(baseline,candidate.song,chart),order,after.outfitId,leader);
-        group.best=after[scoreKey];
-        group.rating=ratingFor(group.best);
-        const otherTeams=group.results.filter(team=>team.outfitId!==after.outfitId||team.order.join('|')!==after.order.join('|'));
-        const plan={...row.plan,before,after,outfitId:after.outfitId};
-        group.results=[{...row,...after,rating:group.rating,plan},...otherTeams].slice(0,teamsPerSong);
+        if(!picked)return;
+        const {after}=picked,row=layouts[picked.index];
+        const result=finalChartRow({...candidate,chart},row,{...row.plan,after,outfitId:after.outfitId});
+        if(result[scoreKey]<=group.best)return;
+        group.best=result[scoreKey];
+        group.rating=result.rating;
+        const otherTeams=group.results.filter(team=>team.outfitId!==result.outfitId||team.order.join('|')!==result.order.join('|'));
+        group.results=[result,...otherTeams].slice(0,teamsPerSong);
       }));
       return runners;
     }
@@ -457,17 +474,18 @@ export async function searchReferenceRating(data,payload,input,{solve,plan,refin
         const second=!triedAlternate&&alternate&&alternate.plan.saves!==row.plan.saves?alternate:null;
         if(second)triedAlternate=true;
         for(const candidate of [row,runner,second].filter(Boolean))
-          finalJobs.push({group,row:candidate,query,
+          finalJobs.push({group,row:candidate,query,candidate:{...song,chart},
             donorLayouts:[...layouts].filter(layout=>layout!==candidate.plan.saves),quality:!!runners});
       }
       if(finalJobs.length)onProgress(done,work,0.99,'Refining final Board plans');
       const refined=finalJobs.length?await refine(finalJobs):[];
       for(const [index,updated] of refined.entries()){
-        const {group,row}=finalJobs[index];
-        if(!updated||updated.after[scoreKey]<=group.best)continue;
-        group.best=updated.after[scoreKey];
-        group.rating=ratingFor(group.best);
-        const team={...row,...updated.after,rating:group.rating,plan:updated};
+        const {group,row,candidate}=finalJobs[index];
+        if(!updated)continue;
+        const team=finalChartRow(candidate,row,updated);
+        if(team[scoreKey]<=group.best)continue;
+        group.best=team[scoreKey];
+        group.rating=team.rating;
         if(runners){
           const others=group.results.filter(result=>result.outfitId!==team.outfitId||result.order.join('|')!==team.order.join('|'));
           group.results=[team,...others].slice(0,teamsPerSong);

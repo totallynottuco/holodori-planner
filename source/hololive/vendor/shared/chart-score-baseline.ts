@@ -14,6 +14,7 @@ export function inspectChartScoreBaseline(chart: OptimizerDecodedChart, overallP
     platform: chart.platform, overallPower, evaluationCoefficientPermil: LIVE_SCORE_CLIENT.evaluationCoefficientPermil,
     songCoefficientPermil, difficultyLevel: chart.difficultyLevel,
     notesPerfectCoefficientSumPermil: denominator.completePerfectSumPermil,
+    chartScoreCoefficientPermyriad: denominator.chartScoreCoefficientPermyriad,
     noteJudgementCoefficientPermil: 1000, comboBonusRatio: 0, skillScoreUpRatio: 0, boardSongBonusPermil: 0
   })
   return { status: calculation ? 'resolved' as const : 'unresolved' as const, calculation, reasons, denominator }
@@ -34,6 +35,7 @@ export function inspectChartScoreEvidence(chart: OptimizerDecodedChart, denomina
     || chart.total_notes !== reviewed.scoringEvents) throw new Error('Chart does not match the reviewed denominator evidence')
   const sum = chart.eventWeightsPermil.reduce((total, weight) => total + weight, 0)
   if (chart.platform === 'pc') {
+    if (reviewed.chartScoreCoefficientPermyriad === undefined) throw new Error('The Steam score multiplier for this chart is missing from the scoring catalog.')
     if (chart.eventNoteTypes.some((type, index) => chart.eventWeightsPermil[index] !== STEAM_PERFECT_NOTE_WEIGHTS[type - 1])) {
       reasons.push('PC PERFECT coefficients are outside Steam scoring coverage.')
       return { reasons, denominator: null }

@@ -45,7 +45,8 @@ export function resolveScoreNote(request: ScoreNoteRequest, timeline: ChartTimel
   const inputFingerprint = digest({ identity, context })
   const outcomes = group.calculation && trace.power.status === 'resolved' && trace.boardSongBonus.status === 'resolved'
     ? group.calculation.outcomes.map(outcome => {
-      const score = calculatePerfectScoreGroup({ platform: 'mobile', overallPower: trace.power.value!, evaluationCoefficientPermil: LIVE_SCORE_CLIENT.evaluationCoefficientPermil,
+      const score = calculatePerfectScoreGroup({ platform: chart.platform, overallPower: trace.power.value!, evaluationCoefficientPermil: LIVE_SCORE_CLIENT.evaluationCoefficientPermil,
+        chartScoreCoefficientPermyriad: trace.denominator.chartScoreCoefficientPermyriad,
         songCoefficientPermil: timeline.team.song.scoreCoefficientPermil, difficultyLevel: chart.difficultyLevel,
         notesPerfectCoefficientSumPermil: trace.denominator.completePerfectSumPermil, skillScoreUpRatio: outcome.skillScoreUpRatio, boardSongBonusPermil: trace.boardSongBonus.value!
       }, events, start).notes[noteIndex - start].points

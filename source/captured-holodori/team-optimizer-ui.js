@@ -1,6 +1,7 @@
 import {formatNumber,parseNumber,formatDate,formatDateTime} from './regional-formats.js';
+import {clientSkillScoreRatio} from '../hololive/vendor/shared/live-skill-arithmetic';
 import {game,resourceImage} from './game';
-import {accountManifest,accountRosterBranches,boardPointsForMemberLevel,resolveBoardNodes} from '../hololive/vendor/shared/account-data';
+import {accountManifest,accountCharactersById,accountRosterBranches,boardPointsForMemberLevel,resolveBoardNodes} from '../hololive/vendor/shared/account-data';
 import {loadExtraSongs,saveExtraSongs} from './optimizer-song-unlocks';
 import {loadOptimizerPreferences,ratingQuickCounts,saveOptimizerPreferences} from './optimizer-preferences';
 import {boardChangeBadge,boardConnectArtwork,createHolomemBoard} from './holomem-board-ui';
@@ -76,7 +77,7 @@ const eventDateRange=event=>Number.isFinite(event.startTime)&&Number.isFinite(ev
   [...new Set([formatDate(event.startTime),formatDate(event.endTime)])].join(' – '):
   Number.isFinite(event.startTime)?formatDate(event.startTime):event.gameDate?formatDate(`${event.gameDate}T12:00:00`):'';
 const objectives = [['score','Score'],['unitScore','Unit Score'],['holomemLb','Holomem Rating'],
-  ['event','Event Song Score'],['eventPoints','Event Points']];
+  ['event','Event Song Score'],['eventPoints','Event Points'],['challengeLive','Challenge Live']];
 const steps = [['build','Build'],['target','Target'],['lineup','Lineup'],['boards','Boards'],['run','Run & results']];
 const ratingScopes=[['single','One Holomem'],['selected','Selected Leaders'],['quick','Quick Top'],['all','All Leaders']];
 const modeDescriptions = {
@@ -103,6 +104,7 @@ const objectiveDescriptions = {
   score:['flag','Aim for the highest score on a chart or across songs.'],
   event:['calendar','Build around an event’s song score bonus.'],
   eventPoints:['beaker','Get more event points per play.'],
+  challengeLive:['flag','Find the strongest team and song for a Challenge Live stage.'],
   holomemLb:['star','Find the best songs and teams for one Holomem.'],
   unitScore:['star','Maximize team power and skill bonuses without choosing a song.'],
 };
@@ -126,6 +128,7 @@ const colors = [['red','leader'],['blue','card'],['yellow','content'],['green','
 const boardItems = colors.flatMap(([color,branch])=>['Cube','Hexa'].map((kind,index)=>({
   id:`item-skill_tree_${branch}-${index+1}`,key:color+kind,label:`${capitalize(color)} ${kind}`,
 })));
+boardItems.push({id:'item-skill_tree_leader-3',key:'redStarCube',label:'Red Star Cube'});
 const boardRosterGroups=accountRosterBranches.flatMap(branch=>branch.generations);
 const boardRosterOrder=new Map(boardRosterGroups.flatMap((group,index)=>
   group.characters.map((member,order)=>[member.id,{group,index,order}])));
@@ -272,9 +275,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
     beforeUnmount(){
       this.trackLifetime?.abort();
       this.disposeHitPlayback();
-      this.$refs.soundtrack?.pause();
+      this.releaseSoundtrack();
       cancelAnimationFrame(this.trackFrame);
-      this.trackRelease?.();
       this.artwork?.release?.();
     },
     methods:{
@@ -302,13 +304,22 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       useSoundtrack(track){
         if(this.trackLifetime.signal.aborted){track?.release?.();return;}
         this.disposeHitPlayback();
-        this.$refs.soundtrack?.pause();
-        this.trackRelease?.();
+        this.releaseSoundtrack();
         this.trackRelease=track?.release;
         this.trackUrl=track?.url??null;
         this.trackTime=0;
         this.trackDuration=0;
         this.trackStatus=track?'ready':'unavailable';
+      },
+      releaseSoundtrack(){
+        const audio=this.$refs.soundtrack;
+        if(audio){
+          audio.pause();
+          audio.removeAttribute('src');
+          audio.load();
+        }
+        this.trackRelease?.();
+        this.trackRelease=null;
       },
       disposeHitPlayback(){
         hitPlayback.get(this)?.dispose();
@@ -444,10 +455,11 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         ...loadOptimizerPreferences(localStorage,this.profileKey||window.__seelieApp?.account||'main'),
         catalog:workspace?.catalog??null,optimizerSource:workspace?.source??null,ratingExtraSongs:[],updatedJackets:null,
         picker:null,pickerVisible:false,query:'',previewCard:null,outfitPreviewId:null,outfitDraftTraining:{},outfitMedia:{},outfitStageReady:false,searching:false,progress:null,result:null,error:'',
+        searchFailure:null,lineupActivationComparison:null,
         previewTeam:null,reviewDetails:null,detailRequest:0,previewChartKey:'',previewPc:false,previewSection:null,
         previewSlot:null,previewQuery:'',planTeam:null,planError:'',
         savedLineups:[],savedLineupId:null,lineupNameDraft:null,lineupDeleting:false,lineupError:'',lineupScore:null,lineupScoring:false,resultContext:null,
-        lineupValueEdit:null,activeStep:'build',visitedSteps:['build'],resultsChanged:false,eventClock:Date.now(),eventTimer:null,eventPage:0,ratingLeader:null,ratingChart:null,
+        lineupValueEdit:null,activeStep:'build',visitedSteps:['build'],resultsChanged:false,eventClock:Date.now(),eventTimer:null,eventPage:0,ratingLeader:null,ratingChart:null,stageResultSongId:null,
         ratingStandings:{},ratingStandingsRegion:null,ratingStandingsCheckedAt:0,ratingStandingsRequest:0,ratingResultsSort:null,
         catalogRefreshPending:false,catalogLoading:false,searchBackend:null,gpuError:false,gachaError:'',connectorIconId:null,
       };
@@ -538,6 +550,21 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       eventPageIndex(){return Math.min(this.eventPage,this.eventPageCount-1);},
       visibleEvents(){return this.availableEvents.slice(this.eventPageIndex*10,(this.eventPageIndex+1)*10);},
       eventMode(){return this.objective==='event' || this.objective==='eventPoints';},
+      challengeMode(){return this.objective==='challengeLive';},
+      challengeStages(){return this.catalog?.challengeStages??[];},
+      currentChallengeStage(){
+        const stages=this.challengeStages,progress=this.profile?.gameProgress?.challengeLive??[];
+        const record=progress.find(row=>stages.some(stage=>stage.towerId===row.liveTowerId));
+        if(!record)return stages[0];
+        const tower=stages.filter(stage=>stage.towerId===record.liveTowerId);
+        return tower.find(stage=>stage.number>record.clearedStageNumber)??tower.at(-1);
+      },
+      challengeStage(){return this.challengeStages.find(stage=>stage.id===this.challengeStageId)??this.currentChallengeStage;},
+      challengeTowerStages(){return this.challengeStages.filter(stage=>stage.towerId===this.challengeStage?.towerId).sort((a,b)=>a.number-b.number);},
+      challengeSongs(){
+        const ids=this.challengeStage?.songIds??[];
+        return ids.map(id=>this.songs.find(song=>song.id===id)).filter(Boolean);
+      },
       ratingMode(){return this.objective==='holomemLb';},
       hasRatingResults(){return !!this.result&&(this.resultContext?.objective??this.objective)==='holomemLb';},
       ratingBatch(){return this.ratingMode&&this.ratingScope!=='single';},
@@ -570,7 +597,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         return this.eventSongs.find(song=>song.id===songId)??(this.objective==='event'?this.eventSongs[0]:undefined);
       },
       visibleEventSongs(){return this.eventSongs.filter(song=>contains(song.title,this.queryText));},
-      selectedChartKey(){return this.objective==='event'?this.eventScoreChartKey:this.objective==='eventPoints'?this.eventPointsChartKey:this.chartKey;},
+      selectedChartKey(){return this.challengeMode?'':this.objective==='event'?this.eventScoreChartKey:this.objective==='eventPoints'?this.eventPointsChartKey:this.chartKey;},
       eventSongCharts(){return this.eventSong?.charts.filter(chart=>chart.seconds>0)??[];},
       chart(){
         const songs=this.eventMode?(this.eventSong?[this.eventSong]:[]):this.songs;
@@ -706,7 +733,6 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         if(this.protectedBoardSetup?.error)return ['boards',this.protectedBoardSetup.error];
         if(this.boardBudget?.error)return ['boards',this.boardBudget.error];
         if(this.boardBudget?.quote&&!this.boardBudget.quote.fits)return ['boards','The starting Boards exceed the shared budget. Check the shortfall in Boards.'];
-        if(this.unitMode&&this.mode==='next'&&!this.useGpu)return ['build','Enable Use GPU in Settings for Unit Score upgrades.'];
         if(this.mode!=='best'&&this.lockedCardIds.some(id=>!isTeamCardEligible(this.catalog?.cardDetails[id],this)))
           return ['lineup','Unlock the excluded cards or include their rarity.'];
         if(this.mode==='next'&&!this.useOwned){
@@ -724,12 +750,16 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         if(this.eventMode&&this.event.metadataOnly)return ['target','Scoring rules for this event are unavailable.'];
         if(this.eventMode&&!this.eventSong)return ['target',this.objective==='event'?'No playable event songs are available.':'Choose a song for Event Points.'];
         if(this.eventMode&&!this.chart)return ['target','Choose a difficulty for this song.'];
+        if(this.challengeMode&&!this.challengeStage)return ['target','No Challenge Live stages are available.'];
+        if(this.challengeMode&&this.mode==='next')return ['build','Choose Best team or Build around cards for Challenge Live.'];
+        if(this.challengeMode&&!this.challengeSongs.some(song=>song.charts.some(chart=>chart.seconds>0&&this.challengeDifficulties.includes(chart.difficulty))))
+          return ['target','Choose a difficulty available on this stage.'];
         if(!this.ratingMode&&!this.unitMode&&this.selectedChartKey&&!this.chart)return ['target','The selected chart is unavailable. Choose a chart or use Any song.'];
         if(!this.ratingMode&&!this.unitMode&&this.pc&&this.chart?.gameOnly&&!this.chart.pcEstimate)return ['target','Choose Mobile to score this chart.'];
         if(this.ratingBatch&&!this.ratingLeaderIds.length)return ['target',this.ratingScope==='selected'?'Choose at least one leader.':'Invite a Holomem or allow all leaders.'];
         if(this.ratingMode&&!this.ratingBatch&&!this.activeLeaderId)return ['target','Choose a Holomem for Rating.'];
         if(this.ratingMode&&!this.hasRatingChart)return ['target','Adjust song access or the maximum difficulty to include a chart.'];
-        if(!this.ratingMode&&!this.unitMode&&!this.chart&&(this.needsChart||this.rangeCharts===0))return ['target','Choose a chart or an available difficulty range.'];
+        if(!this.ratingMode&&!this.unitMode&&!this.challengeMode&&!this.chart&&(this.needsChart||this.rangeCharts===0))return ['target','Choose a chart or an available difficulty range.'];
         if(!rosterReady)return ['lineup',this.useOwned&&this.rosterSource==='planned'?'Add more active cards to Planner or choose another card pool.':this.useOwned&&!this.ownedCards.length?'Mark cards as owned in Characters, import your account, or choose another card pool.':
           this.mode==='next'?'Add owned cards to find your next upgrade.':'Choose a card pool with five different Holomems.'];
         if(this.mode==='holomem'&&!this.lockedCardIds.length)return ['lineup','Lock at least one card.'];
@@ -748,6 +778,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       'profile.account'(next,previous){if(next!==previous){this.reconcile();this.inputsChanged();this.clearLineupScore();}},
       'profile.cardOwnership'(){this.reconcile();this.inputsChanged();this.clearLineupScore();},
       'profile.gachaPoints'(){this.inputsChanged();},
+      challengeStage(next,previous){if(this.challengeMode&&next?.id!==previous?.id)this.inputsChanged();},
       passport(){if(this.resultContext?.objective==='eventPoints')this.inputsChanged();},
       useGpu(){this.inputsChanged();},
     },
@@ -889,6 +920,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             }
             if(data.type==='error'&&this.searching){
               this.error=data.message;
+              this.searchFailure=data;
               this.gpuError=data.code==='gpu';
               this.stopWorker();
             }
@@ -962,8 +994,10 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         this.result = null;
         this.ratingLeader=null;
         this.ratingChart=null;
+        this.stageResultSongId=null;
         this.ratingResultsSort=null;
         this.resultContext = null;
+        this.searchFailure = null;
         this.resultsChanged=false;
         this.searchBackend = null;
         this.gpuError = false;
@@ -1110,6 +1144,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           const input=search?.querySelector('input');
           input?.setAttribute('autofocus','');
           input?.focus({preventScroll:true});
+          if(this.picker==='stage')this.$refs.pickerList?.querySelector('[aria-pressed="true"]')?.scrollIntoView({block:'nearest'});
           if(this.picker==='outfit')this.revealOutfitPreview();
         });
       },
@@ -1240,27 +1275,30 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         lineupWorkers.delete(this);
         this.lineupScoring=false;
         this.lineupScore=null;
+        this.lineupActivationComparison=null;
       },
       async recalculateLineup(){
         if(!this.canRecalculateLineup||this.lineupScoring)return;
         this.clearLineupScore();
         this.lineupError='';
         this.lineupScoring=true;
-        const finish=(worker,score,error)=>{
+        const finish=(worker,score,error,comparison)=>{
           if(lineupWorkers.get(this)!==worker)return;
           this.clearLineupScore();
           this.lineupScore=score??null;
           this.lineupError=error??'';
+          this.lineupActivationComparison=comparison??score?.activationComparison??null;
         };
         try{
           const worker=new Worker(workerUrl,{type:'module'});
           lineupWorkers.set(this,worker);
-          worker.onmessage=({data})=>{if(data.type==='lineup-score')finish(worker,data.score,data.error);};
+          worker.onmessage=({data})=>{if(data.type==='lineup-score')finish(worker,data.score,data.error,data.activationComparison);};
           worker.onerror=()=>finish(worker,null,'Could not recalculate this lineup.');
           const holoPassport=window.__seelieApp?.data?.[`${this.profileId}-boosts`]?.holoPassport??this.profile?.boosts?.holoPassport??false;
           const lineup={...this.savedLineup,...(this.savedLineup.plannedCards?{plannedCards:this.plannedCards}:{})};
           const message={type:'score-lineup',lineup:clone(lineup),
-            input:{...this.accountScoreInput(),liveBoost:this.savedLineup.liveBoost,holoPassport}};
+            input:{...this.accountScoreInput(),
+              liveBoost:this.savedLineup.liveBoost,holoPassport}};
           message.source=await window.__holodoriDesktop.optimizerCatalogSource(clone(this.optimizerSource)??null);
           if(lineupWorkers.get(this)===worker)worker.postMessage(message);
         }catch{
@@ -1419,7 +1457,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         if(!worker)return;
         const plannedCards=this.rosterSource==='planned'?clone(this.plannedCards):undefined;
         const scoring=this.accountScoreInput();
-        const chart = this.ratingMode||this.unitMode?null:this.chart;
+        const chart = this.ratingMode||this.unitMode||this.challengeMode?null:this.chart;
         const imported=this.currentBoardLayouts;
         const currentMembers=clone(this.members);
         const currentPoints=currentPointRows(this.profile,currentMembers,imported);
@@ -1427,7 +1465,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         const protectedSetup=this.protectedBoardSetup;
         const boards=boardMode==='saved'?boardTable(mergeSavedBoards(imported,this.profile.savedBoards)):
           boardTable(protectedSetup?.boards??imported);
-        const pc = this.objective!=='holomemLb' && this.pc;
+        const pc = !this.ratingMode && !this.challengeMode && this.pc;
         const options = {
           goal:this.mode,focusCardIds:this.mode==='holomem'?[...this.lockedCardIds]:[],
           leaderMode:this.activeLeaderMode,outfitId:this.activeOutfitId,leaderChar:this.activeLeaderId,
@@ -1437,7 +1475,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           anyDiffMax:this.difficultyMode==='types'?this.difficultyBounds[1]:this.upperDifficulty,pc,cardPool:this.effectivePool,
           ...(this.difficultyMode==='types'&&!chart?{anyDiffTypes:[...this.difficultyTypes]}:{}),
           memories:scoring.memoryCount,topN:this.topN,eventBonus:this.objective==='event',
-          eventPoints:this.objective==='eventPoints',sortBy:chart||this.ratingMode?this.sortBy:'avg',
+          eventPoints:this.objective==='eventPoints',sortBy:chart||this.ratingMode||this.challengeMode?this.sortBy:'avg',
           excludeThreeStars:this.excludeThreeStars,excludeFourStars:this.excludeFourStars,
         };
         const outfitAssumption=clone(this.activeOutfitAssumption);
@@ -1468,6 +1506,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         const ratingPlacementRegion=ratingRankBy==='placement'?selectedLeaderboardRegion(sessionStorage):null;
         this.resultContext={profileId:this.profileId,connectPool,mode:this.mode,nextAcquisition:this.nextAcquisition,
           objective:this.objective,ratingLeaderId:this.ratingMode?this.activeLeaderId:null,
+          ...(this.challengeMode?{challengeStageId:this.challengeStage.id}:{}),
           ratingRankBy,ratingPlacementRegion,
           charts:chart?[chart]:[],pc,anyDiffMin:options.anyDiffMin,
           anyDiffMax:options.anyDiffMax,anyDiffTypes:options.anyDiffTypes,sortBy:options.sortBy,eventId,eventChapter,
@@ -1486,12 +1525,13 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         this.searching = true;
         const useBoardWorkers=this.effectiveBoards==='optimize'&&this.mode!=='next';
         const useGpu=this.useGpu;
-        const standaloneGpu=useGpu&&!!boardOpt;
+        const standaloneGpu=useGpu&&(!!boardOpt||this.challengeMode);
         const nextAcquisition=this.mode==='next'&&this.nextAcquisition!=='any'?{
           mode:this.nextAcquisition,at:Date.now(),balances:clone(this.gachaPoints),
         }:undefined;
         const message={type:'search',input:{
           options,objective:this.objective,reviewedMobile:true,eventId,eventChapter,liveBoost:this.liveBoost,outfitAssumption,plannedCards,
+          ...(this.challengeMode?{challengeStageId:this.challengeStage.id,challengeDifficulties:[...this.challengeDifficulties]}:{}),
           useGpu,
           holoPassport:this.passport,ratingSongCount:this.ratingSongCount,ratingTeamsPerSong:this.ratingTeamsPerSong,
           ...(this.ratingBatch?{ratingLeaderIds:this.ratingLeaderIds,ratingNow:this.eventClock,
@@ -1536,11 +1576,15 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
     },
     render(){
       const disabled = this.searching;
-      const chart = this.ratingMode||this.unitMode?null:this.chart;
+      const chart = this.ratingMode||this.unitMode||this.challengeMode?null:this.chart;
       const songJacket = id => {
         const update=this.updatedJackets?.[id];
         return /^m\d{4,6}$/.test(id??'')&&/^[0-9a-f]{32}$/.test(update?.bundleMd5)&&update.name===`${id}-${update.bundleMd5}.webp`?
           jacketUpdates+update.name:this.catalog?.bundledSongIds?.includes(id)?jacket(id):undefined;
+      };
+      const chartJacket=(id,size)=>{
+        const src=songJacket(id);
+        return src?image(src,'holo-team-jacket',size,size):icon('flag','holo-encore-icon');
       };
       const cardPortrait = id => game.cardImage(id,'vertical') || this.catalog?.gameArtwork?.[id] ||
         (this.catalog?.bundledCardIds?.includes(id)?`${optimizerArt}portraits/${id}.webp`:undefined);
@@ -1677,7 +1721,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             this.mode===value?icon('check','holo-encore-selected'):null],()=>this.change('mode',value),{
             key:value,class:'holo-encore-build-option',
             'aria-label':name,'aria-pressed':this.mode===value,
-            disabled:disabled||this.catalog?.goals&&!this.catalog.goals.includes(value),
+            disabled:disabled||this.catalog?.goals&&!this.catalog.goals.includes(value)||this.challengeMode&&value==='next',
+            title:this.challengeMode&&value==='next'?'Challenge Live searches teams for a stage.':undefined,
           });
         }));
       const caption = text => h('p',{class:'text-xs text-gray-400'},text);
@@ -1685,9 +1730,10 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         h('div',{class:'holo-encore-objectives',role:'group','aria-label':'Objective'},objectives.map(([value,name])=>
           button([icon(objectiveDescriptions[value][0]),h('strong',{},name)],()=>this.change('objective',value),{
             key:value,class:'holo-encore-choice holo-encore-objective','aria-pressed':this.objective===value,
-            disabled:disabled||!this.supportedObjectives.has(value),
+            disabled:disabled||!this.supportedObjectives.has(value)||this.mode==='next'&&value==='challengeLive',
+            title:this.mode==='next'&&value==='challengeLive'?'Choose Best team or Build around cards to search a stage.':undefined,
           }))),
-        caption(objectiveDescriptions[this.objective]?.[1]),
+        this.challengeMode?null:caption(objectiveDescriptions[this.objective]?.[1]),
       ]);
       const portrait = (id,size=32) => image(memberIcon(id),'holo-team-member-icon',size,size);
       const itemIcon = (item,size=22) => image(resourceImage(item.key),'holo-encore-material-icon',size,size);
@@ -1726,13 +1772,13 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           disabled:!locked && (selected.length===5 || selected.some(card=>this.cardMember(card)===this.cardMember(id))),
         });
       };
-      const pickerTitles = {chart:'Choose a chart',event:'Choose an event',eventSong:this.objective==='event'?'Choose an event song':'Choose a song',
+      const pickerTitles = {stage:'Choose a stage',chart:'Choose a chart',event:'Choose an event',eventSong:this.objective==='event'?'Choose an event song':'Choose a song',
         cards:'Lock cards',leader:this.ratingMode?'Choose a Holomem':'Choose a leader',outfit:'Choose an outfit',
         ratingSongs:'Additional unlocked songs',ratingLeaders:'Choose leaders',boardProtection:'Protect Boards',
         preview:this.previewCard && this.cardName(this.previewCard.id),
         team:'Preview details','plan-team':'Plan this team',
         'saved-lineups':'Saved lineups','saved-lineup':this.savedLineup?.name??'Saved lineup'};
-      const pickerLabels = {chart:'Search songs and difficulty',eventSong:'Search songs',
+      const pickerLabels = {stage:'Search stages',chart:'Search songs and difficulty',eventSong:'Search songs',
         cards:'Search cards',leader:this.ratingMode?'Search Holomems':'Search leaders',outfit:'Search outfits',ratingSongs:'Search songs',
         boardProtection:'Search Holomems',ratingLeaders:'Search Holomems'};
       const protectedBoards=Object.keys(this.boardProtection).length;
@@ -1752,6 +1798,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         done?.focus({preventScroll:true});
       });
       const pickerOptions = ()=>{
+        if(this.picker==='stage')return this.challengeStageId?button('Use current stage',()=>this.choose('challengeStageId','')):null;
         if(this.picker==='chart')return button('Any song',()=>this.choose('chartKey',''),{'aria-pressed':!chart});
         if(this.picker==='boardProtection')return h('div',{class:'holo-team-picker-actions'},[
           caption('Preserves saved layouts, or current Boards if no plan is saved. No resets still allows additions.'),
@@ -1787,6 +1834,20 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         ]);
       };
       const pickerBody = ()=>{
+        if(this.picker==='stage'){
+          const progress=this.profile?.gameProgress?.challengeLive??[];
+          const multipleTowers=this.challengeTowerStages.length<this.challengeStages.length;
+          const choices=this.challengeStages.flatMap(stage=>{
+            const cleared=progress.find(record=>record.liveTowerId===stage.towerId)?.clearedStageNumber;
+            const status=stage.number<=cleared?'Cleared':stage.number===cleared+1?'Current':'';
+            const title=(multipleTowers?(stage.towerName??stage.towerId)+' · ':'')+'Stage '+stage.number;
+            if(!contains(title+' '+status,this.queryText))return [];
+            return [button([h('span',{},title),status?h('small',{class:'text-gray-400'},status):null],
+              ()=>this.choose('challengeStageId',stage.id),{key:stage.id,class:action+' holo-challenge-stage-choice',
+                'aria-pressed':stage.id===this.challengeStage?.id})];
+          });
+          return [choices.length?h('div',{class:'holo-team-person-grid'},choices):caption('No matching stages.')];
+        }
         if(this.picker==='boardProtection'){
           const imported=this.currentBoardLayouts;
           const names=new Map(this.availableLeaders.map(({id,name})=>[id,name]));
@@ -1961,8 +2022,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       const metric = (label,value) => Number.isFinite(value) ? h('div',{},[
         h('dt',{class:'text-xs text-gray-300'},label),h('dd',{class:'font-semibold'},count(value)),
       ]) : null;
-      const summaryMetric = (label,value) => Number.isFinite(value) ? h('span',{class:'holo-team-summary-metric'},[
-        h('strong',{class:'font-semibold'},count(value)),h('span',{class:'text-xs text-gray-300'},label),
+      const summaryMetric = (label,value,prefix='') => Number.isFinite(value) ? h('span',{class:'holo-team-summary-metric'},[
+        h('strong',{class:'font-semibold'},prefix+count(value)),h('span',{class:'text-xs text-gray-300'},label),
       ]) : null;
       const breakdown = team => {
         const values = Object.entries(breakdownLabels).filter(([key])=>Number.isFinite(team.breakdown?.[key]));
@@ -2011,9 +2072,11 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         const sort=this.resultContext?.sortBy;
         const objective=this.resultContext?.objective;
         const scoreLabel=objective==='unitScore'?'Unit Score':objective==='holomemLb'?'Holomem Rating':
+          objective==='challengeLive'?(sort==='max'?'Estimated maximum stage score':'Estimated average stage score'):
           objective==='eventPoints'?(sort==='max'?'Maximum event points':'Average event points'):
           sort==='max'?'Estimated maximum score':'Estimated average song score';
         const score=row=>objective==='unitScore'?row?.displayUnitScore:objective==='holomemLb'?row?.rating:
+          objective==='challengeLive'?(sort==='max'?row?.maxScore:row?.score):
           objective==='eventPoints'?(sort==='max'?row?.eventPointsMax:row?.eventPointsAvg):
           sort==='max'?(row?.reviewedScore?.maximum??row?.maxScore):(row?.reviewedScore?.average??row?.score);
         const before=score(plan.presentationBefore??plan.before),after=score(plan.presentationAfter??plan.after)??score(team);
@@ -2321,10 +2384,11 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         };
         return vnode(BoardPlanView,{view:renderPlan});
       };
-      const scoreOf = team => team.reviewedScore?.average ?? team.score;
-      const maxOf = team => team.reviewedScore ? team.reviewedScore.maximum : team.maxScore;
+      const scoreOf = team => team.challengeStageId?team.score:team.reviewedScore?.average ?? team.score;
+      const maxOf = team => team.challengeStageId?team.maxScore:team.reviewedScore ? team.reviewedScore.maximum : team.maxScore;
       const teamMetrics = team => [
-        ['Average score',scoreOf(team)],[team.reviewedScore?.chartCount?'Average chart maximum':'Maximum score',maxOf(team)],
+        [team.challengeStageId?'Average stage score':'Average score',scoreOf(team)],
+        [team.challengeStageId?'Maximum stage score':team.reviewedScore?.chartCount?'Average chart maximum':'Maximum score',maxOf(team)],
         ['Unit Score',team.displayUnitScore],
         ['Average event points',team.eventPointsAvg],['Maximum event points',team.eventPointsMax],['Holomem Rating',team.rating],
       ];
@@ -2340,6 +2404,38 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           h('li',{key:id},`${this.cardName(id)} · ${percent(team.eventCardBonuses[index])}`))):null,
       ]):null;
       const previewNode=(type,props,children)=>vnode(type,props,Array.isArray(children)?children.filter(child=>child!=null):children);
+      const activationTable=comparison=>{
+        if(!comparison)return null;
+        const chance=value=>value==null?'Unverified':formatNumber(value/10,{maximumFractionDigits:1})+'%';
+        const isolated=!comparison.mobile||comparison.isolated;
+        const columns=[
+          ...(comparison.mobile?[['Base','base'],['Equipped lineup','permanent']]:[]),
+          ...(isolated?[['Luna only','lunaOnly'],['R-064 only','boardOnly'],['Both','both']]:[]),
+        ];
+        return previewNode('table',{class:'holo-team-plan-table'},[
+          previewNode('caption',{},[
+            previewNode('strong',{},'Active skill activation rates'),
+            previewNode('div',{class:'text-sm text-gray-300'},'Rates before temporary skills activate.'+(isolated?(comparison.boardEquipped
+              ?' R-064 uses its equipped value, including Connect.':' R-064 is shown at its base value on the selected leader.') :'')),
+          ]),
+          previewNode('thead',{},[previewNode('tr',{},['Card in slot order',...columns.map(([label])=>label)]
+            .map(label=>previewNode('th',{scope:'col',key:label},label)))]),
+          previewNode('tbody',{},comparison.rows.map((row,index)=>previewNode('tr',{key:row.id},[
+            previewNode('th',{scope:'row'},(index+1)+'. '+this.cardName(row.id)),
+            ...columns.map(([,key])=>previewNode('td',{key},chance(row[key]))),
+          ]))),
+        ]);
+      };
+      const effectWarnings=warnings=>warnings?.length?details('Score estimate details',[
+        h('ul',{class:'holo-team-board-warnings text-sm','aria-label':'Mobile score estimates'},
+          warnings.map(message=>h('li',{key:message},message))),
+      ]):null;
+      const windowEffects=window=>[
+        window.raw>0?'+'+formatNumber(window.raw)+'% base score':null,
+        window.sup>0?'+'+formatNumber(window.sup*100)+'% score support':null,
+        window.sar>0?'+'+formatNumber(window.sar*100)+'% activation rate':null,
+        window.eff>0?'+'+formatNumber(window.eff*100)+'% card support':null,
+      ].filter(Boolean);
       const detailSwitch=(label,options,current,choose)=>previewNode('div',{class:'holo-team-preview-tabs',role:'group','aria-label':label},
         options.map(([id,name])=>button(name,()=>choose(id),{'aria-pressed':current===id})));
       const previewStats=(title,total,rows,grade)=>previewNode('section',{class:'holo-team-preview-stats'},[
@@ -2354,7 +2450,9 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         if(!report?.histogram?.length)return previewNode('section',{class:'holo-team-preview-distribution'},[
           previewNode('h3',{class:'font-semibold'},'Score distribution'),
           previewNode('p',{role:'status',class:'text-xs text-gray-300'},running?'Simulating runs… · '+runLabel:
-            simulation?'No simulation runs completed.':'Choose a song to see its score distribution.'),
+            simulation?'Expected score '+count(report.average)+' · Range '+count(report.minimum)+'–'+count(report.maximum):
+              'Choose a song to see its score distribution.'),
+          simulation&&!running?button('Simulate activations',()=>this.runPreviewSimulation('rerun',10)):null,
           running&&this.stopPreviewSimulation?button('Stop early',()=>this.stopPreviewSimulation()):null,
         ]);
         const bins=report.histogram,runs=report.runs||bins.reduce((sum,bin)=>sum+bin.count,0)||1;
@@ -2438,10 +2536,25 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           ]):null,
         ]);
       };
+      const noteCountAt=(chart,seconds)=>{
+        const times=chart.events?.times;
+        if(times?.length){
+          let left=0,right=times.length;
+          while(left<right){
+            const mid=(left+right)>>>1;
+            if(times[mid]<=seconds*1_000_000)left=mid+1;else right=mid;
+          }
+          return left;
+        }
+        const curve=chart.countCurve;
+        if(!curve.length)return chart.notes*seconds/chart.seconds;
+        const i=Math.floor(seconds);
+        return (curve[i]??chart.notes)+((curve[i+1]??chart.notes)-(curve[i]??chart.notes))*(seconds-i);
+      };
       const chartTimeline = (team,chart,report,state) => {
         if(!chart?.seconds)return null;
         const position=seconds=>Math.max(0,Math.min(100,100*seconds/chart.seconds));
-        const colors=['#52b9ac','#f49367','#a797e8','#e478b6','#a3ce66'];
+        const colors=['#52b9ac','#f49367','#a797e8','#e478b6','#a3ce66','#63a9d9'];
         const lane=(name,windows,kind,art)=>previewNode('div',{class:'holo-team-timeline-row',key:name},[
           previewNode('span',{title:name},[art?image(art,null,28,18):null,name]),
           previewNode('div',{class:'holo-team-timeline-track','aria-label':name,onPointermove:event=>{
@@ -2453,9 +2566,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             const id=name+'-'+index;
             const time=formatNumber(window.s,{maximumFractionDigits:1})+'–'+formatNumber(window.e,{maximumFractionDigits:1})+' s';
             const chance=kind==='active'&&Number.isFinite(window.p)?formatNumber(window.p*100,{maximumFractionDigits:1})+'% chance':null;
-            const effect=window.raw??(window.sup!=null?window.sup*100:null);
-            const boost=Number.isFinite(effect)?'+'+formatNumber(effect,{maximumFractionDigits:1})+'%':null;
-            const label=[name,time,boost,chance].filter(Boolean).join(' · ');
+            const label=[name,time,...windowEffects(window),chance].filter(Boolean).join(' · ');
             return previewNode('button',{key:index,type:'button','data-window':kind,
               'aria-label':label,'aria-pressed':state.skillWindow?.id===id,style:{left:left+'%',width:width+'%',background:colors[window.slot]},
               title:label,onClick:()=>{state.skillWindow=state.skillWindow?.id===id?null:{id,label,window};}});
@@ -2466,12 +2577,27 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         ]);
         const tick=seconds=>formatNumber(seconds,{maximumFractionDigits:1})+'s';
         const last=report?.timeline?.at(-1);
-        const samples=Array.from({length:Math.ceil(chart.seconds)},(_,i)=>{
-          const overlaps=chart.active.filter(window=>window.s<=i+.5&&window.e>i+.5);
-          return {width:Math.min(1,chart.seconds-i)/chart.seconds*100,
-            note:(chart.countCurve[i+1]??chart.notes)-(chart.countCurve[i]??chart.notes),
-            overlap:overlaps.length,
-            active:overlaps.sort((a,b)=>b.raw-a.raw)[0]?.slot};
+        const boundaries=new Set([0,chart.seconds,...Array.from({length:Math.ceil(chart.seconds)},(_,i)=>i)]);
+        for(const window of [...chart.active,...chart.special]){
+          boundaries.add(Math.min(chart.seconds,window.s));
+          boundaries.add(Math.min(chart.seconds,window.e));
+        }
+        const times=[...boundaries].sort((a,b)=>a-b);
+        const samples=times.slice(0,-1).map((s,index)=>{
+          const eligible=chart.active.filter(window=>window.p>0&&window.raw>0&&window.s<=s&&s<window.e);
+          const support=chart.special.reduce((max,w)=>w.s<=s&&s<w.e?Math.max(max,w.sup??0):max,0);
+          const strength=w=>chart.pc?clientSkillScoreRatio([{category:'active',scoreUpPermil:Math.round(w.raw*10),
+            cardSupportPermil:Math.round(w.eff*1000)}],[],[Math.round(support*1000)]).active:
+            w.raw*(1+w.eff+(chart.outfitSupport??0)+support);
+          const supported=eligible.map(w=>({slot:w.slot,strength:strength(w)}));
+          const highest=Math.max(0,...supported.map(w=>w.strength));
+          const winners=[...new Set(supported.filter(w=>w.strength===highest).map(w=>w.slot))];
+          const winnerColor=winners.length<2?colors[winners[0]]:'linear-gradient(180deg,'+winners.map((slot,n)=>
+            colors[slot]+' '+(100*n/winners.length)+'% '+(100*(n+1)/winners.length)+'%').join(',')+')';
+          const i=Math.floor(s);
+          return {width:(times[index+1]-s)/chart.seconds*100,
+            note:noteCountAt(chart,i+1)-noteCountAt(chart,i),
+            overlap:eligible.length,winnerColor};
         });
         const band=(label,color)=>previewNode('div',{class:'holo-team-timeline-row'},[
           previewNode('span',{},label),previewNode('div',{class:'holo-team-timeline-band'},samples.map((sample,i)=>previewNode('span',{key:i,
@@ -2479,15 +2605,17 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         ]);
         return previewNode('section',{class:'holo-team-preview-timeline'},[
           previewNode('h3',{class:'font-semibold'},'Timeline Graph'),
+          chart.pc&&last?caption('Expected score uses PERFECT judgments at chart times and models each scheduled Active check independently at its Steam activation rate.'):null,
           previewNode('div',{class:'holo-team-timeline-axis','aria-hidden':'true'},[
             previewNode('span'),previewNode('div',{},Array.from({length:6},(_,i)=>previewNode('span',{key:i},tick(chart.seconds*i/5)))),
           ]),
           ...team.cardIds.map((id,slot)=>lane(this.catalog.cardDetails[id]?.member??this.cardName(id),
             chart.active.filter(window=>window.slot===slot),'active',game.cardImage(id,'grid'))),
+          chart.active.some(w=>w.slot===5)?lane('Board',chart.active.filter(w=>w.slot===5),'active'):null,
           lane('Special',chart.special,'special'),
-          chart.countCurve.length?band('Notes',sample=>'rgb(57 194 207 / '+Math.min(1,Math.max(.08,sample.note/16))+')'):null,
-          band('Active',sample=>colors[sample.active]),
-          band('Overlap',sample=>'rgb(190 177 237 / '+Math.min(1,.08+sample.overlap/5)+')'),
+          chart.countCurve.length||chart.events?.times?.length?band('Notes',sample=>'rgb(57 194 207 / '+Math.min(1,Math.max(.08,sample.note/16))+')'):null,
+          band('Strongest possible',sample=>sample.winnerColor),
+          band('Eligible skills',sample=>'rgb(190 177 237 / '+Math.min(1,.08+sample.overlap/5)+')'),
           last?.score>0?previewNode('div',{class:'holo-team-timeline-row'},[
             previewNode('span',{},'Score'),previewNode('svg',{class:'holo-team-chart',viewBox:'0 0 300 44',preserveAspectRatio:'none',
               role:'img','aria-label':'Cumulative expected score'},[
@@ -2495,8 +2623,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                 position(point.seconds)*3+','+(42-point.score/last.score*39)).join(' ')}),
             ]),
           ]):null,
-          state.timelineCursor!=null?previewNode('p',{class:'text-xs text-gray-300'},tick(state.timelineCursor)+' · '+
-            count(chart.countCurve[Math.floor(state.timelineCursor)]??chart.notes)+' combo'):null,
+          state.timelineCursor!=null&&Number.isFinite(chart.notes)?previewNode('p',{class:'text-xs text-gray-300'},tick(state.timelineCursor)+' · '+
+            count(Math.floor(noteCountAt(chart,state.timelineCursor)))+' combo'):null,
           state.skillWindow?previewNode('div',{class:'holo-team-preview-section-head holo-team-skill-selection',role:'status'},[
             previewNode('span',{},state.skillWindow.label),button('Close skill details',()=>{state.skillWindow=null;}),
           ]):null,
@@ -2507,21 +2635,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         const span=Math.min(state.chartSpan,chart.seconds),limit=Math.max(0,chart.seconds-span);
         const start=Math.max(0,Math.min(state.chartStart,limit)),end=Math.min(chart.seconds,start+span);
         const points=[start,...Array.from({length:Math.max(0,Math.ceil(end)-Math.floor(start)-1)},(_,i)=>Math.floor(start)+i+1),end];
-        const countAt=seconds=>{
-          const times=chart.events?.times;
-          if(times?.length){
-            let left=0,right=times.length;
-            while(left<right){
-              const mid=(left+right)>>>1;
-              if(times[mid]<=seconds*1_000_000)left=mid+1;else right=mid;
-            }
-            return left;
-          }
-          const curve=chart.countCurve;
-          if(!curve.length)return chart.notes*seconds/chart.seconds;
-          const i=Math.floor(seconds);
-          return (curve[i]??chart.notes)+((curve[i+1]??chart.notes)-(curve[i]??chart.notes))*(seconds-i);
-        };
+        const countAt=seconds=>noteCountAt(chart,seconds);
         const base=countAt(start),notes=Math.max(1,countAt(end)-base);
         const eventMarks=new Map();
         const duration=end-start;
@@ -2592,14 +2706,15 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           previewNode('input',{type:'file',ref:'soundtrackFile',accept:'audio/*,.mp3,.ogg,.opus,.m4a,.wav,.flac,.webm',hidden:true,
             onChange:state.addSoundtrack}),
         ]);
-        const colors=['#52b9ac','#f49367','#a797e8','#e478b6','#a3ce66'];
+        const colors=['#52b9ac','#f49367','#a797e8','#e478b6','#a3ce66','#63a9d9'];
         const groups=new Map();
         for(const window of chart.active){
+          if(!(window.raw>0&&window.p>0))continue;
           if(!groups.has(window.slot))groups.set(window.slot,[]);
           groups.get(window.slot).push(window);
         }
         const overlays=[...groups].map(([slot,windows])=>({slot,
-          name:this.catalog.cardDetails[team?.cardIds?.[slot]]?.member??'Card '+(slot+1),windows,color:colors[slot]}));
+          name:slot===5?'Board':this.catalog.cardDetails[team?.cardIds?.[slot]]?.member??'Card '+(slot+1),windows,color:colors[slot]}));
         if(chart.special.length)overlays.push({slot:'special',name:'Specials',color:'#63a9d9',windows:chart.special});
         const expected=chart.averageScore??report?.average;
         const maximum=chart.maxScore??report?.maximum;
@@ -2660,9 +2775,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         const artLayout=artwork?.layout;
         const selected=state.selectedOverlay;
         const selectedWindowArt=artLayout&&selected?chartArtworkCrop(artLayout,selected.window.s,selected.window.e):null;
-        const skillEffect=selected?.window.raw??(selected?.window.sup!=null?selected.window.sup*100:null);
-        const selectionLabel=selected?[selected.name,Number.isFinite(skillEffect)?'+'+formatNumber(skillEffect,
-          {maximumFractionDigits:1})+'%':null,windowLabel(selected.window)].filter(Boolean).join(' · '):'';
+        const selectionLabel=selected?[selected.name,...windowEffects(selected.window),windowLabel(selected.window)].join(' · '):'';
         const showPlayhead=state.trackUrl&&playhead>=start&&playhead<=end;
         const moveChart=by=>{
           const next=Math.max(Math.min(3,chart.seconds),Math.min(chart.seconds,span*by));
@@ -2839,7 +2952,9 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             (value.plus>0?'+'+(value.type==='S'?count(value.plus):''):'')):null;
         };
         const songKey=this.previewChartKey;
-        const previewSongs=[...this.releasedSongs,...(this.catalog.previewSongs??[]).filter(song=>song.startTime<=this.eventClock)];
+        const stage=team.challengeStageId?this.challengeStages.find(row=>row.id===team.challengeStageId):null;
+        const previewSongs=stage?this.songs.filter(song=>stage.songIds.includes(song.id)&&song.charts.some(chart=>chart.seconds>0)):
+          [...this.releasedSongs,...(this.catalog.previewSongs??[]).filter(song=>song.startTime<=this.eventClock)];
         const selectedSong=songKey?previewSongs.find(song=>song.id===songKey.split('_')[0]):null;
         const song=selectedSong?{songId:selectedSong.id,title:selectedSong.title,difficulty:songKey.split('_')[1]}:null;
         const charts=selectedSong?.charts.filter(chart=>chart.seconds>0)??[];
@@ -2900,7 +3015,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                 vnode(Search,{label:'Search '+section.toLowerCase()+'s',search:this.previewQuery,
                   'onUpdate:search':value=>{this.previewQuery=value;}}),
               ]),
-              section==='Song'?button('Any song',()=>{chooseChart('');edit(null);}):null,
+              section==='Song'&&!stage?button('Any song',()=>{chooseChart('');edit(null);}):null,
               section==='Card'&&id?button('Clear slot',()=>{this.patchPreviewCard(this.previewSlot,null);edit(null);}):null,
             ]),
             options.length?previewNode('div',{class:'holo-team-person-grid'},options):caption('No matches.'),
@@ -2909,7 +3024,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         const complete=team.cardIds.length===5&&team.cardIds.every(Boolean)&&team.leaderChar&&team.outfitId;
         return previewNode('div',{class:'holo-team-detail-stack'},[
           previewNode('section',{class:'holo-team-preview-setup'},[
-            previewNode('h3',{class:'font-semibold'},'Song'),
+            previewNode('h3',{class:'font-semibold'},stage?`Stage ${stage.number}`:'Song'),
             previewNode('div',{class:'holo-team-preview-song'},[
               song?image(songJacket(song.songId),'holo-team-jacket',40,40):null,
               previewNode('strong',{},song?.title??'Any song'),
@@ -2917,7 +3032,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             ]),
             song?detailSwitch('Difficulty',charts.map(chart=>[chart.key,chartName(chart)]),songKey,key=>
               chooseChart(key,charts.some(chart=>chart.key===key&&chart.gameOnly&&!chart.pcEstimate))):null,
-            detailSwitch('Platform',charts.some(chart=>chart.key===songKey&&chart.gameOnly&&!chart.pcEstimate)?
+            stage?null:detailSwitch('Platform',charts.some(chart=>chart.key===songKey&&chart.gameOnly&&!chart.pcEstimate)?
               [[false,'Mobile']]:[[false,'Mobile'],[true,'PC']],this.previewPc,value=>{
               if(this.previewPc!==value){this.previewPc=value;this.refreshTeamPreview();}
             }),
@@ -2957,11 +3072,13 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           preview?.backend==='game-pc-estimate'?caption('PC estimate from game chart data.'):null,
           !complete?caption('Choose five cards, a leader and an outfit to calculate details.'):null,
           complete&&preview?previewNode('div',{class:'holo-team-preview-scorebar'},teamMetrics({
-            score:preview.score,maxScore:preview.maxScore,eventPointsAvg:preview.eventPointsAvg,eventPointsMax:preview.eventPointsMax,
+            challengeStageId:team.challengeStageId,score:preview.score,maxScore:preview.maxScore,
+            eventPointsAvg:preview.eventPointsAvg,eventPointsMax:preview.eventPointsMax,
           }).filter(([label])=>label!=='Unit Score').map(([label,value])=>summaryMetric(label,value))):null,
           complete?previewNode('section',{class:'holo-team-preview-unit'},[
             previewNode('div',{class:'holo-team-preview-section-head'},[
               previewNode('h3',{},['Unit Score ',previewNode('strong',{},count(view?.unitScore)),rank('unit')]),
+              stage&&view?.challengeUnitBonus>0?summaryMetric('Stage bonus',view.challengeUnitBonus,'+'):null,
               preview?.thisSong?detailSwitch('Unit Score view',[['overall','Overall'],['song','This Song']],state.unit,
                 value=>{state.unit=value;}):null,
             ]),
@@ -2974,6 +3091,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
               ].map(([name,key])=>[name,percent(view.bonuses[key])]),rank('bonus')),
             ]):preview?.error?caption(preview.error):previewNode('p',{role:'status',class:'text-sm text-gray-300'},'Calculating details…'),
           ]):null,
+          complete?activationTable(preview?.activationComparison):null,
+          complete?effectWarnings(preview?.effectWarnings):null,
           complete&&preview&&!preview.error?distribution(preview.details,state,preview.simulation):null,
           preview?eventDetails({...team,...preview}):null,
           chartTimeline(team,preview?.chart??preview?.genericChart,preview?.details,state),
@@ -3022,6 +3141,10 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       const lineupContext = row => {
         const [chart]=row.charts;
         const title=chart&&(this.catalog?.songs.find(song=>song.id===chart.songId)?.title??chart.songId);
+        if(row.objective==='challengeLive'){
+          const stage=this.challengeStages.find(stage=>stage.id===row.challengeStageId);
+          return `${stage?'Stage '+stage.number:'Challenge Live'} · ${title} · ${capitalize(chart.difficulty)}`;
+        }
         if(row.charts.length>1)return `${count(row.charts.length)} rating songs`;
         return title?`${title} · ${capitalize(chart.difficulty)}`:row.objective==='unitScore'?'Unit Score':'Any song';
       };
@@ -3078,8 +3201,11 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           ]),
           !this.canRecalculateLineup?caption('Add to your owned roster in Characters or import your account.'):null,
           this.lineupError?h('p',{role:'alert',class:'text-sm text-amber-300'},this.lineupError):null,
+          activationTable(this.lineupActivationComparison),
+          effectWarnings(score?.effectWarnings),
           score?h('div',{class:'holo-team-estimates holo-saved-lineup-edit','aria-label':'Recalculated scores',role:'status'},[
-            summaryMetric('Unit Score',score.displayUnitScore),summaryMetric('Estimated average song score',score.score),
+            summaryMetric('Unit Score',score.displayUnitScore),summaryMetric(row.objective==='challengeLive'?'Estimated average stage score':'Estimated average song score',score.score),
+            row.objective==='challengeLive'&&score.challengeUnitBonus>0?summaryMetric('Unit Score bonus',score.challengeUnitBonus,'+'):null,
             summaryMetric('Est. max score',score.maxScore),summaryMetric('Avg. event points',score.eventPointsAvg),
             summaryMetric('Max event points',score.eventPointsMax),summaryMetric('Holomem rating',score.rating),
           ]):null,
@@ -3088,6 +3214,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
       const planResult = team => this.openTeamPlan(team);
       const resultMode=this.resultContext?.mode??this.mode;
       const resultObjective=this.resultContext?.objective??this.objective;
+      const resultStage=resultObjective==='challengeLive'?this.challengeStages.find(stage=>stage.id===this.resultContext?.challengeStageId):null;
       const placementRegionId=this.resultContext?.ratingPlacementRegion??this.ratingStandingsRegion;
       const placementRegion=leaderboardRegions[placementRegionId];
       const placementStandings=this.resultContext?.ratingPlacementStandings??this.ratingStandings;
@@ -3121,14 +3248,16 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         return place?h('span',{class:'holo-rating-lineup-metric'},[metric,place]):metric;
       };
       const renderRows = (teams,openFirst=true,group=null,ratingResult=null)=>teams.map((team,index)=>h('details',{
-        key:`${index}-${team.cardIds.join(',')}`,class:'holo-team-result rounded bg-gray-800',open:openFirst&&index===0,
+        key:`${group?.songId??''}-${index}-${team.cardIds.join(',')}`,class:'holo-team-result rounded bg-gray-800',open:openFirst&&index===0,
       },[
         h('summary',{class:'holo-team-result-head'},[
           h('span',{class:'holo-team-result-rank font-semibold'},`#${index+1}`),
           h('span',{class:'holo-team-estimates'},[
-            summaryMetric('Estimated average song score',scoreOf(team)),
+            summaryMetric(resultStage?'Estimated average stage score':'Estimated average song score',scoreOf(team)),
             summaryMetric(team.reviewedScore?.chartCount?'Avg. chart max':'Est. max score',maxOf(team)),
-            summaryMetric('Unit Score',team.displayUnitScore),summaryMetric('Avg. event points',team.eventPointsAvg),
+            summaryMetric('Unit Score',team.displayUnitScore),
+            resultStage&&team.challengeUnitBonus>0?summaryMetric('Stage bonus',team.challengeUnitBonus,'+'):null,
+            summaryMetric('Avg. event points',team.eventPointsAvg),
             summaryMetric('Max event points',team.eventPointsMax),lineupRatingMetric(team,group,ratingResult),
           ]),
           icon('chevron-right','holo-team-result-chevron'),
@@ -3164,6 +3293,9 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           Number.isFinite(team.unitScore) || team.breakdown ? details('Score breakdown',[
             Number.isFinite(team.unitScore) ? h('dl',{class:'holo-team-breakdown'},[metric('Chart base score',team.unitScore)]) : null,
             breakdown(team),
+            resultStage&&Number.isFinite(team.challengeBonusPermil)?h('dl',{class:'holo-team-breakdown'},[
+              h('div',{},[h('dt',{},'Challenge Live bonus'),h('dd',{},percent(team.challengeBonusPermil))]),
+            ]):null,
           ]) : null,
           resultBaseline&&unitUpgrades?caption(`+${count(team.displayUnitScore-this.result.baseline)} Unit Score vs. current best`):
           resultBaseline ?
@@ -3172,12 +3304,26 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           upgrades(team),boardPlan(team),
         ]),
       ]));
-      const rows=renderRows(this.result?.results??[]);
-      const ratingChartLabel=chart=>[
-        image(songJacket(chart.songId),'holo-team-jacket',34,34),
-        h('span',{class:'holo-rating-chart-name'},[h('strong',{},chart.title),h('small',{class:'text-gray-400'},capitalize(chart.difficulty))]),
-        h('span',{class:'holo-rating-chart-score'},[h('strong',{},`${count(chart.rating)} rating`),h('small',{class:'text-gray-400'},count(chart.best))]),
+      const stageSongs=this.result?.challengeSongs??[];
+      const selectedStageSong=stageSongs.find(song=>song.songId===this.stageResultSongId)??stageSongs[0];
+      const rows=renderRows(selectedStageSong?.results??this.result?.results??[],true,selectedStageSong);
+      const resultChartLabel=(chart,title,score,detail)=>[
+        chartJacket(chart.songId,34),
+        h('span',{class:'holo-rating-chart-name'},[h('strong',{},title),h('small',{class:'text-gray-400'},capitalize(chart.difficulty))]),
+        h('span',{class:'holo-rating-chart-score'},[h('strong',{},score),detail?h('small',{class:'text-gray-400'},detail):null]),
       ];
+      const ratingChartLabel=chart=>resultChartLabel(chart,chart.title,`${count(chart.rating)} rating`,count(chart.best));
+      const stageSongChoices=()=>{
+        if(!selectedStageSong)return null;
+        const byMax=this.resultContext.sortBy==='max';
+        return h('div',{class:'holo-rating-charts holo-stage-song-choices',role:'group','aria-label':'Stage songs'},stageSongs.map(chart=>{
+          const title=this.songs.find(song=>song.id===chart.songId)?.title??chart.songId;
+          return button(resultChartLabel(chart,title,count(byMax?chart.maxScore:chart.score),byMax?'Est. max':'Est. average'),
+            ()=>{this.stageResultSongId=chart.songId;},{
+              key:chart.songId,class:'holo-team-rating-song holo-rating-chart rounded','aria-pressed':chart===selectedStageSong,
+            });
+        }));
+      };
       const ratingGroups = groups=>groups.map((group,index)=>h('details',{
         key:group.songId,class:'holo-team-result holo-team-rating-group rounded bg-gray-800',open:index===0,
       },[
@@ -3388,11 +3534,13 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
         ]) : null,
       ];
       const chartArtwork=this.ratingMode&&leader?memberIcon(leader.id):chart&&songJacket(chart.songId);
-      const chartTitle=this.unitMode?'Unit Score':this.ratingMode?(this.ratingBatch?
+      const chartTitle=this.challengeMode?(this.challengeStage?`Stage ${this.challengeStage.number}`:'Choose a stage'):
+        this.unitMode?'Unit Score':this.ratingMode?(this.ratingBatch?
         this.ratingScope==='quick'?`Quick Top ${this.ratingQuickCount}`:ratingScopes.find(([key])=>key===this.ratingScope)?.[1]:
         leader?.name??'Choose a Holomem'):
         (chart?.title??this.eventSong?.title??(this.needsChart?'Choose a song':'Any song'));
-      const targetDetail=this.unitMode?'Team power and skill bonuses':this.ratingMode?'Mobile · Holomem Rating':
+      const targetDetail=this.challengeMode?`Mobile · ${count(this.challengeStage?.songIds.length??0)} stage songs`:
+        this.unitMode?'Team power and skill bonuses':this.ratingMode?'Mobile · Holomem Rating':
         `${this.pc?'PC':'Mobile'} · ${chart?chartName(chart):'Chart average'}`;
       const poolOptions=this.rosterSource==='planned'?plannedPools:pools;
       const poolTitle=poolOptions.find(([id])=>id===this.effectivePool)?.[1];
@@ -3444,6 +3592,51 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
           },{key:option.key,class:`${action} holo-team-difficulty`,'data-difficulty':option.difficulty,
             'aria-pressed':chart?.key===option.key,disabled}))):null,
       ]:[caption(this.catalog?'No eligible events are available in this catalog.':'Loading events…')];
+      const challengeTarget=()=>{
+        const stage=this.challengeStage;
+        if(!stage)return [caption('No Challenge Live stages are available.')];
+        const tower=this.challengeTowerStages,index=tower.findIndex(row=>row.id===stage.id);
+        const arrow=(offset,label)=>button([icon('chevron-right')],()=>this.change('challengeStageId',tower[index+offset].id),{
+          class:action+' holo-challenge-arrow'+(offset<0?' holo-challenge-back':''),
+          'aria-label':label,title:label,disabled:disabled||!tower[index+offset],
+        });
+        const bonuses=stage.bonusCharacterIds.map(id=>{
+          const member=accountCharactersById.get(id),name=member?.name??this.catalog.leaders.find(row=>row.id===id)?.name??id;
+          return h('span',{key:id,class:'holo-challenge-member',title:name,'aria-label':name},[
+            portrait(id,28),member?.shortName||name,
+          ]);
+        });
+        return [h('div',{class:'holo-challenge-target'},[
+          h('div',{class:'holo-challenge-stage-head'},[
+            h('div',{class:'holo-team-options holo-encore-segments',role:'group','aria-label':'Stage selection'},[
+              arrow(-1,'Previous stage'),
+              button([icon('flag'),h('strong',{},`Stage ${stage.number}`),icon('chevron-down')],()=>this.openPicker('stage'),{
+                class:action+' holo-encore-chip',disabled,'aria-label':`Choose stage, Stage ${stage.number}`,'aria-haspopup':'dialog',
+              }),arrow(1,'Next stage'),
+            ]),
+            h('span',{class:'holo-challenge-clear'},['Clear score',h('strong',{},count(stage.clearScore))]),
+          ]),
+          bonuses.length?h('div',{},[
+            h('div',{class:'holo-challenge-label'},['Bonus members',h('strong',{},`+${formatNumber(stage.bonusPermil/10)}% each`)]),
+            h('div',{class:'holo-challenge-items'},bonuses),
+          ]):null,
+          h('div',{},[h('div',{class:'holo-challenge-label'},'Stage songs'),
+            h('div',{class:'holo-challenge-items'},this.challengeSongs.map(song=>
+              h('span',{key:song.id,class:'holo-challenge-song'},[chartJacket(song.id,28),song.title]))),
+          ]),
+          h('div',{class:'holo-challenge-difficulties'},[
+            h('span',{class:'text-xs text-gray-400'},'Difficulty'),
+            h('div',{class:'holo-team-options holo-encore-segments',role:'group','aria-label':'Stage difficulties'},difficulties.map(type=>{
+              const active=this.challengeDifficulties.includes(type);
+              return button(capitalize(type),()=>this.change('challengeDifficulties',active?
+                this.challengeDifficulties.filter(value=>value!==type):[...this.challengeDifficulties,type]),{
+                key:type,class:action+' holo-team-difficulty','data-difficulty':type,'aria-pressed':active,
+                disabled:disabled||active&&this.challengeDifficulties.length===1,
+              });
+            })),
+          ]),
+        ])];
+      };
       const panels={
         build:[
               choices('rosterSource','Card source',[['owned','Use Owned Cards'],['planned','Use Planned Cards']]),
@@ -3457,7 +3650,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                 choices('ratingRankBy','Rank leaders by',[['rating','Highest rating'],['placement','Best projected place']]),
               ]):null,
               ...(this.eventMode?eventTarget():[]),
-              this.unitMode||this.eventMode ? null : this.ratingMode ? h('div',{class:'holo-encore-inline-fields holo-encore-rating-fields'},[
+              ...(this.challengeMode?challengeTarget():[]),
+              this.unitMode||this.eventMode||this.challengeMode ? null : this.ratingMode ? h('div',{class:'holo-encore-inline-fields holo-encore-rating-fields'},[
                 this.ratingBatch?null:field('Rating leader',searchChoice('leader','Choose a Holomem',chartTitle,false,leader&&memberIcon(leader.id)),
                   {label:'Clear Rating leader',clear:()=>this.chooseLeader('',false),show:!!this.activeLeaderId}),
                 this.ratingScope==='selected'?field('Leaders',searchChoice('ratingLeaders','Choose leaders',
@@ -3469,11 +3663,11 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                 icon('chevron-right')],()=>this.openPicker('chart'),{class:'holo-encore-chart','aria-label':'Choose a chart',
                 'aria-haspopup':'dialog',disabled}),
                 {label:this.needsChart?'Clear chart':'Use any song',clear:()=>this.change('chartKey',''),show:!!chart},true),
-              !this.ratingMode&&!this.unitMode ? h('div',{class:'holo-team-options'},[
+              !this.ratingMode&&!this.unitMode&&!this.challengeMode ? h('div',{class:'holo-team-options'},[
                 choices('pc','Platform',[[false,'Mobile'],[true,'PC']],value=>value&&chart?.gameOnly&&!chart.pcEstimate),
                 !chart&&!this.needsChart?choices('difficultyMode','Average charts by',[['levels','Level range'],['types','Difficulty']]):null,
               ]) : null,
-              !this.ratingMode && !this.unitMode && !chart && !this.needsChart ? h('div',{class:'holo-team-range'},[
+              !this.ratingMode && !this.unitMode && !this.challengeMode && !chart && !this.needsChart ? h('div',{class:'holo-team-range'},[
                 this.difficultyMode==='types'?h('div',{class:'holo-team-options','aria-label':'Chart difficulties',role:'group'},
                   difficulties.map(type=>{
                     const selected=this.difficultyTypes.includes(type);
@@ -3564,7 +3758,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
                 !this.unitMode?h('div',{class:'holo-team-field'},[
                   h('span',{class:'holo-team-label font-semibold'},'Search sorting'),
                   choices('sortBy','Search sorting',[['avg','Average score'],['max','Max score']],
-                    value=>value==='max'&&!chart&&!this.ratingMode,chart||this.ratingMode?this.sortBy:'avg','holo-encore-sort'),
+                    value=>value==='max'&&!chart&&!this.ratingMode&&!this.challengeMode,chart||this.ratingMode||this.challengeMode?this.sortBy:'avg','holo-encore-sort'),
                 ]):null,
                 this.ratingMode?number('ratingSongCount','Suggested songs',1,10):null,
                 this.ratingMode&&!this.ratingMerge?number('ratingTeamsPerSong','Teams per song',1,5):null,
@@ -3605,6 +3799,7 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             id==='run'&&this.error?h('div',{class:'holo-encore-notice',role:'alert'},[icon('exclamation-circle'),h('span',{},this.error),
               this.gpuError?button('Open Settings',()=>this.$router.push('/settings')):null,
             ]):null,
+            id==='run'&&this.error&&this.error===this.searchFailure?.message?activationTable(this.searchFailure.activationComparison):null,
             h('div',{class:'holo-encore-step-actions'},[
               index>0?button('Back',()=>this.goToStep(steps[index-1][0],true)):null,
               id==='run'&&this.result?button('View results',this.showResults):null,
@@ -3634,8 +3829,11 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             (this.searchBackend==='gpu'?'GPU':this.searchBackend==='cpu'?'CPU':this.useGpu?'Starting GPU':'CPU') :
             (this.useGpu?'GPU enabled':'CPU')],
           this.result?.scoringModel?['Scoring model',this.result.scoringModel==='mobile'?'Mobile game model':
+            this.result.scoringModel==='challenge-mobile'?'Mobile Challenge Live':
+            this.result.scoringModel==='mobile-per-note-estimate'?
+              ('Mobile per-note estimate ('+count(this.result.results[0].rangeCoverage.perNote)+' of '+count(this.result.results[0].chartCount)+' charts)'):
             this.result.scoringModel==='steam'?'Steam game model':
-            this.result.scoringModel==='game-pc-estimate'?'PC estimate from game charts':'Score estimate']:null,
+            this.result.scoringModel==='game-pc-estimate'?'PC estimate from game charts':'Mobile reference estimate']:null,
           this.rosterSource==='planned'?['Planned cards',count(this.plannedCards.length)]:this.useOwned?['Owned cards',count(this.ownedCards.length)]:null,
           ['Invited Holomems',count(this.members.length)],
           ['Outfit',outfit?h('span',{class:'holo-encore-fact-person'},[
@@ -3680,7 +3878,8 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             h('div',{class:`holo-team-results-heading${batchRows?' holo-rating-results-head rounded bg-gray-800':''}`},[
               h('div',{class:'holo-rating-results-title'},[
                 h('h2',{class:'font-semibold'},quick?`Quick Top ${quick.limit}`:batchRows?'Holomem Rating leaderboard':unitUpgrades?'Best Unit Score upgrades':
-                  resultObjective==='unitScore'?'Best Unit Score teams':resultObjective==='holomemLb'?'Holomem Rating':resultMode==='next'?'Best next cards':'Your best teams'),
+                  resultObjective==='unitScore'?'Best Unit Score teams':
+                  resultObjective==='holomemLb'?'Holomem Rating':resultMode==='next'?'Best next cards':'Your best teams'),
                 batchRows?h('p',{class:'text-xs text-gray-400',role:'status'},quick?quick.screened===null?`Screening ${count(this.result.leaderTotal)} leaders`:
                   `${count(quick.screened)} screened · ${this.searching?`${count(batchRows.length)} / `:''}${count(this.result.leaderTotal)} full searches`:
                   `${count(batchRows.length)} of ${count(this.result.leaderTotal)} leaders complete`):null,
@@ -3702,13 +3901,14 @@ export function createTeamOptimizer({h,vnode,resolve,Search,Dialog,Toggle,headin
             ]):null,
             batchRows&&this.searching?searchMeter():null,
             this.result.excluded?caption(`${count(this.result.excluded)} cards excluded`):null,
+            ...(this.result.notices??[]).map(note=>caption(note)),
             this.result.boardWarnings?.length?h('div',{class:'holo-encore-notice',role:'status'},[
               icon('information-circle'),
               h('ul',{class:'holo-team-board-warnings'},this.result.boardWarnings.map(warning=>h('li',{key:warning},warning))),
             ]):null,
             resultBaseline ?
               caption(`Current best · ${count(this.result.baseline)} ${unitUpgrades?'Unit Score':'estimated average song score'}`) : null,
-            ...rows,
+            stageSongChoices(),...rows,
             ...(batchRows?[leaderboard()]:ratingGroups(this.result.ratingGroups??[])),
             !batchRows&&!rows.length&&!this.result.ratingGroups?.length ? caption(resultMode==='next'&&this.resultContext?.nextAcquisition!=='any'?
               'No upgrade team matched this acquisition filter.':unitUpgrades&&resultBaseline?

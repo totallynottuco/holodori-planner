@@ -56,9 +56,10 @@ export function resolveRecordedScoreTrace(timeline: ChartTimelineReport, chart: 
     const count = event.noteCount
     if (offset + count > chart.total_notes || Array.from(chart.eventTimesMicroseconds.slice(offset, offset + count)).some(time => time !== event.timeMicroseconds)) throw new Error('Skill trace and chart events do not match')
     const calculation = power.status === 'resolved' && boardSongBonus.status === 'resolved' && skillScoreUpRatio.status === 'resolved'
-      ? calculatePerfectScoreGroup({ platform: 'mobile', overallPower: power.value,
+      ? calculatePerfectScoreGroup({ platform: chart.platform, overallPower: power.value,
         evaluationCoefficientPermil: LIVE_SCORE_CLIENT.evaluationCoefficientPermil, songCoefficientPermil: timeline.team.song.scoreCoefficientPermil,
         difficultyLevel: chart.difficultyLevel, notesPerfectCoefficientSumPermil: evidence.denominator.completePerfectSumPermil,
+        chartScoreCoefficientPermyriad: evidence.denominator.chartScoreCoefficientPermyriad,
         boardSongBonusPermil: boardSongBonus.value, skillScoreUpRatio: skillScoreUpRatio.value
       }, Array.from({ length: count }, (_, index) => ({ timeMicroseconds: event.timeMicroseconds,
         noteType: chart.eventNoteTypes[offset + index], perfectCoefficientPermil: chart.eventWeightsPermil[offset + index] })), offset) : null

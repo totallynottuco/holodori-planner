@@ -123,14 +123,14 @@ fn scoreUnits(@builtin(global_invocation_id) id: vec3u) {
 }
 `;
 
-function boardMetric(scores,{sortBy='avg',merged=false},eventBonus=0,epPermil){
+function boardMetric(scores,{sortBy='avg',merged=false,rangeWeights},eventBonus=0,epPermil){
   const index=sortBy==='max'?1:0;
   if(merged){
     const top=scores.map(score=>score[index]).sort((a,b)=>b-a).slice(0,3);
     return {value:top.reduce((total,score)=>total+Math.ceil(score/5000),0),
       tie:top.reduce((total,score)=>total+score,0)};
   }
-  let total=scores.reduce((sum,row)=>sum+row[index],0);
+  let total=scores.reduce((sum,row,i)=>sum+row[index]*(rangeWeights?.[i]??1),0);
   if(eventBonus>0)total=Math.ceil(total*(1+eventBonus/1000));
   if(epPermil!==undefined)total=(120+total/15000)*(1+epPermil/1000);
   return {value:total,tie:total};

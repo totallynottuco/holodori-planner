@@ -31,6 +31,7 @@ $libraries=[ordered]@{
     Charts=@('hololive-dist/assets/chart-artwork','charts.zip','(?:^index\.json$|\.png$)')
     Music=@('hololive-dist/assets/team-optimizer/soundtracks','music.zip','(?:^index\.json$|\.ogg$)')
 }
+Add-Type -AssemblyName System.IO.Compression
 Add-Type -AssemblyName System.IO.Compression.FileSystem
 
 function Write-ArchiveEntry($archive, $file, $name, $compression) {

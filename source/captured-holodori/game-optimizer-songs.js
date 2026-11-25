@@ -39,9 +39,10 @@ function compactChart(pack, summary, song, pcDenominator) {
 /** Keep captured website rows for fallback and add released, verified Mobile chart proposals. */
 export function overlayGameOptimizerSongs(reference, resources, now = Date.now()) {
   if (!resources?.revision) return reference;
-  const songs = new Map(reference.songs.map(song=>[song.id,song]));
+  const songs = new Map(reference.songs.filter(song=>
+    (resources.previewSongStarts?.[song.id]??song.startTime??0)<=now).map(song=>[song.id,song]));
   const pcSupported = catalogPcNoteWeights.every((weight,index)=>resources.pack.pcNoteWeightsPermil.get(index+1)===weight);
-  let changed = false;
+  let changed = songs.size !== reference.songs.length;
   for (const row of resources.songs) {
     const song = resources.data.songs[row.id];
     const startTime = resources.previewSongStarts?.[row.id];
@@ -53,14 +54,26 @@ export function overlayGameOptimizerSongs(reference, resources, now = Date.now()
     const occupied = new Set(existing?.difficulties.filter(chart=>chart.seconds>0).map(chart=>chart.type));
     const additions = row.charts.filter(chart=>!occupied.has(chart.difficulty))
       .map(chart=>compactChart(resources.pack,chart,song,pcSupported?resources.denominators.get(chart.key):null)).filter(Boolean);
-    if (!additions.length) continue;
-    changed = true;
+    const chartCoefficients=new Map();
+    for(const summary of row.charts){
+      const entry=resources.denominators.get(summary.key);
+      if(entry?.chartScoreCoefficientPermyriad!=null)
+        chartCoefficients.set(summary.difficulty,{level:entry.difficultyLevel,notes:entry.scoringEvents,
+          value:(1+song.scoreCoefficientPermil*(entry.difficultyLevel-5)/1000)*entry.chartScoreCoefficientPermyriad/10000});
+    }
     const addedKinds = new Set(additions.map(chart=>chart.type));
     const official = resources.optimizerSongRules?.[row.id];
     const base = existing ?? {id:row.id,title:row.title,startTime,comboCurve,
       characterIds:song.characterIds,singerType:song.singerType.toUpperCase(),rateTarget:official?.rateTarget??false,
       ...(official?.autoGiven?{gameUnlock:{autoGiven:true,mainQuestUnlock:null,holomemUnlock:null}}:{})};
-    const difficulties=[...existing?.difficulties.filter(chart=>!addedKinds.has(chart.type))??[],...additions];
+    const difficulties=[...existing?.difficulties.filter(chart=>!addedKinds.has(chart.type))??[],...additions].map(chart=>{
+      const factor=chartCoefficients.get(chart.type);
+      if(!factor||factor.level!==chart.level||factor.notes!==chart.notes||
+        (chart.coefficient===factor.value&&(chart.pcCoefficient??factor.value)===factor.value)) return chart;
+      return {...chart,coefficient:factor.value,pcCoefficient:factor.value};
+    });
+    if(!additions.length && difficulties.every((chart,i)=>chart===existing?.difficulties[i])) continue;
+    changed = true;
     difficulties.sort((a,b)=>OPTIMIZER_CHART_DIFFICULTIES.indexOf(a.type)-OPTIMIZER_CHART_DIFFICULTIES.indexOf(b.type));
     songs.set(row.id,{...base,difficulties});
   }

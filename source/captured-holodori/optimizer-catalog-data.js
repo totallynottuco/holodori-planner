@@ -24,7 +24,8 @@ const keyFor=(id,chart)=>id+'_'+chart.type;
 
 export async function verifyOptimizerPack(source){
   const pack=await optimizerPack(source);
-  const baseline=(await optimizerPack(source.previous).catch(()=>null))?.data??await loadReferenceData();
+  const bundled=await loadReferenceData();
+  const previous=(await optimizerPack(source.previous).catch(()=>null))?.data;
   const {data,events,unlocks,lengths}=pack;
   if(!object(data)||!Array.isArray(data.cards)||!Array.isArray(data.songs)||!object(unlocks)||!object(lengths)||
     !Array.isArray(events?.events)||!['boards','boardItems','costumes','connects','coefficients','powerUpLadder','noteWeights','noteWeightsPc'].every(key=>object(data[key]))||
@@ -64,8 +65,8 @@ export async function verifyOptimizerPack(source){
       charts.add(key);
     }
   }
-  if(baseline.cards.some(card=>!cards.has(card.id))||
-    baseline.songs.some(song=>song.difficulties.some(chart=>!charts.has(keyFor(song.id,chart)))))
+  if([bundled,previous].some(base=>base&&(base.cards.some(card=>!card.fromGameMaster&&!cards.has(card.id))||
+    base.songs.some(song=>song.difficulties.some(chart=>!charts.has(keyFor(song.id,chart)))))))
     throw Error('The download is missing cards or charts from the verified catalog.');
   const sample=new Map();
   for(const card of cards.values()){

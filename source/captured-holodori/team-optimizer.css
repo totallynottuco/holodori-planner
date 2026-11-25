@@ -156,17 +156,33 @@
   .holo-board-bonus-policy > .holo-team-field { width: 6rem; max-width: 100%; }
 }
 .holo-encore-target, .holo-encore-objectives { display: grid; gap: .375rem; }
-.holo-encore-objectives { grid-template-columns: repeat(6, minmax(0, 1fr)); }
-.holo-encore-objectives > button { grid-column: span 2; }
-.holo-encore-objectives > button:nth-child(n+4) { grid-column: span 3; }
+.holo-encore-objectives { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 @container encore-step (min-width: 42rem) {
-  .holo-encore-objectives { grid-template-columns: repeat(5, minmax(0, 1fr)); }
-  .holo-encore-objectives > button:nth-child(n) { grid-column: auto; }
+  .holo-encore-objectives { grid-template-columns: repeat(6, minmax(0, 1fr)); }
 }
 @container encore-step (max-width: 17rem) {
   .holo-encore-objectives { grid-template-columns: minmax(0, 1fr); }
-  .holo-encore-objectives > button:nth-child(n) { grid-column: auto; }
 }
+.holo-challenge-target { display: grid; gap: .625rem; font-size: .8125rem; }
+.holo-challenge-stage-head, .holo-challenge-difficulties, .holo-challenge-items,
+.holo-challenge-clear, .holo-challenge-member, .holo-challenge-song, .holo-challenge-label {
+  display: flex; align-items: center; gap: .375rem;
+}
+.holo-challenge-stage-head, .holo-challenge-difficulties, .holo-challenge-items { flex-wrap: wrap; }
+.holo-challenge-stage-head { justify-content: space-between; padding-bottom: .5rem; border-bottom: 1px solid #35405b; }
+.holo-challenge-arrow { display: grid; place-items: center; padding-inline: .375rem; }
+.holo-challenge-back svg { transform: rotate(180deg); }
+.holo-challenge-stage-choice { display: flex; align-items: center; justify-content: space-between; gap: .375rem; }
+.holo-challenge-items { gap: .25rem .875rem; }
+.holo-challenge-member, .holo-challenge-song { min-width: 0; overflow-wrap: anywhere; }
+.holo-challenge-clear, .holo-challenge-label { color: #b6c3dc; font-size: .75rem; }
+.holo-challenge-label { margin-bottom: .25rem; }
+.holo-challenge-label strong { color: #d2baff; font-weight: 600; }
+.holo-challenge-clear strong { color: #eef1fb; font-size: .875rem; font-variant-numeric: tabular-nums; }
+.holo-challenge-song > img { flex: none; aspect-ratio: 1; }
+.holo-challenge-difficulties { gap: .625rem; }
+.holo-challenge-difficulties .holo-team-action { min-height: 2rem; }
+.holo-stage-song-choices { grid-template-columns: repeat(auto-fit, minmax(min(100%, 15rem), 1fr)); }
 .holo-encore-choice, .holo-encore-chart {
   display: flex;
   align-items: flex-start;

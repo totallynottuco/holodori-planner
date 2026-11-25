@@ -37,6 +37,8 @@ pub struct Status {
     checked_at: u64,
     added: usize,
     last_changes: Option<Changes>,
+    #[serde(default, skip_deserializing, skip_serializing_if = "Vec::is_empty")]
+    card_art_ids: Vec<String>,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -114,7 +116,20 @@ fn read_cache(root: &Path) -> Option<Cache> {
 }
 
 pub fn cached_status(root: &Path) -> Option<Status> {
-    read_cache(root).map(|cache| cache.status)
+    read_cache(root).map(Cache::into_status)
+}
+
+impl Cache {
+    fn into_status(self) -> Status {
+        // Compare the entire artwork index. An unrelated later banner can
+        // replace last_changes before the matching card rules are published.
+        Status {
+            card_art_ids: self.snapshot.assets.iter()
+                .filter_map(|name| name.strip_prefix("img_card_full_").map(str::to_owned))
+                .collect(),
+            ..self.status
+        }
+    }
 }
 
 fn record(root: &Path, previous: Option<Cache>, next: Snapshot) -> Result<Status> {
@@ -135,6 +150,7 @@ fn record(root: &Path, previous: Option<Cache>, next: Snapshot) -> Result<Status
             revision: next.revision,
             checked_at: crate::store::now(),
             added,
+            card_art_ids: Vec::new(),
             last_changes: if added > 0 {
                 Some(changes)
             } else {
@@ -144,7 +160,7 @@ fn record(root: &Path, previous: Option<Cache>, next: Snapshot) -> Result<Status
         snapshot: next,
     };
     write_json(&cache_path(root), &cache)?;
-    Ok(cache.status)
+    Ok(cache.into_status())
 }
 
 pub fn check(root: &Path) -> Result<Status> {
@@ -380,6 +396,7 @@ mod tests {
         );
         let first = record(&directory, None, next).unwrap();
         assert_eq!(first.added, 6);
+        assert_eq!(first.card_art_ids.iter().filter(|id| id.as_str() == "09999-5-uniq-9999-00").count(), 1);
         let report = first.last_changes.unwrap();
         assert_eq!(report.cards["09999-5-uniq-9999-00"].len(), 2);
         assert_eq!(report.banners["img_banner_full_gacha-pickup-qa"].len(), 2);
@@ -392,7 +409,9 @@ mod tests {
         let later = record(&directory, Some(previous), next).unwrap();
         assert_eq!(later.added, 0);
         assert_eq!(later.last_changes.unwrap().to_revision, report.to_revision);
-        assert_eq!(cached_status(&directory).unwrap().revision, later.revision);
+        let offline = cached_status(&directory).unwrap();
+        assert_eq!(offline.revision, later.revision);
+        assert_eq!(offline.card_art_ids, first.card_art_ids);
         let older = serde_json::from_str(BASELINE).unwrap();
         assert!(record(&directory, read_cache(&directory), older).is_err());
         assert_eq!(cached_status(&directory).unwrap().revision, later.revision);

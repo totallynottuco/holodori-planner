@@ -1,6 +1,7 @@
 import { accountCharactersById, accountCostumesById, createScoringAccountScope, resolveBoardNodes, resolveBoardConnectEffect } from '../hololive/vendor/shared/account-data';
 import { resolveChartTimeline } from '../hololive/vendor/shared/chart-timeline';
 import { resolveExpectedScoreTrace } from '../hololive/vendor/shared/expected-score-trace';
+import { calculateExpectedScoreTotals } from '../hololive/vendor/shared/expected-score-totals';
 import { decodeOptimizerChart, type OptimizerDecodedChart } from '../hololive/vendor/shared/optimizer-chart-pack';
 import { progressionManifest } from '../hololive/vendor/shared/manifest';
 import { minimumTrainingStage } from '../hololive/vendor/shared/planner';
@@ -9,6 +10,7 @@ import type { CardCatalogEntry } from '../hololive/vendor/shared/types';
 import { compileExpectedScoreDistribution } from '../hololive/vendor/shared/score-distribution-plan';
 import { simulateScoreRuns } from '../hololive/vendor/shared/score-distribution';
 import { loadOptimizerResources, type MobileScoringSource } from './team-optimizer-resources';
+import { formationActivationRates } from './formation-activation-rates';
 
 type Entry = { level: number; bloom: number; sp?: number };
 type CardRarity = Pick<CardCatalogEntry, 'id' | 'rarity'>;
@@ -36,7 +38,12 @@ const decimal = ({ numerator, denominator }: { numerator: string; denominator: s
 /** Score each exact order, outfit and Board scenario using the recovered Mobile routines. */
 export async function prepareReviewedOptimizer(scenario: Scenario, memoryPermil: number | undefined, selectedCharts: SelectedChart[], source?: MobileScoringSource, cards: CardRarity[] = progressionManifest.cards) {
   const { pack, data, denominators, account: reviewedAccount } = await loadOptimizerResources(source);
-  const scoped = createScoringAccountScope(reviewedAccount);
+  const connectLevel2BloomByGroup = Object.fromEntries(Object.entries(data.bloomEffects).map(([id, rows]) => {
+    const upgrades = rows.filter(row => row.type === 'SKILL_TREE_CONNECT_EFFECT_LEVEL_UP');
+    if (upgrades.length > 1 || upgrades.some(row => row.value !== 2)) throw Error(`Unsupported Connect upgrade in ${id}`);
+    return [id, upgrades[0]?.bloomStage ?? null];
+  }));
+  const scoped = createScoringAccountScope(reviewedAccount && { ...reviewedAccount, connectLevel2BloomByGroup });
   const withAccount = <Args extends unknown[], Result>(run: (...args: Args) => Result) =>
     (...args: Args) => scoped(() => run(...args));
   const { account, options } = scenario;
@@ -112,15 +119,21 @@ export async function prepareReviewedOptimizer(scenario: Scenario, memoryPermil:
     return profile;
   }
 
-  function evaluate(team: Team, profile: ReturnType<typeof profileFor>, chart: OptimizerDecodedChart) {
+  function timelineFor(team: Team, profile: ReturnType<typeof profileFor>, chart: OptimizerDecodedChart) {
     const bonuses=team.powerUpOverride===undefined?observed:{...observed,upgradePermyriad:team.powerUpOverride};
-    const timeline = resolveChartTimeline(profile, {
+    return resolveChartTimeline(profile, {
       memberCardIds: team.order, leaderCharacterId: team.leaderChar, outfitId: team.outfitId, songId: chart.music_id,
     }, chart, data, null, bonuses);
+  }
+
+  function evaluate(team: Team, profile: ReturnType<typeof profileFor>, chart: OptimizerDecodedChart) {
+    const timeline = timelineFor(team, profile, chart);
     const trace = resolveExpectedScoreTrace(timeline, chart, data, denominators);
     const points = trace.expectedScenarioTotal;
     if (!points || trace.power.status !== 'resolved') {
-      throw Error(trace.reasons.slice(0, 2).join('; ') || 'Some score effects are outside the reviewed model.');
+      const error = Error(trace.reasons.join('; ') || 'Some score effects are outside the reviewed model.');
+      Object.assign(error, { activationComparison: formationActivationRates(timeline.team, !options.pc) });
+      throw error;
     }
     return { timeline, trace, low: decimal(points.lower), high: decimal(points.upper), overallPower: trace.power.value };
   }
@@ -129,12 +142,24 @@ export async function prepareReviewedOptimizer(scenario: Scenario, memoryPermil:
     return compileExpectedScoreDistribution(evaluation.trace, chart, evaluation.timeline.team.song.scoreCoefficientPermil);
   }
 
-  function scoreChart(team: Team, profile: ReturnType<typeof profileFor>, chart: OptimizerDecodedChart, averageOnly = false) {
+  function scoreChart(team: Team, profile: ReturnType<typeof profileFor>, chart: OptimizerDecodedChart, averageOnly = false, compareRates = false) {
+    if (!options.pc) {
+      const timeline = timelineFor(team, profile, chart);
+      const activationComparison = compareRates ? formationActivationRates(timeline.team, true) : null;
+      try {
+        const totals = calculateExpectedScoreTotals(timeline, chart, data, denominators);
+        return { ...totals, average: (totals.low + totals.high) / 2, maximum: averageOnly ? null : totals.maximum, activationComparison };
+      } catch (error) {
+        if (activationComparison && error instanceof Error) Object.assign(error, { activationComparison });
+        throw error;
+      }
+    }
     const evaluation = evaluate(team, profile, chart);
     const plan = averageOnly ? null : distribution(evaluation, chart);
     if (!averageOnly && !plan) throw Error('The modeled score bounds are unavailable.');
     return { low: evaluation.low, high: evaluation.high, average: (evaluation.low + evaluation.high) / 2,
-      maximum: plan?.bounds.maximum.score ?? null, overallPower: evaluation.overallPower };
+      maximum: plan?.bounds.maximum.score ?? null, overallPower: evaluation.overallPower,
+      activationComparison: compareRates ? formationActivationRates(evaluation.timeline.team, false) : null };
   }
 
   function requireChart(key: string) {
@@ -144,6 +169,8 @@ export async function prepareReviewedOptimizer(scenario: Scenario, memoryPermil:
   }
 
   return {
+    activationRates: withAccount((team: Team, key: string) => formationActivationRates(
+      timelineFor(team, profileFor(team), requireChart(key)).team, !options.pc)),
     previewSimulation: withAccount((team: Team, key: string) => {
       const chart = requireChart(key);
       const evaluation = evaluate(team, profileFor(team), chart);
@@ -155,30 +182,51 @@ export async function prepareReviewedOptimizer(scenario: Scenario, memoryPermil:
           seconds: group.timeMicroseconds / 1_000_000,
           score: (decimal(group.cumulativeExpectedPoints.lower) + decimal(group.cumulativeExpectedPoints.upper)) / 2,
         }] : []);
+      const fraction = (value: { numerator: string; denominator: string }) => Number(value.numerator) / Number(value.denominator);
+      const seconds = (time: Parameters<typeof fraction>[0]) => Math.min(chart.durationMicroseconds, fraction(time)) / 1_000_000;
+      const { attempts, specialWindows } = evaluation.trace.skills;
+      const active = attempts.flatMap(attempt => {
+        const { probability, rawScoreUpPermil, staticSupportPermil } = attempt;
+        if (probability.status !== 'resolved' || rawScoreUpPermil.status !== 'resolved' || staticSupportPermil.status !== 'resolved') return [];
+        const slot = team.order.indexOf(attempt.ownerId);
+        return [{ slot: slot < 0 ? team.order.length : slot, skillId: attempt.skillId,
+          s: seconds(attempt.startMicroseconds), e: seconds(attempt.endMicroseconds),
+          raw: fraction(rawScoreUpPermil.value) / 10, eff: fraction(staticSupportPermil.value) / 1000, p: fraction(probability.value) }];
+      });
+      const special = specialWindows.map(({ ownerId, start, end, support, rate }) => ({
+        slot: team.order.indexOf(ownerId), s: seconds(start), e: seconds(end),
+        sup: support.status === 'resolved' ? fraction(support.value) / 1000 : null,
+        sar: rate.status === 'resolved' ? fraction(rate.value) / 1000 : null,
+      }));
       return {
+        low: evaluation.low, high: evaluation.high,
         average: (evaluation.low + evaluation.high) / 2,
+        activationComparison: formationActivationRates(evaluation.timeline.team, !options.pc),
         minimum: plan.bounds.minimum.score,
         maximum: plan.bounds.maximum.score,
-        timeline,
-        sample: (runs: number) => simulateScoreRuns(plan, { seed: Math.floor(Math.random() * 2 ** 32), runs }).scoreCounts,
+        timeline, windows: { active, special, seconds: chart.durationMicroseconds / 1_000_000,
+          slots: chart.specialPointsMicroseconds.map(time => time === null ? null : time / 1_000_000) },
+        sample: (runs: number, seed: number) => simulateScoreRuns(plan, { seed, runs }).scoreCounts,
       };
     }),
-    scoreCharts: withAccount((team: Team, keys: string[], averageOnly: boolean = false) => {
+    scoreCharts: withAccount((team: Team, keys: string[], averageOnly: boolean = false, compareRates: boolean = false) => {
       const profile = profileFor(team);
-      return keys.map(key => scoreChart(team, profile, requireChart(key), averageOnly));
+      return keys.map(key => scoreChart(team, profile, requireChart(key), averageOnly, compareRates));
     }),
-    score: withAccount((team: Team) => {
+    score: withAccount((team: Team, compareRates: boolean = false) => {
       const profile = profileFor(team);
       let low = 0, high = 0, maximum = 0, overallPower = 0;
+      let activationComparison: ReturnType<typeof formationActivationRates> = null;
       for (const chart of charts) {
-        const score = scoreChart(team, profile, chart);
+        const score = scoreChart(team, profile, chart, false, compareRates && charts.length === 1);
+        activationComparison = score.activationComparison;
         low += score.low;
         high += score.high;
         maximum += score.maximum!;
         overallPower += score.overallPower;
       }
       const count = charts.length;
-      return { low: low / count, high: high / count, average: (low + high) / (2 * count),
+      return { low: low / count, high: high / count, average: (low + high) / (2 * count), activationComparison,
         maximum: maximum / count, overallPower: overallPower / count,
         ...(options.scoringMode === 'generic' ? { chartCount: count } : {}) };
     }),
@@ -188,12 +236,11 @@ export async function prepareReviewedOptimizer(scenario: Scenario, memoryPermil:
       const evaluation = evaluate(team, profileFor(team), chart);
       const plan = distribution(evaluation, chart);
       if (!plan) return null;
-      const simulated = simulateScoreRuns(plan, { seed: 2718, runs: 512 });
       const stride = Math.max(1, Math.ceil(evaluation.trace.groups.length / 60));
       const groups = evaluation.trace.groups.filter((_, index, rows) => index % stride === 0 || index === rows.length - 1);
       return {
         minimum: plan.bounds.minimum.score, maximum: plan.bounds.maximum.score,
-        histogram: simulated.histogram, percentiles: simulated.percentiles, runs: 512,
+        average: (evaluation.low + evaluation.high) / 2, runs: 0,
         timeline: groups.flatMap(group => group.cumulativeExpectedPoints ? [{
           seconds: group.timeMicroseconds / 1_000_000,
           score: (decimal(group.cumulativeExpectedPoints.lower) + decimal(group.cumulativeExpectedPoints.upper)) / 2,

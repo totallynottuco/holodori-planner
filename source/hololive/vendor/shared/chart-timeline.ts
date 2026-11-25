@@ -151,7 +151,7 @@ export function rawActiveExposure(notes: TimelineNotes, windows: TimelineWindow[
 }
 
 export function resolveChartTimeline(profile: AppProfileV2, selection: TeamSelection, chart: OptimizerDecodedChart, data: ScoringData, recordedActivations: ActiveActivation[] | null = null, observed?:ObservedFormationBonuses) {
-  const team = resolveTeamParameters(profile, selection, data, observed)
+  const team = resolveTeamParameters(profile, selection, data, observed, chart.platform)
   if (chart.identity.schemaVersion !== 3 || chart.chartPackEventBlobSha256 !== chart.identity.eventBlobSha256) throw new Error('Unsupported chart identity')
   if (chart.music_id !== selection.songId || chart.identity.chartKey !== chart.key || chart.key !== `${chart.music_id}_${chart.difficulty}` || !['mobile', 'pc'].includes(chart.platform) || chart.identity.platform !== chart.platform) throw new Error('Chart, song or platform selection mismatch')
   if (chart.identity.sourceCommit !== data.metadata.sourceCommit || chart.identity.sourceRepository !== data.metadata.sourceRepository || chart.identity.catalogVersion !== data.metadata.catalogVersion || chart.identity.indexSha256 !== data.metadata.chartIndexSha256 || chart.identity.eventBlobSha256 !== data.metadata.chartBlobSha256) throw new Error('Chart/scoring provenance mismatch')

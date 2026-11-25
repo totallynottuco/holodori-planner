@@ -5,9 +5,11 @@ import {minimumTrainingStage} from '../hololive/vendor/shared/planner';
 import {boostCap,boostRules,defaultBoosts,sampleBoost,type Boosts} from '../hololive/boosts';
 import {inventoryEventCurrency,inventoryEventTime,type InventoryEventWindow} from './inventory-events';
 import {accountProgressRank,syncImportedMemberRanks} from './account-progress';
+import {optimizerBoards} from './saved-lineups';
 import {boardProgressPatch,consolidateCurrentProfile,currentAchievementProgress,currentDreamRank,currentGachaPoints,currentGameInventory,currentMembers,currentOwnership,observedDreamRank} from './current-account';
 import {diamondInventoryIds,isGameInventoryId,resourceKeys,type AppProfileV2,type CardCatalogEntry,type GameAccountCardSource,type GameAccountIdentity,type GameAccountImportState,type GameAccountSnapshot,type ResourceKey,type SavedCardState} from '../hololive/vendor/shared/types';
 import {ACCOUNT_RESOURCE_ITEM_IDS,observedGameQuantities} from './account-items';
+import {mergeGameProgress} from '../hololive/vendor/shared/game-progress';
 export {ACCOUNT_RESOURCE_ITEM_IDS} from './account-items';
 
 const copy=<T>(value:T):T=>JSON.parse(JSON.stringify(value));
@@ -42,7 +44,17 @@ export interface AccountImportPreview {
 /** Complete production captures only. Research tags and partial tables cannot
  * become authoritative zero quantities through this entry point. */
 export function parseAccountSnapshot(input:unknown):GameAccountSnapshot {
-  return gameAccountSnapshotSchema.parse(input) as GameAccountSnapshot;
+  const snapshot = gameAccountSnapshotSchema.parse(input) as GameAccountSnapshot;
+  // Both Planner and Team Optimizer key equipped layouts by owner and Connect
+  // assignments by slot. Check new observations before projecting either map.
+  const equippedOwners = new Set<string>();
+  for (const board of snapshot.tables.boards ?? []) {
+    if (equippedOwners.has(board.characterId)) throw Error('The capture contains multiple equipped Boards for one Holomem.');
+    equippedOwners.add(board.characterId);
+    const slots = board.connectedSkillTreeNodeGroupIds;
+    if (new Set(slots).size !== slots.length) throw Error('An equipped Board contains more than one assignment for a Connect slot.');
+  }
+  return snapshot;
 }
 
 function accountStatusPreview(snapshot:GameAccountSnapshot,previous:AppProfileV2,next:AppProfileV2,warnings:AccountImportWarning[]):AccountStatusPreview {
@@ -169,15 +181,22 @@ export function previewAccountImport(input:unknown,previous:AppProfileV2,events:
   const catalog=new Map(manifest.cards.map(card=>[card.id,card]));
   const warnings:AccountImportWarning[]=[],cardChanges:AccountCardChange[]=[];
   const accountStatus=accountStatusPreview(snapshot,previous,next,warnings);
+  next.gameProgress=mergeGameProgress(next.gameProgress,snapshot.tables,snapshot.collectionCoverage);
   if(source.gachaReadStatus&&!snapshot.balances.gachaPoints)warnings.push({code:'gacha-points-unavailable',
     message:'Gacha Points did not refresh. Your current balances will be kept.'});
   if(snapshot.balances.free===null||snapshot.balances.paid===null)warnings.push({code:'unavailable-gem-balance',message:'Some gem balances have not loaded in the game. They are retained as unknown; card progress and materials can still be imported.'});
   const counts={sourceCards:snapshot.tables.cards.length,knownCards:0,unknownCards:0,unsupportedCards:0,newCards:0,updatedCards:0,unchangedCards:0,members:snapshot.tables.members.length,knownMembers:0,unknownMembers:0,materials:resourceKeys.length,materialsChanged:0,materialsSkipped:0,unobservedCardsPreserved:0};
+  const pendingCards=new Map(next.pendingCatalogCards?.map(row=>[row.cardId,row]));
   for(const source of snapshot.tables.cards){
     const card=catalog.get(source.cardId),before=next.cards[source.cardId];
     const change:AccountCardChange={cardId:source.cardId,cardName:source.cardName||card?.cardName||source.cardId,memberName:source.memberName||card?.memberName||'',status:'unknown',previous:before?copy(before):null,next:null,observed:copy(source)};
-    if(!card){counts.unknownCards++;warnings.push({code:'unknown-card',cardId:source.cardId,message:`${change.cardName}: not in this catalog. Its complete source record will be saved.`});}
+    if(!card){
+      const {cardId,rarity,level,maxLevel,exp,levelLimitBreakCount,potentialUpgradeCount,potentialUpgradePointQuantity}=source;
+      pendingCards.set(cardId,{cardId,rarity,level,maxLevel,exp,levelLimitBreakCount,potentialUpgradeCount,potentialUpgradePointQuantity});
+      counts.unknownCards++;warnings.push({code:'unknown-card',cardId,message:`${change.cardName}: progress saved while waiting for card data.`});
+    }
     else{
+      pendingCards.delete(source.cardId);
       counts.knownCards++;
       const progress=cardProgress(source,before,card);
       if(typeof progress==='string'){change.status='unsupported';counts.unsupportedCards++;warnings.push({code:'catalog-progress-mismatch',cardId:source.cardId,message:`${change.cardName}: ${progress}`});}
@@ -189,6 +208,8 @@ export function previewAccountImport(input:unknown,previous:AppProfileV2,events:
     }
     cardChanges.push(change);
   }
+  if(pendingCards.size)next.pendingCatalogCards=[...pendingCards.values()];
+  else delete next.pendingCatalogCards;
   const owned=new Set(snapshot.tables.cards.map(card=>card.cardId));
   const priorOwnership=currentOwnership(previous);
   if(snapshot.progress?.upgradeBonusPermyriad===undefined&&!next.upgradeBonusManual&&
@@ -201,8 +222,7 @@ export function previewAccountImport(input:unknown,previous:AppProfileV2,events:
     .filter(row=>row.missionPassId==='__NONE__').map(row=>[row.missionId,{progress:row.progress,rewardReceivedThresholds:row.rewardReceivedThresholds}]))};
   if(snapshot.tables.missions!==undefined)next.achievementProgressKnown=true;
   delete next.achievementEdits;
-  const boards=Object.fromEntries((snapshot.tables.boards??[]).map(row=>[row.characterId,{nodes:row.releasedSkillTreeNodeGroupIds,
-    cards:Object.fromEntries(row.connectedSkillTreeNodeGroupIds.map((slot,index)=>[slot,row.connectedSkillTreeNodeCardIds[index]]))}]));
+  const boards=optimizerBoards(snapshot.tables.boards);
   Object.assign(next,boardProgressPatch(next,boards));
   counts.unobservedCardsPreserved=Object.keys(next.cards).filter(id=>!owned.has(id)).length;
   const rows=new Map<string,GameAccountSnapshot['tables']['items']>();
@@ -212,6 +232,7 @@ export function previewAccountImport(input:unknown,previous:AppProfileV2,events:
   for(const id of Object.keys(next.gameInventory)){
     if(!keep(id))delete next.gameInventory[id];
     else if(id.startsWith('item-')&&!rows.has(id)&&!knownItems.has(id))next.gameInventory[id]=0;
+    else if(id.startsWith('park_fishing_bait-')&&snapshot.collectionCoverage?.fishingBaits==='complete'&&!snapshot.tables.fishingBaits?.some(row=>row.parkFishingBaitId===id))next.gameInventory[id]=0;
   }
   Object.assign(next.gameInventory,observedGameQuantities(snapshot));
   const inventoryChanges:AccountInventoryChange[]=[],materialKeys:ResourceKey[]=[];

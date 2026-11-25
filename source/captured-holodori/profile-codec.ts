@@ -6,6 +6,7 @@ import { defaultBoosts } from '../hololive/boosts';
 import { normalizeGoals, rulesFor, type SeelieGoal } from './game';
 import {readSavedLineups} from './saved-lineups';
 import {consolidateCurrentProfile,currentGameInventory,currentOwnership} from './current-account';
+import {cardProgress,mergeCapturedAccountImport} from './account-import';
 
 export type NativeValues = Record<string, string>;
 export type CapturedFields = Record<string, unknown>;
@@ -199,13 +200,18 @@ export function capturedToProfile(fields:CapturedFields, previous:AppProfileV2 =
   }
   const inventory = { ...result.inventory };
   const gameInventory:Record<string,number>={...currentGameInventory(previous)};
-  for (const key of resourceKeys) inventory[key] = 0;
+  const starId='item-skill_tree_leader-3';
+  const dedicatedStar=fields.inventory.some((row:any)=>row?.item==='redStarCube');
+  const legacyStar=fields.inventory.some((row:any)=>row?.item===starId&&row.type===starId&&row.tier===0);
+  for (const key of resourceKeys) if(key!=='redStarCube'||dedicatedStar||legacyStar)inventory[key] = 0;
   for (const entry of fields.inventory as any[]) {
     if (!entry) continue;
     const value=integer(entry.value,0,Number.MAX_SAFE_INTEGER,0);
     if(resourceKeys.includes(entry.item)) inventory[entry.item as keyof typeof inventory]=value;
+    else if(entry.item===starId&&entry.type===starId&&entry.tier===0){if(!dedicatedStar)inventory.redStarCube=value;}
     else if(isGameInventoryId(entry.item)&&entry.type===entry.item&&entry.tier===0) gameInventory[entry.item]=value;
   }
+  delete gameInventory[starId];
   result.inventory = inventory;
   if(Object.keys(gameInventory).length)result.gameInventory=gameInventory;
   else delete result.gameInventory;
@@ -231,6 +237,28 @@ export function hydrateValues(input:NativeValues):NativeValues {
   return hydrateWorkspace(input).values;
 }
 
+function resolvePendingCards(profile:AppProfileV2,fields:CapturedFields) {
+  if (!profile.pendingCatalogCards?.length) return;
+  const catalog=currentCatalog(), owned=currentOwnership(profile);
+  const added:AppProfileV2['cards']={};
+  const remaining=profile.pendingCatalogCards.filter(row=>{
+    if (!owned?.has(row.cardId) || profile.cards[row.cardId]) return false;
+    const card=catalog.get(row.cardId);
+    if (!card) return true;
+    const progress=cardProgress(row,undefined,card);
+    if (typeof progress==='string') return true;
+    added[row.cardId]=progress;
+    return false;
+  });
+  if (Object.keys(added).length) {
+    const incoming=profileToCaptured({...profile,cards:added});
+    fields.goals=mergeCapturedAccountImport(fields,incoming,Object.keys(added),[]).goals;
+    Object.assign(profile.cards,added);
+  }
+  if (remaining.length) profile.pendingCatalogCards=remaining;
+  else delete profile.pendingCatalogCards;
+}
+
 export function hydrateWorkspace(input:NativeValues):{values:NativeValues;profiles:Map<string,AppProfileV2>} {
   if (input.game_id !== 'hololive-dreams') throw Error('This data folder belongs to another app. Your files have been preserved.');
   const output = {...input};
@@ -241,8 +269,10 @@ export function hydrateWorkspace(input:NativeValues):{values:NativeValues;profil
     const fields = input[`${id}-renderer`] === capturedMarker ? readCaptured(input,id,profile) : profileToCaptured(profile);
     if (input[`${id}-renderer`] !== capturedMarker)
       fields.saved_lineups = readSavedLineups(json(input[`${id}-saved_lineups`],[]));
+    const projected=capturedToProfile(fields,profile);
+    resolvePendingCards(projected,fields);
     for (const field of capturedFields) output[`${id}-${field}`] = JSON.stringify(fields[field]);
-    const projected=capturedToProfile(fields,profile),text=JSON.stringify(projected);
+    const text=JSON.stringify(projected);
     // Vue may edit the live profile, so copy the editable fields while sharing
     // only the validated game snapshot. It is replaced as a unit on import.
     const {gameAccountImport,...editable}=projected;
@@ -295,10 +325,14 @@ export function parseProfileExport(text:string):{profile:AppProfileV2;captured:C
     const captured = Object.fromEntries(capturedFields.map(field=>[field,input.captured[field] ?? (fallback ||= profileToCaptured(profile))[field]]));
     captured.goals = normalizedGoals(captured.goals,profile);
     captured.saved_lineups = readSavedLineups(captured.saved_lineups);
-    return {profile:clone(capturedToProfile(captured,profile)),captured};
+    const projected=capturedToProfile(captured,profile);
+    resolvePendingCards(projected,captured);
+    return {profile:clone(projected),captured};
   }
   const captured = profileToCaptured(profile);
-  return {profile:clone(capturedToProfile(captured,profile)),captured};
+  const projected=capturedToProfile(captured,profile);
+  resolvePendingCards(projected,captured);
+  return {profile:clone(projected),captured};
 }
 
 /** Internal projection is allowed to share immutable validated import metadata.

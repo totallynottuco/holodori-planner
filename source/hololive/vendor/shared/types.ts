@@ -9,6 +9,7 @@ export const resourceKeys = [
   'hololium',
   'redCube',
   'redHexa',
+  'redStarCube',
   'blueCube',
   'blueHexa',
   'yellowCube',
@@ -24,7 +25,7 @@ export const resourceKeys = [
 export type ResourceKey = (typeof resourceKeys)[number]
 export const diamondInventoryIds = {free:'freeDiamonds',paid:'paidDiamonds'} as const
 export function isGameInventoryId(id:unknown):id is string {
-  return typeof id==='string' && (id===diamondInventoryIds.free || id===diamondInventoryIds.paid || /^item-[a-z0-9][a-z0-9_-]{0,154}$/i.test(id))
+  return typeof id==='string' && (id===diamondInventoryIds.free || id===diamondInventoryIds.paid || /^item-[a-z0-9][a-z0-9_-]{0,154}$/i.test(id) || /^park_fishing_bait-[a-z0-9][a-z0-9_-]{0,120}$/i.test(id))
 }
 export type Attribute = 'cute' | 'pure' | 'happy'
 export type CardStat = 'performance' | 'technique' | 'sense'
@@ -226,7 +227,8 @@ export interface GameAccountSnapshot {
     gameAssemblySha256: string
     [key: string]: unknown
   }
-  tables: {
+  collectionCoverage?:Record<string,'complete'>
+  tables: import('./game-progress').GameProgress & {
     cards: GameAccountCardSource[]
     members: GameAccountMemberSource[]
     items: GameAccountItemSource[]
@@ -259,6 +261,9 @@ export interface GameAccountImportState {
 }
 
 export interface AppProfileV12 {
+  gameProgress?: import('./game-progress').GameProgress
+  /** Observed progress waiting for a matching card in the English master data. */
+  pendingCatalogCards?: Pick<GameAccountCardSource, 'cardId'|'rarity'|'level'|'maxLevel'|'exp'|'levelLimitBreakCount'|'potentialUpgradeCount'|'potentialUpgradePointQuantity'>[]
   boosts?: import('../../boosts').Boosts
   tasks?: import('../../tasks').PlannerTask[]
   gameAccountImport?: GameAccountImportState

@@ -20,14 +20,17 @@ export const savedLineupSchema=z.object({
     levelLimitBreakCount:z.number().int().min(0).max(4)})).optional(),
   leaderChar:identifier,outfitId:identifier.nullable(),
   outfitAssumption:z.object({outfitId:identifier,cardId:identifier,level,bloom}).optional(),
-  objective:z.enum(['score','unitScore','event','eventPoints','holomemLb']),
+  objective:z.enum(['score','unitScore','event','eventPoints','holomemLb','challengeLive']),
+  challengeStageId:z.string().max(200).regex(/^[a-z0-9_-]+:[1-9]\d*$/i).optional(),
   charts:z.array(z.object({songId:identifier,difficulty})),
   pc:z.boolean(),anyDiffMin:z.number().int(),anyDiffMax:z.number().int(),anyDiffTypes:z.array(difficulty).optional(),
   sortBy:z.enum(['avg','max']),eventId:identifier.optional(),eventChapter:z.number().int().positive().optional(),
   liveBoost:z.number().int().min(1).max(10),
   boardMode:z.enum(['none','imported','saved','optimize']),boards:z.record(identifier,board),
   boardRanks:z.record(identifier,z.number().int().nonnegative()).optional(),
-}).refine(row=>!row.outfitAssumption||row.outfitAssumption.outfitId===row.outfitId,
+}).refine(row=>row.objective!=='challengeLive'||!!row.challengeStageId&&!row.pc&&row.charts.length===1,
+  {path:['challengeStageId'],message:'A Challenge Live lineup needs its stage and Mobile chart.'})
+  .refine(row=>!row.outfitAssumption||row.outfitAssumption.outfitId===row.outfitId,
   {path:['outfitAssumption','outfitId'],message:'The assumption must match the saved outfit.'});
 
 export function readSavedLineups(value:unknown) {

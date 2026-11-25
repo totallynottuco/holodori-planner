@@ -8,6 +8,7 @@ export const ratingQuickCounts=[1,3,5,10,20];
 export function optimizerDefaults(){
   return {
     mode:'best',objective:'score',eventId:'',eventChapter:null,eventChapterEventId:'',chartKey:'',
+    challengeStageId:'',challengeDifficulties:['easy','normal','hard','expert'],
     eventScoreSongId:'',eventScoreChartKey:'',eventPointsSongId:'',eventPointsChartKey:'',pc:false,diffMin:null,diffMax:null,
     difficultyMode:'levels',difficultyTypes:['easy','normal','hard','expert'],
     pool:'owned',customLevel:null,customBloom:null,keepHigherLevel:true,keepHigherBloom:true,excludeThreeStars:false,excludeFourStars:false,
@@ -24,7 +25,7 @@ export function optimizerDefaults(){
   };
 }
 const choices={
-  mode:['best','holomem','next'],objective:['score','event','eventPoints','holomemLb','unitScore'],difficultyMode:['levels','types'],
+  mode:['best','holomem','next'],objective:['score','event','eventPoints','holomemLb','unitScore','challengeLive'],difficultyMode:['levels','types'],
   rosterSource:['owned','planned'],
   nextAcquisition:nextAcquisitionChoices.map(([id])=>id),
   powerUpPreset:['auto','search','allMax','ownedMax','owned'],

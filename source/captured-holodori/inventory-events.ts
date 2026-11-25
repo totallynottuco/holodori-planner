@@ -29,11 +29,14 @@ function readWindows(data: unknown): InventoryEventWindow[] | null {
 }
 
 export async function loadInventoryEvents(invoke: (name: string) => Promise<unknown>) {
-  const local = readWindows(await invoke('desktop_optimizer_event_windows').catch(() => null));
-  if (local?.length) return local;
   bundledEvents ??= fetch('/assets/team-optimizer/optimizer-events.json').then(async response => {
-    if (!response.ok) return [];
+    if (!response.ok) throw Error('Event schedule unavailable');
     return readWindows((await response.json()).events) ?? [];
-  }).catch(() => []);
-  return bundledEvents;
+  }).catch(() => { bundledEvents = undefined; return []; });
+  const [bundled, cached] = await Promise.all([
+    bundledEvents, invoke('desktop_optimizer_event_windows').then(readWindows).catch(() => null),
+  ]);
+  const windows = new Map(bundled.map(event => [event.id, event]));
+  for (const event of cached ?? []) windows.set(event.id, event);
+  return [...windows.values()];
 }

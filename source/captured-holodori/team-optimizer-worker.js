@@ -2,18 +2,25 @@ import {buildOptimizerWorkspace} from './optimizer-workspace-data';
 import {collectBoardFinalists,hasBoardBonusTargets,loadReferenceData,measuredMemoryEffect,mergeReferenceResults,prepareReferenceSearch,referenceEventPointBase,referenceEventPoints,runReferenceJob,unresolvedBoardEntries} from './reference-team-solver';
 import {optimizeReferenceBoards} from './reference-board-search';
 import {forecastRating,referenceRatingCandidates,searchReferenceRating,shortlistRatingLeaders} from './reference-holomem-rating';
-import {createReferenceScoreContext,evaluateReferenceTeam,referenceCardStats,referenceRangeCharts,referenceTeamScoreBonus,referenceUnitScore,withReferenceChart} from './reference-rating-math';
-import {compareUnitScore,evaluateUnitScore,searchUnitScore,unitScoreContext} from './unit-score-search';
+import {createReferenceScoreContext,evaluateReferenceTeam,referenceMobileEffectWarnings,referencePowerUpBonus,referenceRangeCharts,referenceTeamScoreBonus,referenceUnitScore,updateReferenceCardEntry,withReferenceChart} from './reference-rating-math';
+import {compareUnitScore,evaluateUnitScore,finalizeUnitScoreOrders,searchUnitScore,unitScoreContext} from './unit-score-search';
 import {boardPointsAtRank,boardReachability,improveUnitScoreBoards} from './unit-score-board-search';
 import {optimizerPack,verifyOptimizerPack} from './optimizer-catalog-data';
 import {applyEventSongBonus,automaticChapter,normalizeOptimizerEvents,overlayGameOptimizerEvents,referenceEventCardBonuses,referenceEventSongBonus} from './optimizer-events';
 import {MobileCoverageError,searchReviewedMobile} from './reviewed-mobile-search';
-import {overlayGameOptimizerCards} from './game-optimizer-cards';
+import {finalistOrders,finalistSetups} from './finalist-orders';
+import {createFinalistContext,mobileTeam,nextCardEntry,nextPulls} from './finalist-context';
+import {mobileChartEvaluator,mobileRangeChartPreview} from './mobile-chart-average';
+import {loadChallengeStages} from './challenge-stages';
+import {challengeBonusPermil,challengeUnitBonus} from './challenge-score';
+import {challengeChartChoices,searchChallengeSong} from './challenge-search';
+import {mergeOptimizerReference,overlayGameOptimizerCards} from './game-optimizer-cards';
 import {hasGpuBoardBonusTargets} from './gpu-board-bonus-targets';
 import {decodeChartGeometry} from './optimizer-chart-hit-events.js';
 import {boardPlanningBaseline,hasBoardProtection} from './board-protection';
+import {finalLineupBoardPlan} from './final-lineup-board-plan';
 import {retainReferenceConnects} from './board-connect-retention';
-import {isTeamCardEligible,teamRarityFilter} from './team-card-pool';
+import {eligibleTeamOutfits,isTeamCardEligible,teamRarityFilter} from './team-card-pool';
 
 let source=null;
 let lastReview=null;
@@ -22,31 +29,74 @@ let previewSession=null;
 let lastReferenceRating=null;
 const gpuSearches=new WeakMap();
 const cpuBoardPlanners=new WeakMap();
+function cpuPlanner(data,objective){
+  let planners=cpuBoardPlanners.get(data);
+  if(!planners){planners=new Map();cpuBoardPlanners.set(data,planners);}
+  if(!planners.has(objective))planners.set(objective,import('./gpu-team-optimizer').then(module=>module.createCpuBoardPlanner(data,objective)));
+  return planners.get(objective);
+}
 async function runCpuJob(data,operation,payload,onProgress){
   const {account,boardOpt,options}=payload;
   const filtered=operation==='_hd_solve'&&options.goal==='next'&&
     (payload.extras.nextAcquisition||teamRarityFilter(options)||options.boardConnectEntries);
-  if(!filtered&&!hasBoardProtection(boardOpt)){
+  const locked=new Set(options.goal==='next'?payload.extras?.nextDeck:options.focusCardIds);
+  const lockedOwners=new Set(data.cards.filter(card=>locked.has(card.id)).map(card=>card.characterId));
+  const expanded=data.cards.filter(card=>isTeamCardEligible(card,options)&&
+    (locked.has(card.id)||locked.size<5&&!lockedOwners.has(card.characterId))&&
+    (options.goal==='next'||options.cardPool==='allMaxed'||account.owned[card.id]?.owned)&&
+    (card.active.levels.some(level=>level.upScoreUp>0&&!level.scoreUp)||card.special.levels.some(level=>level.upScoreUp>0)||
+      card.passive.levels.some(level=>level.additionalEffects?.length||level.stat==='activeChance')));
+  const ownedCards=data.cards.filter(card=>account.owned[card.id]?.owned&&isTeamCardEligible(card,options));
+  const mobileRangePlan=boardOpt&&options.scoringMode==='generic'&&!options.pc&&boardOpt.objective!=='unitScore';
+  if(!expanded.length&&!filtered&&!hasBoardProtection(boardOpt)&&!mobileRangePlan){
     const response=await runReferenceJob(data,operation,payload,onProgress);
     return retainReferenceConnects(data,payload,response);
   }
-  const lineupJob=(query,progress)=>runReferenceJob(data,'_hd_solve',{
-    ...query,boardOpt:null,limits:{...query.limits,jointBoards:false},
-    account:{...query.account,boards:boardPlanningBaseline(query.account.boards,query.boardOpt)},
-  },progress);
-  if(operation==='_hd_solve'&&options.goal!=='next'){
-    return lineupJob({...payload,options:{...options,topN:Math.max(24,options.topN)}},onProgress);
-  }
   const objective=boardOpt?.objective??payload.extras?.objective;
-  let planners=cpuBoardPlanners.get(data);
-  if(!planners){planners=new Map();cpuBoardPlanners.set(data,planners);}
-  if(!planners.has(objective)){
-    planners.set(objective,import('./gpu-team-optimizer').then(module=>module.createCpuBoardPlanner(data,objective)));
-  }
-  const planner=await planners.get(objective);
+  const planner=await cpuPlanner(data,objective);
   if(operation==='_hd_plan')return planner.plan(payload);
+  // The native search proposes lineups. Give each card with an extended skill
+  // a focused search, then score the resulting orders with all of its branches.
+  async function lineupJob(query,progress){
+    const focus=query.options.focusCardIds??[];
+    const topN=Math.max(24,query.options.topN);
+    const options={...query.options,topN};
+    const baseline={...query,boardOpt:null,limits:{...query.limits,jointBoards:false},
+      account:{...query.account,boards:boardPlanningBaseline(query.account.boards,query.boardOpt)}};
+    const searches=[options];
+    const members=new Set(data.cards.filter(card=>focus.includes(card.id)).map(card=>card.characterId));
+    const poolSize=options.cardPool==='allMaxed'?data.cards.length:Object.values(query.account.owned).filter(entry=>entry.owned).length;
+    if(focus.length<5&&poolSize>5)for(const card of expanded){
+      if(members.has(card.characterId)||!(query.account.owned[card.id]?.owned||options.cardPool==='allMaxed'))continue;
+      searches.push({...options,goal:'holomem',focusCardIds:[...focus,card.id]});
+    }
+    const candidates=new Map();
+    for(const options of searches){
+      const response=await runReferenceJob(data,'_hd_solve',{...baseline,options},progress);
+      for(const row of response.results??[])candidates.set(JSON.stringify([row.outfitId,row.leaderChar,row.order]),row);
+    }
+    const rows=[...candidates.values()];
+    if(!expanded.length)return {results:rows};
+    const ranked=await planner.rankResults(baseline,rows);
+    // Preserve the native lineup response shape for score searches.
+    return {results:ranked.map(({value,...row})=>row)};
+  }
+  if(operation==='_hd_solve'&&options.goal!=='next')return lineupJob(payload,onProgress);
   if(operation==='_hd_solve'){
-    return planner.solveNext(payload,async query=>(await lineupJob(query,onProgress)).results??[]);
+    const next=options.powerUpOverride==null?{...payload,options:{...options,
+      powerUpOverride:referencePowerUpBonus(account.owned,data,options.cardPool)}}:payload;
+    const result=await planner.solveNext(next,async query=>(await lineupJob(query,onProgress)).results??[]);
+    if(filtered||mobileRangePlan||hasBoardProtection(boardOpt))return result;
+    // Preserve the native upgrade and roster assumptions for ordinary lineups.
+    // Its proposal score is incomplete for cards with an extended skill.
+    const native=await runReferenceJob(data,operation,payload,onProgress);
+    const affected=new Set(expanded.map(card=>card.id));
+    const usesExtended=row=>row.order.some(id=>affected.has(id));
+    const ordinary=native.results.filter(row=>!usesExtended(row));
+    const extended=result.results.filter(usesExtended).map(({value,...row})=>row);
+    if(!extended.length&&ordinary.length===native.results.length)return native;
+    return {...native,...mergeReferenceResults([{results:ordinary},{results:extended}],{...options,topN:Math.max(options.topN,native.results.length)}),
+      baseline:ownedCards.some(card=>affected.has(card.id))?result.baseline:native.baseline};
   }
   throw Error('Unsupported protected Board search operation.');
 }
@@ -63,9 +113,9 @@ const pcData=new WeakMap();
 function withPcCharts(data){
   if(!pcData.has(data)){
     const songs=data.songs.flatMap(song=>{
-      if(!song.difficulties.some(chart=>chart.gameOnly))return [song];
-      const difficulties=song.difficulties.flatMap(chart=>!chart.gameOnly?[chart]:
-        chart.pcCurve?[{...chart,curve:chart.pcCurve}]:[]);
+      if(!song.difficulties.some(chart=>chart.gameOnly||chart.pcCoefficient!=null))return [song];
+      const difficulties=song.difficulties.filter(chart=>!chart.gameOnly||chart.pcCurve).map(chart=>({
+        ...chart,coefficient:chart.pcCoefficient??chart.coefficient,...(chart.gameOnly?{curve:chart.pcCurve}:{})}));
       return difficulties.length?[{...song,difficulties}]:[];
     });
     pcData.set(data,{...data,songs});
@@ -95,14 +145,14 @@ function activeData(){
     nextGameSongRelease=Infinity;
     selectionKey=undefined;
     gameDataRequest=(async()=>{
-      const base=(await optimizerPack(selected).catch(()=>null))?.data??await loadReferenceData();
-      if(!selected?.mobile)return base;
+      const [cached,bundled]=await Promise.all([optimizerPack(selected).catch(()=>null),loadReferenceData()]);
+      const base=mergeOptimizerReference(bundled,cached?.data);
       const [{loadOptimizerResources},{overlayGameOptimizerSongs,nextGameOptimizerSongRelease}]=await Promise.all([
         import('./team-optimizer-resources'),import('./game-optimizer-songs'),
       ]);
-      const resources=await loadOptimizerResources(selected.mobile);
+      const resources=await loadOptimizerResources(selected?.mobile);
       if(gameDataKey===key)nextGameSongRelease=nextGameOptimizerSongRelease(resources,now);
-      const data=selected.gameCatalog?overlayGameOptimizerCards(base,resources,selected.gameCatalog):base;
+      const data=overlayGameOptimizerCards(base,resources,selected?.gameCatalog);
       return overlayGameOptimizerSongs(data,resources,now);
     })().catch(error=>{if(gameDataKey===key)gameDataKey=undefined;throw error;});
   }
@@ -112,12 +162,11 @@ let eventsRequest;
 let songUnlocksRequest;
 async function loadSongUnlocks() {
   const updated=await pack();
-  if(updated)return updated.unlocks;
   songUnlocksRequest??=fetch('/assets/team-optimizer/song-unlocks.json').then(response=>{
     if(!response.ok)throw Error('Unable to load song unlock rules.');
     return response.json();
   }).catch(error=>{songUnlocksRequest=undefined;throw error;});
-  return songUnlocksRequest;
+  return {...await songUnlocksRequest,...updated?.unlocks};
 }
 async function loadEvents() {
   const updated=await pack();
@@ -127,9 +176,8 @@ async function loadEvents() {
   }).then(value=>value.events);
   const bundled=await eventsRequest;
   const base=normalizeOptimizerEvents([...(updated?.events.events??[]),...bundled]);
-  if(!source?.mobile)return base;
   const {loadOptimizerResources}=await import('./team-optimizer-resources');
-  return overlayGameOptimizerEvents(base,await loadOptimizerResources(source.mobile));
+  return overlayGameOptimizerEvents(base,await loadOptimizerResources(source?.mobile));
 }
 let selectionKey,selectionData;
 async function dataFor({eventId,eventChapter,eventPoints,memoryEffect,websiteSongsOnly,pcGameCharts}) {
@@ -240,8 +288,9 @@ async function eachLeader(rows,concurrency,run){
   if(failure)throw failure.reason;
 }
 function solveShards(payload,selection,onProgress,ports) {
-  const singleNext=payload.options.goal==='next'&&(payload.extras.nextAcquisition||teamRarityFilter(payload.options)||hasBoardProtection(payload.boardOpt));
-  const count=gpuSearches.has(selection)||singleNext?1:logicalShardCount();
+  // Extended-skill upgrades are ranked together against one shared baseline.
+  const single=payload.options.goal==='next'||payload.options.cardPool==='owned'&&Object.values(payload.account.owned).filter(entry=>entry.owned).length<=5;
+  const count=gpuSearches.has(selection)||single?1:logicalShardCount();
   const jobs=Array.from({length:count},(_,shardIndex)=>({operation:'_hd_solve',payload:{
     ...payload,limits:{...payload.limits,shardIndex,shardCount:count},
   }}));
@@ -447,6 +496,40 @@ async function reviewedEngine(data,payload,input,charts,missingMessage) {
   return engine;
 }
 
+function steamCoverageMessage(error){
+  const message=error.message??String(error);
+  const matches=[...message.matchAll(/static-modifier-composition:([^:; ]+):([A-Z_]+)/g)];
+  if(matches.length){
+    const comparison=error.activationComparison??error.cause?.activationComparison;
+    const missing=matches.map(([,id,type])=>{
+      const label=type.includes('PROBABILITY')?'activation rate':type.includes('COOL_TIME')?'cooldown reduction':'score support';
+      const slot=comparison?.rows.findIndex(row=>row.id===id)??-1;
+      return (slot>=0?'slot '+(slot+1):id)+' ('+label+')';
+    });
+    return 'Steam supplies one combined modifier per card. This setup lacks a confirmed value for '+[...new Set(missing)].join(', ')+'.';
+  }
+  return message.replaceAll('reviewed Mobile','reviewed Steam').replaceAll('Mobile score','Steam score');
+}
+
+function steamCoverageError(error){
+  const detail=error.activationComparison??error.cause?.activationComparison;
+  return Object.assign(Error(steamCoverageMessage(error)),{activationComparison:detail});
+}
+
+function mobileCoverageMessage(error){
+  const reasons=(error.message??String(error)).split('; ');
+  const effects=new Set();
+  const other=reasons.filter(reason=>{
+    if(!reason.startsWith('static-modifier-composition:'))return true;
+    effects.add(reason.includes('PROBABILITY')?'activation rate':reason.includes('COOL_TIME')?'cooldown':'score support');
+    return false;
+  }).map(reason=>reason==='server-board-song-bonus-composition'?
+    'Mobile receives the lineup’s song-specific Board bonus from the server. Its exact value is unverified for this setup.':reason);
+  if(effects.size)other.unshift('Mobile has no confirmed rule for the combined '+[...effects].join(' and ')+' bonuses in this setup.');
+  return [...new Set(other.map(reason=>/^board:[\w:-]+(?: board:[\w:-]+)*$/.test(reason)
+    ? 'Some Board effects use reference estimates.' : reason))].join(' ');
+}
+
 function fixedBoardJob({account,options,boardOpt},team,litePlan) {
   return {
     operation:'_hd_plan',payload:{account,options:{...options,leaderMode:'fixed',outfitId:team.outfitId,leaderChar:team.leaderChar},
@@ -465,37 +548,9 @@ function mobileRoster(data,account,context,options) {
     .sort((a,b)=>b.power-a.power).map(card=>card.id);
 }
 
-function nextPulls(row) {
-  return row.pulls?.length?row.pulls:row.candidateId?[{id:row.candidateId,new:true,copies:1}]:[];
-}
-
 function nextScenarioKey(row) {
   return nextPulls(row).map(({id,new:acquired,copies,level,bloom})=>JSON.stringify([id,acquired,copies,level,bloom]))
     .sort().join('|');
-}
-
-function nextCardEntry(card,extras,pull,base) {
-  if(pull.level>=0)return {level:pull.level,bloom:pull.bloom,...(!pull.new&&base?.sp!=null?{sp:base.sp}:{})};
-  return {level:extras.nextLevel>0?Math.min(extras.nextLevel,card.maxLevel):card.maxLevel,
-    bloom:Math.min(extras.nextBloom??0,card.maxBloom)};
-}
-
-function mobileTeam(row,payload,cards) {
-  const {account,options,extras}=payload;
-  if(options.goal!=='next')return {...row,lineup:row.order.map(id=>account.owned[id])};
-  const entries={};
-  for(const pull of nextPulls(row)){
-    const card=cards.get(pull.id);
-    if(!card||(!pull.new&&!(pull.level>=1)))throw new MobileCoverageError('An upgrade has no reviewed card state.');
-    const entry=nextCardEntry(card,extras,pull,account.owned[pull.id]);
-    if(!Number.isInteger(entry.level)||entry.level<1||entry.level>card.maxLevel||
-      !Number.isInteger(entry.bloom)||entry.bloom<0||entry.bloom>card.maxBloom)
-      throw new MobileCoverageError('An upgrade has an unsupported Level or Bloom.');
-    entries[pull.id]=entry;
-  }
-  const lineup=row.order.map(id=>entries[id]??account.owned[id]);
-  if(lineup.some(entry=>!entry))throw new MobileCoverageError('An acquisition has no reviewed card state.');
-  return {...row,entries,lineup};
 }
 
 function mobileSearchRows(data,payload,cards,baseAccount) {
@@ -503,15 +558,115 @@ function mobileSearchRows(data,payload,cards,baseAccount) {
   const next=options.goal==='next';
   const context=createReferenceScoreContext(data,baseAccount.owned,baseAccount.boards,baseAccount.ranks,options,baseAccount.dreamRank);
   const evaluate=(row,plan,chartOptions=options)=>{
-    const entries=next?mobileTeam(row,payload,cards).entries:null;
-    const owned=entries?{...baseAccount.owned,...Object.fromEntries(Object.entries(entries).map(([id,entry])=>[id,{...entry,owned:true}]))}:baseAccount.owned;
     const activePlan=plan??row.plan;
-    const scores=next||activePlan||chartOptions!==options?createReferenceScoreContext(data,owned,
-      activePlan?.saves??row.boards??baseAccount.boards,activePlan?.ranks??baseAccount.ranks,chartOptions,baseAccount.dreamRank):context;
-    return {...(next?{candidateId:row.candidateId,pulls:row.pulls,boards:row.boards,plan:activePlan}:{}),
-      ...evaluateReferenceTeam(scores,row.order.map(id=>cards.get(id)),row.outfitId,row.leaderChar)};
+    const scores=next||activePlan||row.boards||chartOptions!==options?createFinalistContext(data,payload,row,cards,chartOptions,
+      activePlan?.saves??row.boards??baseAccount.boards,activePlan?.ranks??baseAccount.ranks):context;
+    return evaluateReferenceTeam(scores,row.order.map(id=>cards.get(id)),row.outfitId,row.leaderChar);
   };
-  return {evaluate,roster:next?[]:mobileRoster(data,baseAccount,context,options),scenarioKey:next?nextScenarioKey:undefined};
+  return {evaluate,roster:next?[]:mobileRoster(data,baseAccount,context,options),
+    outfits:next||options.pc?[]:eligibleTeamOutfits(data,{account:baseAccount,options}),scenarioKey:next?nextScenarioKey:undefined};
+}
+
+const rangeResources=async()=> (await import('./team-optimizer-resources')).loadOptimizerResources(source?.mobile);
+
+async function requireChallengeStage(id,resources){
+  const stage=(await loadChallengeStages(resources)).find(row=>row.id===id);
+  if(!stage)throw Error('Choose an available Challenge Live stage.');
+  return stage;
+}
+
+async function challengeSongJob(data,payload,songId,difficulties,useGpu,onProgress){
+  const solver=useGpu?await (await import('./gpu-team-optimizer')).createGpuTeamOptimizer(data,'challengeLive'):
+    await cpuPlanner(data,'challengeLive');
+  try{
+    return await searchChallengeSong(data,payload,songId,difficulties,await rangeResources(),solver,onProgress);
+  }finally{if(useGpu)solver.close();}
+}
+
+async function runChallengeSearch(data,payload,input,selection,ports,progress){
+  if(payload.options.pc||!['best','holomem'].includes(payload.options.goal))throw Error('Challenge Live requires a Mobile lineup search.');
+  const resources=await rangeResources(),stage=await requireChallengeStage(input.challengeStageId,resources);
+  const choices=challengeChartChoices(data,stage,input.challengeDifficulties,resources);
+  if(!choices.length)throw Error('Choose at least one playable Challenge Live difficulty.');
+  const query={...payload,options:{...payload.options,challengeStage:stage,eventPoints:false,eventBonus:false}};
+  const groups=stage.songIds.map(songId=>({songId,difficulties:choices.filter(row=>row.songId===songId).map(row=>row.difficulty)}))
+    .filter(group=>group.difficulties.length);
+  const responses=new Array(groups.length),completed=new Array(groups.length).fill(0);
+  const useGpu=Boolean(input.useGpu);
+  let next=0;
+  const phase='Comparing Challenge Live songs';
+  progress(0,choices.length,0,phase);
+  async function lane(port){
+    while(next<groups.length){
+      const i=next++,job=groups[i];
+      const update=fraction=>{
+        completed[i]=fraction*job.difficulties.length;
+        const done=completed.reduce((sum,n)=>sum+n,0);
+        progress(Math.round(done),choices.length,done/choices.length,phase);
+      };
+      responses[i]=port?await sendJob(port,{type:'challenge-song',payload:query,selection,useGpu,...job},update):
+        await challengeSongJob(data,query,job.songId,job.difficulties,useGpu,(done,total)=>update(done/total));
+      update(1);
+    }
+  }
+  notify('search-backend',{backend:useGpu?'gpu':'cpu'});
+  await Promise.all([...ports.slice(0,groups.length-1).map(lane),lane(null)]);
+  const field=query.options.sortBy==='max'?'maxScore':'score';
+  const ranked=responses.flat().sort((a,b)=>b.rows[0][field]-a.rows[0][field]);
+  const songs=new Map();
+  const challengeCharts=ranked.map(({songId,difficulty,rows})=>{
+    // Keep every requested lineup for each song's winning difficulty.
+    const bestDifficulty=!songs.has(songId);
+    const teams=withDisplayUnitScores(data,query,teamsForUi(data,bestDifficulty?rows:rows.slice(0,1),query));
+    const team=teams[0];
+    if(bestDifficulty)songs.set(songId,{songId,difficulty,score:team.score,maxScore:team.maxScore,results:teams});
+    return {songId,difficulty,score:team.score,maxScore:team.maxScore,bonusPermil:team.challengeBonusPermil,team};
+  });
+  const challengeSongs=[...songs.values()];
+  return {results:challengeSongs[0].results,challengeSongs,challengeCharts,challengeStageId:stage.id,scoringModel:'challenge-mobile',
+    compute:{backend:useGpu?'gpu':'cpu'},evaluated:choices.length};
+}
+
+function finalizeMobileSetup(data,payload,seed,resources){
+  const {options,account}=payload;
+  const cards=new Map(data.cards.map(card=>[card.id,card]));
+  const metric=options.sortBy==='max'?'maxScore':'score';
+  const charts=options.scoringMode==='generic'?referenceRangeCharts(data,options):null;
+  const context=createFinalistContext(data,payload,seed,cards);
+  const evaluate=mobileChartEvaluator(context,charts,resources);
+  let best;
+  for(const order of finalistOrders(seed.order.map(id=>cards.get(id)))){
+    const trial=evaluate(order,seed.outfitId,seed.leaderChar);
+    if(!best||trial[metric]>best[metric])best=trial;
+  }
+  const row={...seed,...best};
+  const ordered=best.order.map(id=>cards.get(id));
+  row.effectWarnings=referenceMobileEffectWarnings(context,ordered,seed.outfitId,seed.leaderChar);
+  if(seed.plan){
+    const baseline=createFinalistContext(data,payload,seed,cards,options,boardPlanningBaseline(account.boards,payload.boardOpt),account.ranks);
+    const before=mobileChartEvaluator(baseline,charts,resources)(ordered,seed.outfitId,seed.leaderChar);
+    row.plan={...seed.plan,orderExhaustive:true,before:{...seed.plan.before,...before},after:{...seed.plan.after,...best}};
+  }
+  return row;
+}
+
+async function finalizeReferenceOrders(data,payload,ranked,progress,ports,selection,perNote){
+  const {options}=payload,metric=options.sortBy==='max'?'maxScore':'score';
+  const finalists=finalistSetups(ranked.slice().sort((a,b)=>b[metric]-a[metric]),Math.max(6,options.topN),
+    options.goal==='next'?nextScenarioKey:undefined);
+  const results=new Array(finalists.length),resources=perNote?await rangeResources():null;
+  let next=0,done=0;
+  async function run(port){
+    while(next<finalists.length){
+      const i=next++,seed=finalists[i];
+      results[i]=port?await sendJob(port,{type:'range-finalist',selection,payload,seed},()=>{}):
+        finalizeMobileSetup(data,payload,seed,resources);
+      progress(++done,finalists.length,done/finalists.length,'Checking all 120 Mobile slot orders');
+      if(!port&&perNote&&ports.length&&next<finalists.length)await new Promise(resolve=>setTimeout(resolve,0));
+    }
+  }
+  await Promise.all([...(perNote?ports:[]).slice(0,Math.max(0,finalists.length-1)).map(run),run(null)]);
+  return mergeReferenceResults([{results}],options).results;
 }
 
 function mobileFinalists(payload,selection,ports,cards,evaluate){
@@ -553,7 +708,7 @@ function mobileFinalists(payload,selection,ports,cards,evaluate){
   };
 }
 
-async function prepareMobileRating(data,payload,input,charts,selection,ports) {
+async function prepareMobileRating(data,payload,input,charts,selection,ports,onUnverified) {
   const {boardOpt}=payload;
   const account={...payload.account,boards:boardPlanningBaseline(payload.account.boards,boardOpt)};
   if(unresolvedBoardEntries(data,account.boards))throw new MobileCoverageError('Some Board entries are unavailable.');
@@ -563,7 +718,7 @@ async function prepareMobileRating(data,payload,input,charts,selection,ports) {
   const score=(row,keys,averageOnly)=>{
     try {
       return engine.scoreCharts(mobileTeam(row,payload,cards),keys,averageOnly);
-    }catch(error){throw new MobileCoverageError(error.message);}
+    }catch(error){throw new MobileCoverageError(error.message,{cause:error});}
   };
   return {
     engine,score,team:row=>mobileTeam(row,payload,cards),
@@ -575,9 +730,9 @@ async function prepareMobileRating(data,payload,input,charts,selection,ports) {
       const responses=await solveShards(seed,selection,progress,ports);
       const gpuSearch=gpuSearches.get(selection);
       if(gpuSearch)responses[0].results=await gpuSearch.rankResults(seed,responses[0].results??[]);
-      const {evaluate,roster,scenarioKey}=mobileSearchRows(data,query,cards,account);
+      const {evaluate,roster,outfits,scenarioKey}=mobileSearchRows(data,query,cards,account);
       const result=await searchReviewedMobile(responses,{
-        options,roster,memberOf:id=>cards.get(id)?.characterId,progress,scenarioKey,
+        options,roster,outfits,chartCount:keys.length,memberOf:id=>cards.get(id)?.characterId,progress,scenarioKey,onUnverified,
         planRows:optimize&&!next?mobileBoardPlans(query,selection,progress,ports):null,
         deepen:mobileFinalists({...query,boardOpt:optimize||next?query.boardOpt:null},selection,ports,cards,evaluate),
         keepBoardBonuses:hasBoardBonusTargets(query.boardOpt),compareScores,
@@ -601,16 +756,16 @@ async function prepareMobileRating(data,payload,input,charts,selection,ports) {
   };
 }
 
-async function reviewedNextBaseline(data,payload,account,cards,engine,selection,progress,ports) {
+async function reviewedNextBaseline(data,payload,account,cards,engine,selection,progress,ports,chartCount) {
   const focusCardIds=payload.extras.nextDeck??[];
   const options={...payload.options,goal:focusCardIds.length?'holomem':'best',focusCardIds,topN:1};
   const query={...payload,options};
   const proposal={...query,reviewedFinals:true,account,boardOpt:null,limits:{...payload.limits,jointBoards:false},options:{...options,topN:12}};
   const baselineProgress=(done,total,fraction)=>progress(done,total,fraction,'Scoring current team for Mobile');
   const responses=await solveShards(proposal,selection,baselineProgress,ports);
-  const {evaluate,roster}=mobileSearchRows(data,query,cards,account);
+  const {evaluate,roster,outfits}=mobileSearchRows(data,query,cards,account);
   const result=await searchReviewedMobile(responses,{
-    options,roster,memberOf:id=>cards.get(id)?.characterId,progress:baselineProgress,
+    options,roster,outfits,chartCount,memberOf:id=>cards.get(id)?.characterId,progress:baselineProgress,
     score:row=>engine.score(mobileTeam(row,query,cards)),buildRow:evaluate,
     planRows:payload.boardOpt?mobileBoardPlans(query,selection,baselineProgress,ports):null,
     deepen:mobileFinalists(query,selection,ports,cards,evaluate),
@@ -621,7 +776,14 @@ async function reviewedNextBaseline(data,payload,account,cards,engine,selection,
   return options.sortBy==='max'?score.maximum:score.average;
 }
 
-async function runReviewedMobile(data,payload,input,selection,progress,ports) {
+function reviewedResultScores(row){
+  const values=part=>part?.reviewedScore?{...part,...part.reviewedScore.eventPoints,
+    score:part.reviewedScore.average,maxScore:part.reviewedScore.maximum}:part;
+  const result=values(row);
+  return row.plan?{...result,plan:{...row.plan,before:values(row.plan.before),after:values(row.plan.after)}}:result;
+}
+
+async function runReviewedMobile(data,payload,input,selection,progress,ports,onUnverified) {
   const {options,boardOpt}=payload;
   const account={...payload.account,boards:boardPlanningBaseline(payload.account.boards,boardOpt)};
   if(unresolvedBoardEntries(data,account.boards))throw new MobileCoverageError('Some Board entries are unavailable.');
@@ -640,10 +802,11 @@ async function runReviewedMobile(data,payload,input,selection,progress,ports) {
   const responses=await solveShards(query,selection,progress,ports);
   const gpuSearch=gpuSearches.get(selection);
   if(gpuSearch)responses[0].results=await gpuSearch.rankResults(query,responses[0].results??[]);
-  const {evaluate,roster,scenarioKey}=mobileSearchRows(data,payload,cards,account);
+  const {evaluate,roster,outfits,scenarioKey}=mobileSearchRows(data,payload,cards,account);
   const planRows=boardOpt&&!next?mobileBoardPlans(payload,selection,progress,ports):null;
   const result=await searchReviewedMobile(responses,{
-    options,roster,memberOf:id=>cards.get(id)?.characterId,progress,planRows,rankScore:event?.rankScore,scenarioKey,
+    options,roster,outfits,chartCount:charts.length,memberOf:id=>cards.get(id)?.characterId,progress,planRows,
+    rankScore:event?.rankScore,scenarioKey,onUnverified,
     deepen:mobileFinalists(payload,selection,ports,cards,evaluate),
     keepBoardBonuses:hasBoardBonusTargets(boardOpt),
     score:row=>{
@@ -656,8 +819,8 @@ async function runReviewedMobile(data,payload,input,selection,progress,ports) {
   if(!result&&!next)return null;
   let baseline;
   if(next&&input.objective==='score'&&responses.some(response=>Number.isFinite(response.baseline)&&response.baseline>0))
-    baseline=await reviewedNextBaseline(data,payload,account,cards,engine,selection,progress,ports);
-  const rows=(result?.rows??[]).map(row=>({...row,...row.reviewedScore.eventPoints,
+    baseline=await reviewedNextBaseline(data,payload,account,cards,engine,selection,progress,ports,charts.length);
+  const rows=(result?.rows??[]).map(row=>({...reviewedResultScores(row),
     ...(boardOpt?.ignoreExisting&&!row.boards?{boards:account.boards}:{})}));
   const teams=teamsForUi(data,rows,payload).map((team,index)=>anySong?team:{...team,reviewIndex:index});
   if(!anySong)lastReview={engine,rows:teams.map(team=>mobileTeam(team,payload,cards))};
@@ -740,8 +903,12 @@ function teamsForUi(data,rows,payload) {
   const names=new Map(data.cards.map(card=>[card.characterId,card.character]));
   const cards=new Map(data.cards.map(card=>[card.id,card]));
   const {account,extras}=payload;
-  return rows.map(row=>({
+  const finalRows=rows.map(row=>row.plan?{...row,plan:finalLineupBoardPlan(data,payload,row.plan,
+    row.order.map(id=>cards.get(id)?.characterId),row.leaderChar)}:row);
+  return finalRows.map(row=>({
     ...row,cardIds:row.order,leaderName:names.get(row.leaderChar)??row.leaderChar,
+    ...(row.reviewedScore&&!payload.options.pc?{effectWarnings:referenceMobileEffectWarnings(
+      createFinalistContext(data,payload,row,cards),row.order.map(id=>cards.get(id)),row.outfitId,row.leaderChar,{reviewed:true})}:{}),
     outfitName:data.costumes[row.outfitId]?.name??row.outfitId,
     outfitDescription:data.costumes[row.outfitId]?.description,
     lineup:row.order.map(id=>{
@@ -791,7 +958,13 @@ async function loadPreviewChartData(key, pc) {
     slots:row[14].map(time=>time==null?null:time/1e6),countCurve:[],weightCurve:[],active:[],special:[]};
 }
 
-async function resultPreview({data,payload,input,previewData},team,chartKey,simulate,pc=payload.options.pc,stream=false) {
+async function resultPreview({data,payload,input,previewData},team,chartKey,pc=payload.options.pc,stream=false) {
+  const stage=team.challengeStageId?await requireChallengeStage(team.challengeStageId,await rangeResources()):null;
+  if(stage){
+    const primary=team.scoringCharts[0];
+    chartKey||=primary.songId+'_'+primary.difficulty;
+    if(pc||!stage.songIds.includes(chartKey.split('_')[0]))throw Error('Choose a Mobile chart from this Challenge Live stage.');
+  }
   if(chartKey&&previewData)data=previewData;
   if(pc)data=withPcCharts(data);
   const {account,options}=payload;
@@ -802,7 +975,7 @@ async function resultPreview({data,payload,input,previewData},team,chartKey,simu
   const owned={...account.owned};
   for(const [id,bloom] of Object.entries(team.boardCards??{}))if(owned[id])owned[id]={...owned[id],bloom};
   order.forEach((card,index)=>{owned[card.id]={owned:true,...team.lineup[index]};});
-  const context=createReferenceScoreContext(data,owned,boards,ranks,{...options,cardPool:'owned',
+  const context=createReferenceScoreContext(data,owned,boards,ranks,{...options,pc,cardPool:'owned',
     scoringMode:'unit',eventBonus:false,eventPoints:false},account.dreamRank);
   const outfit=team.outfitId,leader=team.leaderChar;
   const rankFor=(ranks,value)=>ranks?.findLast(rank=>rank.value<=value)??null;
@@ -811,7 +984,7 @@ async function resultPreview({data,payload,input,previewData},team,chartKey,simu
     const power=['parameters','board','passive','memory','powerUp','leader'].reduce((sum,key)=>sum+breakdown[key],0);
     const bonuses=referenceTeamScoreBonus(context,order,outfit,leader);
     const unitScore=referenceUnitScore(power,bonuses.total);
-    return {breakdown,power,bonuses,unitScore,
+    return {breakdown,power,bonuses,unitScore,...(stage?{challengeUnitBonus:challengeUnitBonus(unitScore,challengeBonusPermil(stage,order))}:{}),
       ranks:{power:rankFor(data.deckPowerRanks,power),bonus:rankFor(data.deckRankBonus,bonuses.total),
         unit:rankFor(data.deckRanks,unitScore)}};
   };
@@ -823,69 +996,102 @@ async function resultPreview({data,payload,input,previewData},team,chartKey,simu
     if(!stream)return {overall};
     const gameChart=await loadPreviewChartData(chartKey,pc).catch(()=>null);
     if(gameChart)return {report:{overall,chart:gameChart,chartOnly:true}};
+    if(pc)return {report:{overall}};
     const generic=createReferenceScoreContext(data,owned,boards,ranks,{...context.options,pc,scoringMode:'generic',
       songId:null,difficulty:''},account.dreamRank);
-    let skills;
-    const {score}=evaluateReferenceTeam(generic,order,outfit,leader);
-    evaluateReferenceTeam(generic,order,outfit,leader,false,null,windows=>{skills??=windows;});
-    const genericChart=skills?{seconds:skills.seconds,active:skills.active,special:[],countCurve:[],
-      slots:[],weightCurve:[],pc}:undefined;
-    return {report:{overall,score,backend:'reference',genericChart}};
+    let range=referenceRangeCharts(data,options);
+    const effectWarnings=[];
+    if(input?.reviewedMobile!==false&&(!input?.preferWebsiteMobile||input.mobileChartRange)){
+      try{
+        const charts=range.map(({song,chart})=>({key:song.id+'_'+chart.type,level:chart.level,notes:chart.notes}));
+        const engine=await reviewedEngine(data,{...payload,options:{...options,pc:false},account:{...account,owned,boards,ranks}},
+          input,charts,'The selected range is outside reviewed Mobile coverage.');
+        const score=engine.score({...team,order:team.cardIds});
+        return {report:{overall,score:score.average,maxScore:score.maximum,backend:'reviewed-mobile',
+          effectWarnings:referenceMobileEffectWarnings(generic,order,outfit,leader,{reviewed:true})}};
+      }catch(error){
+        effectWarnings.push(mobileCoverageMessage(error));
+        if(!team.rangeCoverage)range=range.filter(({chart})=>!chart.gameOnly);
+      }
+    }
+    const {score,maxScore,rangeCoverage}=mobileChartEvaluator(generic,range,team.rangeCoverage?await rangeResources():null)(order,outfit,leader);
+    effectWarnings.push(...referenceMobileEffectWarnings(generic,order,outfit,leader));
+    return {report:{overall,score,maxScore,rangeCoverage,backend:rangeCoverage?.perNote?'mobile-per-note-estimate':'reference',effectWarnings}};
   }
   const chartContext=withReferenceChart({...context,options:{...context.options,scoringMode:'chart',
     eventBonus:options.eventBonus,pc}},song,chart);
-  const thisSong=summarize(chartContext);
-  let skillWindows;
-  evaluateReferenceTeam(chartContext,order,outfit,leader,false,null,windows=>{skillWindows=windows;});
+  const thisSong=summarize({...chartContext,options:{...chartContext.options,scoringMode:'unit'}});
   const chartInfo={key:chartKey,seconds:chart.seconds,notes:chart.notes,level:chart.level,pc,
     countCurve:chart.countCurve??[],weightCurve:chart.curve??[],slots:chart.slots??[],
-    active:skillWindows?.active??[],special:skillWindows?.special??[]};
+    active:[],special:[],outfitSupport:0};
   const gameChart=await loadPreviewChartData(chartKey,pc).catch(()=>null);
   if(gameChart?.level===chart.level&&gameChart.notes===chart.notes)chartInfo.events=gameChart.events;
-  if(stream){
-    const evaluate=random=>evaluateReferenceTeam(chartContext,order,outfit,leader,false,random).score;
-    const referenceScore=evaluateReferenceTeam(chartContext,order,outfit,leader);
-    let score=referenceScore.score,maxScore=referenceScore.maxScore,backend=pc&&chart.gameOnly?'game-pc-estimate':'reference',timeline=[];
-    let minimum=evaluate(()=>1),maximum=evaluate(()=>-1);
-    let sample=runs=>Array.from({length:runs},()=>({score:evaluate(Math.random),count:1}));
-    if(input?.reviewedMobile!==false){
-      try{
-        const engine=await reviewedEngine(data,{...payload,options:{...options,pc},account:{...account,owned,boards,ranks}},input,
-          [{key:chartKey,level:chart.level,notes:chart.notes}],'This chart is outside reviewed Mobile coverage.');
-        const model=engine.previewSimulation({...team,order:team.cardIds},chartKey);
-        if(model){
-          const scale=value=>applyEventSongBonus(value,referenceScore.breakdown.eventBonus);
-          backend=pc?'steam':'reviewed-mobile';
-          score=scale(model.average);
-          minimum=scale(model.minimum);
-          maxScore=maximum=scale(model.maximum);
-          timeline=model.timeline.map(point=>({...point,score:scale(point.score)}));
-          sample=runs=>model.sample(runs).map(row=>({...row,score:scale(row.score)}));
-        }
-      }catch{/* The fixed reference scorer covers additional songs and lineups offline. */}
+  let model,coverageMessage,activationComparison;
+  if(!stage&&(pc||input?.reviewedMobile!==false&&(!input?.preferWebsiteMobile||chart.gameOnly||input.mobileChartRange||team.rangeCoverage))){
+    try{
+      const engine=await reviewedEngine(data,{...payload,options:{...options,pc},account:{...account,owned,boards,ranks}},input,
+        [{key:chartKey,level:chart.level,notes:chart.notes}],'This chart is outside reviewed Mobile coverage.');
+      model=engine.previewSimulation({...team,order:team.cardIds},chartKey);
+      if(!model)throw Error('The score distribution is unavailable for this lineup.');
+    }catch(error){
+      if(pc)throw steamCoverageError(error);
+      coverageMessage=mobileCoverageMessage(error);
+      activationComparison=error.activationComparison;
     }
-    if(chart.gameOnly&&!pc&&backend!=='reviewed-mobile')return {report:{overall,chart:gameChart??chartInfo,chartOnly:true}};
-    let event;
-    if(options.eventPoints&&data.epBonus){
-      const eventCardBonuses=referenceEventCardBonuses(data.epBonus,order,id=>owned[id]?.bloom);
-      const epPermil=eventCardBonuses.reduce((total,bonus)=>total+bonus,0);
-      const seconds=await eventSongSeconds(data,{...options,songId,difficulty}).catch(()=>chart.seconds);
-      const points=referenceEventPoints({epPermil,score:referenceEventPointBase(score,epPermil),
-        maxScore:referenceEventPointBase(maxScore,epPermil)},seconds,input?.liveBoost,input?.holoPassport);
-      event={...points,score,maxScore,epPermil,eventCardBonuses};
-    }
-    return {report:{overall,thisSong,chart:{...chartInfo,averageScore:score,maxScore},score,maxScore,backend,...event},
-      sampler:{minimum,maximum,sample,timeline}};
+  }else if(!stage&&!pc&&input?.reviewedMobile!==false){
+    // A whole-search fallback can still have signed formation data for this song.
+    const engine=await reviewedEngine(data,{...payload,options:{...options,pc},account:{...account,owned,boards,ranks}},input,
+      [{key:chartKey,level:chart.level,notes:chart.notes}],'Chart unavailable').catch(()=>null);
+    if(engine)try{activationComparison=engine.activationRates({...team,order:team.cardIds},chartKey);}catch(error){coverageMessage=mobileCoverageMessage(error);}
   }
-  if(!simulate)return {overall,thisSong,chart:chartInfo};
-  let seed=2718;
-  const random=()=>((seed=(Math.imul(seed,1664525)+1013904223)>>>0)/4294967296);
-  const samples=Array.from({length:512},()=>evaluateReferenceTeam(chartContext,order,outfit,leader,false,random).score).sort((a,b)=>a-b);
-  const minimum=samples[0],maximum=samples.at(-1),width=Math.max(1,(maximum-minimum)/24);
-  const histogram=Array.from({length:24},(_,i)=>({from:minimum+i*width,to:minimum+(i+1)*width,count:0}));
-  for(const sample of samples)histogram[Math.min(23,Math.floor((sample-minimum)/width))].count++;
-  const percentiles=Object.fromEntries([5,25,50,75,95].map(p=>['p'+p,samples[Math.floor((samples.length-1)*p/100)]]));
-  return {overall,thisSong,chart:chartInfo,details:{minimum,maximum,histogram,percentiles,runs:samples.length}};
+  let score,maxScore,backend,sampler;
+  const projected=!model&&!pc&&team.rangeCoverage&&
+    mobileRangeChartPreview(chartContext,song,chart,order,outfit,leader,await rangeResources(),stage?challengeBonusPermil(stage,order):0);
+  if(model){
+    const scale=value=>applyEventSongBonus(value,thisSong.breakdown.eventBonus);
+    score=scale(model.average);
+    maxScore=scale(model.maximum);
+    backend=pc?'steam':'reviewed-mobile';
+    Object.assign(chartInfo,model.windows);
+    sampler={minimum:scale(model.minimum),maximum:maxScore,
+      sample:(runs,seed)=>model.sample(runs,seed).map(row=>({...row,score:scale(row.score)})),
+      timeline:model.timeline.map(point=>({...point,score:scale(point.score)}))};
+  }else if(projected){
+    ({score,maxScore,sampler}=projected);
+    backend='mobile-per-note-estimate';
+    const {active,special,outfit,seconds}=projected.windows;
+    Object.assign(chartInfo,{active,special,outfitSupport:outfit/1000,seconds,slots:gameChart?.slots??chart.slots});
+  }else{
+    if(chart.gameOnly){
+      const report={overall,chart:gameChart??chartInfo,chartOnly:true,activationComparison,effectWarnings:coverageMessage?[coverageMessage]:[]};
+      return stream?{report}:report;
+    }
+    const reference=evaluateReferenceTeam(chartContext,order,outfit,leader);
+    ({score,maxScore}=reference);
+    backend='reference';
+    evaluateReferenceTeam(chartContext,order,outfit,leader,false,null,windows=>{
+      Object.assign(chartInfo,{active:windows.active,special:windows.special,outfitSupport:windows.outfit/1000});
+    });
+    const evaluate=random=>evaluateReferenceTeam(chartContext,order,outfit,leader,false,random).score;
+    sampler={minimum:evaluate(()=>1-Number.EPSILON/2),maximum:evaluate(()=>0),timeline:[],sample:(runs,seed)=>{
+      const random=()=>((seed=(Math.imul(seed,1664525)+1013904223)>>>0)/4294967296);
+      return Array.from({length:runs},()=>({score:evaluate(random),count:1}));
+    }};
+  }
+  let event;
+  if(options.eventPoints&&data.epBonus){
+    const eventCardBonuses=referenceEventCardBonuses(data.epBonus,order,id=>owned[id]?.bloom);
+    const epPermil=eventCardBonuses.reduce((total,bonus)=>total+bonus,0);
+    const seconds=await eventSongSeconds(data,{...options,songId,difficulty}).catch(()=>chart.seconds);
+    const points=referenceEventPoints({epPermil,score:referenceEventPointBase(score,epPermil),
+      maxScore:referenceEventPointBase(maxScore,epPermil)},seconds,input?.liveBoost,input?.holoPassport);
+    event={...points,score,maxScore,epPermil,eventCardBonuses};
+  }
+  const report={overall,thisSong,chart:{...chartInfo,averageScore:score,maxScore},score,maxScore,backend,
+    ...(stage?{challengeBonusPermil:challengeBonusPermil(stage,order),challengeUnitBonus:overall.challengeUnitBonus}:{}),
+    activationComparison:model?.activationComparison??activationComparison,
+    effectWarnings:pc?[]:[...new Set([coverageMessage,...referenceMobileEffectWarnings(chartContext,order,outfit,leader,{reviewed:!!model})].filter(Boolean))],...event};
+  return stream?{report,sampler}:report;
 }
 
 const previewBins=80;
@@ -899,7 +1105,7 @@ function previewBin(score,minimum,width){
 
 function previewDetails(session){
   const {sampler:{minimum,maximum,timeline},samples:{bins,runs,mean,m2}}=session;
-  if(!runs)return timeline.length?{timeline}:undefined;
+  if(!runs)return {minimum,maximum,average:session.report.score,timeline,runs:0};
   const width=(maximum-minimum)/previewBins||1;
   let peak=0;
   const histogram=Array.from(bins,(count,index)=>{
@@ -949,7 +1155,8 @@ function runPreviewSimulation(session,action,durationMs){
     try{
       const deadline=performance.now()+20;
       do{
-        for(const {score,count} of sampler.sample(32))add(score,count);
+        // The same batch of 32 runs starts from the same seed after every reset.
+        for(const {score,count} of sampler.sample(32,(2718+samples.runs)>>>0))add(score,count);
       }while(performance.now()<deadline);
       const now=performance.now();
       if(now-run.started>=durationMs){session.run=null;notifyPreview(session);}
@@ -959,7 +1166,7 @@ function runPreviewSimulation(session,action,durationMs){
       }
     }catch(error){
       session.run=null;
-      notify('review-details',{request:session.request,...session.report,error:error.message});
+      notify('review-details',{request:session.request,...session.report,error:error.message,activationComparison:error.activationComparison??session.report?.activationComparison});
     }
   }
   setTimeout(tick,0);
@@ -992,13 +1199,11 @@ function withDisplayUnitScores(data,payload,teams) {
     // Fixed lineup previews use the actual entries even with a custom pool.
     for(const [index,card] of order.entries()){
       const entry=team.lineup[index];
-      if(entry){
-        context.entry.set(card.id,{...entry,owned:true});
-        context.stats.set(card.id,referenceCardStats(card,entry.level,entry.bloom));
-      }
+      if(entry)updateReferenceCardEntry(context,card,entry);
     }
     const {displayUnitScore}=evaluateUnitScore(context,order,team.outfitId,team.leaderChar);
-    return Number.isFinite(displayUnitScore)?{...team,displayUnitScore}:team;
+    return Number.isFinite(displayUnitScore)?{...team,displayUnitScore,...(team.challengeStageId?
+      {challengeUnitBonus:challengeUnitBonus(displayUnitScore,team.challengeBonusPermil)}:{})}:team;
   });
 }
 
@@ -1043,9 +1248,14 @@ async function prepareFixedLineup(saved,input) {
     return {song,chart};
   }):referenceRangeCharts(jobData,options);
   if(!unitMode&&!selected.length)throw Error('No charts match the saved range.');
+  const stage=saved.objective==='challengeLive'?await requireChallengeStage(saved.challengeStageId,await rangeResources()):null;
+  if(stage&&(saved.pc||saved.charts.length!==1||!stage.songIds.includes(selected[0].song.id)))
+    throw Error('The saved chart is outside this Challenge Live stage.');
   const gameOnly=selected.some(({chart})=>chart.gameOnly);
-  const referenceData=saved.pc?jobData:withoutGameOnlyCharts(jobData);
-  const referenceCharts=saved.pc?selected:selected.filter(({chart})=>!chart.gameOnly);
+  const noteResources=!saved.pc&&!saved.charts.length&&saved.objective==='score'&&input.reviewedMobile!==false&&
+    !input.preferWebsiteMobile?await rangeResources():null;
+  const referenceData=saved.pc||noteResources?jobData:withoutGameOnlyCharts(jobData);
+  const referenceCharts=saved.pc||noteResources?selected:selected.filter(({chart})=>!chart.gameOnly);
   const seconds=options.eventPoints?await eventSongSeconds(jobData,options):0;
   const contexts=new Map();
   const ratingContexts=new WeakMap();
@@ -1073,9 +1283,7 @@ async function prepareFixedLineup(saved,input) {
       contexts.set(key,context);
     }
     for(const [index,card] of order.entries()){
-      const entry=lineup[index];
-      context.entry.set(card.id,{...entry,owned:true});
-      context.stats.set(card.id,referenceCardStats(card,entry.level,entry.bloom));
+      updateReferenceCardEntry(context,card,lineup[index]);
     }
     context.powerUp=powerUp(lineup);
     return context;
@@ -1094,10 +1302,11 @@ async function prepareFixedLineup(saved,input) {
   const unitScore=lineup=>evaluateUnitScore(contextFor(lineup,true),order,saved.outfitId,saved.leaderChar).displayUnitScore;
   function reference(lineup,includeUnit=false){
     const unit=unitMode||includeUnit?{displayUnitScore:unitScore(lineup)}:{};
-    if(unitMode)return unit;
+    if(unitMode)return {...unit,effectWarnings:referenceMobileEffectWarnings(contextFor(lineup,true),order,saved.outfitId,saved.leaderChar)};
     if(saved.charts.length&&gameOnly&&!saved.pc)throw Error(gameChartCoverageError);
     if(!referenceCharts.length)throw Error(gameChartCoverageError);
     const context=contextFor(lineup,false,true);
+    const effectWarnings=saved.pc?[]:referenceMobileEffectWarnings(context,order,saved.outfitId,saved.leaderChar);
     if(ratingMode){
       let charts=ratingContexts.get(context);
       if(!charts){
@@ -1109,31 +1318,55 @@ async function prepareFixedLineup(saved,input) {
         const result=evaluate(chart);
         return {average:result.score,maximum:result.maxScore};
       });
-      return {...unit,...ratingResult(scores)};
+      return {...unit,...ratingResult(scores),effectWarnings};
     }
-    const row=evaluate(context);
+    const row=!saved.pc&&!saved.charts.length?mobileChartEvaluator(context,referenceCharts,noteResources)(order,saved.outfitId,saved.leaderChar):evaluate(context);
     const score=options.eventPoints?referenceEventPoints(row,seconds,input.liveBoost,input.holoPassport):row;
-    return {...unit,score:score.score,maxScore:score.maxScore,eventPointsAvg:score.eventPointsAvg,eventPointsMax:score.eventPointsMax};
+    return {...unit,score:score.score,maxScore:score.maxScore,rangeCoverage:score.rangeCoverage,eventPointsAvg:score.eventPointsAvg,eventPointsMax:score.eventPointsMax,effectWarnings};
   }
   async function reviewed(lineups,includeUnit=false){
-    if(unitMode||input.reviewedMobile===false)return null;
+    if(stage){
+      const resources=await rangeResources(),bonus=challengeBonusPermil(stage,order);
+      return lineups.map(lineup=>{
+        const context=contextFor(lineup,false);
+        const row=mobileChartEvaluator(context,selected,resources,bonus)(order,saved.outfitId,saved.leaderChar);
+        if(!row.rangeCoverage?.perNote)throw Error('Mobile note scoring is unavailable for this Challenge Live chart.');
+        const ordinary=bonus?mobileChartEvaluator(context,selected,resources)(order,saved.outfitId,saved.leaderChar):row;
+        const displayUnitScore=unitScore(lineup);
+        return {score:row.score,maxScore:row.maxScore,songScore:ordinary.score,songMaxScore:ordinary.maxScore,
+          challengeBonusPermil:bonus,displayUnitScore,challengeUnitBonus:challengeUnitBonus(displayUnitScore,bonus),
+          effectWarnings:referenceMobileEffectWarnings(context,order,saved.outfitId,saved.leaderChar)};
+      });
+    }
+    if(unitMode||(!saved.pc&&(input.reviewedMobile===false||input.preferWebsiteMobile&&!gameOnly)))return null;
     try{
       const engine=await reviewedEngine(jobData,{...payload,account},input,charts,'The saved charts are outside reviewed Mobile coverage.');
       const event=await reviewedEventScoring(jobData,{...payload,account},input,cards,selection);
       return lineups.map(lineup=>{
-        const row=evaluate(contextFor(lineup,false));
+        const context=contextFor(lineup,false);
+        const row=evaluate(context);
+        const effectWarnings=saved.pc?[]:referenceMobileEffectWarnings(context,order,saved.outfitId,saved.leaderChar,{reviewed:true});
         const entries=entriesFor(lineup);
         const team={...row,lineup,entries,powerUpOverride:powerUp(lineup)};
         const unit=includeUnit?{displayUnitScore:unitScore(lineup)}:{};
         if(ratingMode){
-          const scores=engine.scoreCharts(team,charts.map(chart=>chart.key),saved.sortBy!=='max');
-          return {...unit,...ratingResult(scores)};
+          const scores=engine.scoreCharts(team,charts.map(chart=>chart.key),saved.sortBy!=='max',includeUnit&&charts.length===1);
+          return {...unit,...ratingResult(scores),activationComparison:scores.length===1?scores[0].activationComparison:null,effectWarnings};
         }
-        const modeled=engine.score(team),score=event?event.score(row,modeled,entries):modeled;
+        const modeled=engine.score(team,includeUnit),score=event?event.score(row,modeled,entries):modeled;
         return {...unit,score:score.average,maxScore:score.maximum,eventPointsAvg:score.eventPoints?.eventPointsAvg,
-          eventPointsMax:score.eventPoints?.eventPointsMax};
+          eventPointsMax:score.eventPoints?.eventPointsMax,activationComparison:modeled.activationComparison,effectWarnings};
       });
-    }catch{return null;}
+    }catch(error){
+      if(saved.pc)throw steamCoverageError(error);
+      if(saved.charts.length&&gameOnly)throw Object.assign(Error(gameChartCoverageError+' '+mobileCoverageMessage(error)),
+        {activationComparison:error.activationComparison});
+      return lineups.map(lineup=>{
+        const fallback=reference(lineup,includeUnit);
+        return {...fallback,...(includeUnit?{activationComparison:error.activationComparison}:{}),
+          effectWarnings:[...new Set([mobileCoverageMessage(error),...fallback.effectWarnings])]};
+      });
+    }
   }
   return {current,reference,reviewed,powerUp};
 }
@@ -1167,14 +1400,13 @@ self.addEventListener('message',async({data:message,ports})=>{
         previewSession=session;
         try{
           if(!message.team||!lastPreview)throw Error('The optimizer result is unavailable.');
-          const preview=await resultPreview(lastPreview,message.team,message.chartKey,false,message.pc,true);
+          const preview=await resultPreview(lastPreview,message.team,message.chartKey,message.pc,true);
           if(session!==previewSession)return;
           if(!preview)throw Error('Some selected cards are outside the optimizer catalog.');
           Object.assign(session,preview);
-          if(session.sampler)runPreviewSimulation(session,'initial',initialSimulationDuration);
-          else notifyPreview(session);
+          notifyPreview(session);
         }catch(error){
-          if(session===previewSession)notify('review-details',{request:message.request,error:error.message});
+          if(session===previewSession)notify('review-details',{request:message.request,error:error.message,activationComparison:error.activationComparison});
         }
         return;
       }
@@ -1185,15 +1417,14 @@ self.addEventListener('message',async({data:message,ports})=>{
         if(details&&bonus>0){
           const scale=value=>applyEventSongBonus(value,bonus);
           details={...details,minimum:scale(details.minimum),maximum:scale(details.maximum),
-            histogram:details.histogram.map(bin=>({...bin,from:scale(bin.from),to:scale(bin.to)})),
-            percentiles:Object.fromEntries(Object.entries(details.percentiles).map(([key,value])=>[key,scale(value)])),
+            average:scale(details.average),
             timeline:details.timeline.map(point=>({...point,score:scale(point.score)})),
           };
         }
-        const preview=message.team&&lastPreview?await resultPreview(lastPreview,message.team,message.chartKey,!details):null;
+        const preview=message.team&&lastPreview?await resultPreview(lastPreview,message.team,message.chartKey):null;
         notify('review-details', { request: message.request, ...preview, details:details??preview?.details });
       } catch (error) {
-        notify('review-details', { request: message.request, error: error.message });
+        notify('review-details', { request: message.request, error: error.message, activationComparison:error.activationComparison });
       }
       return;
     }
@@ -1224,21 +1455,28 @@ self.addEventListener('message',async({data:message,ports})=>{
       notify('catalog-coverage',{missing:message.cardIds.filter(id=>!ids.has(id)).length});
     }else if(message.type==='score-lineup'){
       try{notify('lineup-score',{score:await scoreSavedLineup(message.lineup,message.input)});}
-      catch(error){notify('lineup-score',{error:error.message});}
+      catch(error){notify('lineup-score',{error:error.message,activationComparison:error.activationComparison});}
     }else if(message.type==='catalog'){
       const localMetadata=file=>fetch(`/assets/team-optimizer/${file}.json`).then(response=>response.ok?response.json():{}).catch(()=>({}));
       const [updated,bundled]=await Promise.all([pack(),localMetadata('workspace')]);
       if(!bundled.bundledCardIds?.length)throw Error('The bundled optimizer workspace could not open.');
-      if(!updated&&!source?.gameCatalog&&!source?.mobile){notify('catalog',bundled);return;}
       const [events,unlocks,eventArt,eventTitles,data,resources]=await Promise.all([
         loadEvents(),loadSongUnlocks(),localMetadata('event-art'),localMetadata('event-titles'),activeData(),
-        source?.mobile?import('./team-optimizer-resources').then(module=>module.loadOptimizerResources(source.mobile)):null,
+        import('./team-optimizer-resources').then(module=>module.loadOptimizerResources(source?.mobile)),
       ]);
       const gameSongs=resources?.songs.map(song=>({...song,startTime:resources.previewSongStarts?.[song.id]}));
-      notify('catalog',buildOptimizerWorkspace({data,events,unlocks,bundledCardIds:bundled.bundledCardIds,bundledSongIds:bundled.bundledSongIds,
+      const challengeStages=await loadChallengeStages(resources);
+      notify('catalog',{...buildOptimizerWorkspace({data,events,unlocks,bundledCardIds:bundled.bundledCardIds,bundledSongIds:bundled.bundledSongIds,
         eventArt,eventTitles,updated,gameArtwork:source?.gameCatalog?.artwork,gameSongs,
-        gameReleaseId:resources?.gameEvents?.length?source?.mobile?.id:undefined,
-        nextSongRelease:Number.isFinite(nextGameSongRelease)?nextGameSongRelease:undefined}));
+        gameReleaseId:resources?.releaseId,
+        nextSongRelease:Number.isFinite(nextGameSongRelease)?nextGameSongRelease:undefined}),challengeStages});
+    }else if(message.type==='challenge-song'){
+      const rows=await challengeSongJob(await dataFor(message.selection),message.payload,message.songId,message.difficulties,message.useGpu,
+        (done,total)=>notify('shard-progress',{fraction:done/total}));
+      notify('shard-result',{response:rows});
+    }else if(message.type==='range-finalist'){
+      const data=await dataFor(message.selection);
+      notify('shard-result',{response:finalizeMobileSetup(data,message.payload,message.seed,await rangeResources())});
     }else if(message.type==='gpu-board-shard'){
       const data=await dataFor(message.selection);
       if(shardGpuData!==data){
@@ -1289,7 +1527,15 @@ self.addEventListener('message',async({data:message,ports})=>{
       const excluded=input.cards.filter(card=>!cardIds.has(card.cardId)).length;
       const unresolved=unresolvedBoardEntries(data,payload.account.boards);
       const boardWarnings=unresolved ? [`${unresolved} imported Board entries are missing from the optimizer catalog. Board estimates may be incomplete.`] : [];
-      const notes=[];
+      const notes=[],notices=[];
+      const searchNotice=message=>{
+        if(!notices.includes(message))notices.push(message);
+        if(!notes.includes(message))notes.push(message);
+      };
+      const onUnverified=error=>{
+        const message='Some proposed lineups were omitted. '+(options.pc?steamCoverageMessage(error):mobileCoverageMessage(error));
+        searchNotice(message);
+      };
       if(payload.boardOpt&&!payload.boardOpt.maxBoardPoints&&!payload.boardOpt.ignoreExisting){
         const mismatches=boardBudgetMessages(data,payload.account,input);
         if(mismatches.length)boardWarnings.push(`Board Points do not reconcile for ${mismatches.join(', ')}. Check current ranks and Boards in Progress, and catalog updates in Settings.`);
@@ -1310,6 +1556,12 @@ self.addEventListener('message',async({data:message,ports})=>{
       };
       let jobData=await dataFor(selection);
       const previewData=jobData;
+      if(input.objective==='challengeLive'){
+        const result=await runChallengeSearch(jobData,payload,input,selection,ports,progress);
+        lastPreview={data:jobData,payload,input,previewData};
+        notify('result',{...result,unresolved,excluded,notes,notices,boardWarnings});
+        return;
+      }
       if(options.pc){
         selection={...selection,pcGameCharts:true};
         jobData=await dataFor(selection);
@@ -1317,9 +1569,13 @@ self.addEventListener('message',async({data:message,ports})=>{
       const chart=options.scoringMode==='chart'?selectedChart(jobData,options):null;
       if(options.scoringMode==='chart'&&!chart)throw Error('The selected chart is unavailable in the local optimizer catalog.');
       const gameOnly=chart?.gameOnly===true;
-      const wantsReviewed=input.reviewedMobile===true&&['chart','generic'].includes(options.scoringMode)&&
+      const websiteMobile=input.preferWebsiteMobile&&!options.pc;
+      const mobileRange=websiteMobile&&options.scoringMode==='generic'&&referenceRangeCharts(jobData,options).some(({chart})=>chart.gameOnly);
+      const wantsReviewed=input.reviewedMobile===true&&(!websiteMobile||gameOnly||mobileRange)&&['chart','generic'].includes(options.scoringMode)&&
         ['score','event','eventPoints'].includes(input.objective)&&['best','holomem','next'].includes(options.goal);
       const wantsMobileRating=input.reviewedMobile===true&&!options.pc&&input.objective==='holomemLb'&&
+        (!websiteMobile||(input.ratingLeaderIds??[options.leaderChar]).some(leader=>
+          referenceRatingCandidates(jobData,input,leader).some(({charts})=>charts.some(chart=>chart.gameOnly))))&&
         ['best','holomem','next'].includes(options.goal);
       if(gameOnly&&!options.pc&&!wantsReviewed)throw Error(gameChartCoverageError);
       const pcGameEstimate=options.pc&&(chart?.gameOnly||options.scoringMode==='generic'&&
@@ -1337,6 +1593,13 @@ self.addEventListener('message',async({data:message,ports})=>{
       };
       const websiteOnly=async()=>{
         if(withoutGameOnlyCharts(jobData)===jobData)return;
+        if(!options.pc&&input.objective!=='unitScore'){
+          const omitted=input.objective==='holomemLb'
+            ?new Set((input.ratingLeaderIds??[options.leaderChar]).flatMap(leader=>referenceRatingCandidates(jobData,input,leader)
+              .flatMap(({song,charts})=>charts.filter(chart=>chart.gameOnly).map(chart=>song.id+'_'+chart.type)))).size
+            :options.scoringMode==='generic'?referenceRangeCharts(jobData,options).filter(({chart})=>chart.gameOnly).length:0;
+          if(omitted)searchNotice(`The Mobile reference estimate excludes ${omitted} selected ${omitted===1?'chart':'charts'} outside its catalog.`);
+        }
         selection={...selection,websiteSongsOnly:true};
         jobData=await dataFor(selection);
         if(input.useGpu){
@@ -1349,6 +1612,7 @@ self.addEventListener('message',async({data:message,ports})=>{
         selection={...selection,websiteSongsOnly:true};
         jobData=await dataFor(selection);
       }
+      if(websiteMobile)input.mobileChartRange=!!(mobileRange||wantsMobileRating);
       lastPreview={data:jobData,payload,input,previewData};
       let compute;
       if(input.useGpu){
@@ -1369,18 +1633,22 @@ self.addEventListener('message',async({data:message,ports})=>{
       }
       if(unitMode){
         const next=options.goal==='next';
-        if(next&&!gpuSearch)throw Error('Enable Use GPU in Settings to search Next upgrades for Unit Score.');
         const focusCardIds=payload.extras.nextDeck??[];
         const current=next?{...payload,options:{...options,cardPool:'owned',
           goal:focusCardIds.length?'holomem':'best',focusCardIds}}:payload;
         if(next)progress(0,1,0,'Finding your current best Unit Score');
         const candidates=await searchUnitScoreRows(jobData,current,selection,progress,ports);
-        const ranked=await planUnitScoreRows(jobData,current,candidates,selection,progress,ports);
+        const ordered=finalizeUnitScoreOrders(jobData,current,candidates);
+        const planned=await planUnitScoreRows(jobData,current,ordered,selection,progress,ports);
+        const ranked=current.boardOpt?finalizeUnitScoreOrders(jobData,current,planned):ordered;
         let result={results:ranked};
         if(next){
           progress(0,1,0,'Finding Unit Score upgrades');
           const currentUnitTeams=ranked.slice(0,5).map(({order,outfitId,displayUnitScore})=>({order,outfitId,displayUnitScore}));
-          [result]=await solveShards({...payload,currentUnitTeams,currentUnitPlan:ranked[0]?.plan},selection,progress,ports);
+          const upgrades={...payload,currentUnitTeams,currentUnitPlan:ranked[0]?.plan};
+          if(gpuSearch)[result]=await solveShards(upgrades,selection,progress,ports);
+          else result=await (await cpuPlanner(jobData,'unitScore')).solveNext(upgrades,async()=>ranked);
+          result={...result,results:finalizeUnitScoreOrders(jobData,payload,result.results)};
         }
         const rows=result.results.slice(0,options.topN).map(team=>({...team,score:undefined,maxScore:undefined,unitScore:undefined}));
         if(gpuSearch)compute={backend:'gpu',...gpuSearch.metrics()};
@@ -1427,7 +1695,7 @@ self.addEventListener('message',async({data:message,ports})=>{
         };
         const ratingInput={...input,ratingNow:input.ratingNow??Date.now()};
         const displayRating=(rating,query,mobile)=>{
-          const displayRows=rows=>withDisplayUnitScores(jobData,query,teamsForUi(data,rows,query)).map(team=>{
+          const displayRows=rows=>withDisplayUnitScores(jobData,query,teamsForUi(data,mobile?rows.map(reviewedResultScores):rows,query)).map(team=>{
             if(!mobile)return team;
             const reviewIndex=lastReview.rows.push(mobile.team(team))-1;
             return {...team,reviewIndex};
@@ -1449,7 +1717,7 @@ self.addEventListener('message',async({data:message,ports})=>{
             const ratingLeaders=[];
             const concurrency=gpuSearch?.leaderConcurrency??1;
             const summary={ratingLeaders,leaderTotal:total,results:[],ratingGroups:[],byMax:options.sortBy==='max',
-              excluded,notes,boardWarnings,scoringModel:mobile?'mobile':'website'};
+              excluded,notes,notices,boardWarnings,scoringModel:mobile?(options.pc?'steam':'mobile'):'website'};
             if(limit)summary.quickTop={limit:requested,screened:null};
             notify('rating-batch',summary);
             let finalists=leaders.map(leaderId=>({leaderId,candidateCharts:referenceRatingCandidates(jobData,ratingInput,leaderId)}));
@@ -1514,13 +1782,14 @@ self.addEventListener('message',async({data:message,ports})=>{
                 }
               }
               if(charts.size){
-                const mobile=await prepareMobileRating(jobData,batchPayload,input,[...charts.values()],selection,ports);
+                const mobile=await prepareMobileRating(jobData,batchPayload,input,[...charts.values()],selection,ports,onUnverified);
                 await runBatch(mobile);
                 return;
               }
             }catch(error){
               if(!(error instanceof MobileCoverageError))throw error;
-              notes.push(error.message);
+              if(options.pc)throw steamCoverageError(error);
+              notes.push(mobileCoverageMessage(error));
               completion=0;
               progress(0,total,0,'Searching with score estimates');
             }
@@ -1533,13 +1802,14 @@ self.addEventListener('message',async({data:message,ports})=>{
         if(wantsMobileRating){
           try {
             rating=await searchReferenceRating(jobData,payload,ratingInput,{...driver,prepareMobile:async charts=>{
-              mobile=await prepareMobileRating(jobData,payload,input,charts,selection,ports);
+              mobile=await prepareMobileRating(jobData,payload,input,charts,selection,ports,onUnverified);
               return mobile;
             }});
           }catch(error){
             if(!(error instanceof MobileCoverageError))throw error;
+            if(options.pc)throw steamCoverageError(error);
             mobile=null;
-            notes.push(error.message);
+            notes.push(mobileCoverageMessage(error));
             progress(0,1,0,'Searching with score estimates');
           }
         }
@@ -1553,43 +1823,59 @@ self.addEventListener('message',async({data:message,ports})=>{
         }
         if(mobile)lastReview={engine:mobile.engine,rows:[]};
         if(gpuSearch)compute={backend:'gpu',...gpuSearch.metrics()};
-        notify('result',{...displayRating(rating,payload,mobile),excluded,notes,boardWarnings,compute,
-          scoringModel:wantsMobileRating?(mobile?'mobile':'website'):undefined});
+        notify('result',{...displayRating(rating,payload,mobile),excluded,notes,notices,boardWarnings,compute,
+          scoringModel:mobile?(options.pc?'steam':'mobile'):'website'});
         return;
       }
       if(wantsReviewed){
         try{
-          const mobile=await runReviewedMobile(jobData,payload,input,selection,progress,ports);
+          const mobile=await runReviewedMobile(jobData,payload,input,selection,progress,ports,onUnverified);
           if(mobile){
             if(gpuSearch)compute={backend:'gpu',...gpuSearch.metrics()};
-            notify('result',{...mobile,scoringModel:options.pc?'steam':'mobile',unresolved,excluded,notes,boardWarnings,compute});
+            notify('result',{...mobile,scoringModel:options.pc?'steam':'mobile',unresolved,excluded,notes,notices,boardWarnings,compute});
             return;
           }
+          if(options.pc)throw new MobileCoverageError('No eligible lineup has a verified Steam chart score.');
         }catch(error){
           if(!(error instanceof MobileCoverageError))throw error;
-          if(gameOnly&&!options.pc)throw Error(`${gameChartCoverageError} ${error.message}`);
-          notes.push(error.message);
+          if(options.pc)throw steamCoverageError(error);
+          if(gameOnly&&!options.pc)throw Error(`${gameChartCoverageError} ${mobileCoverageMessage(error)}`);
+          notes.push(mobileCoverageMessage(error));
           progress(0,1,0,options.pc?'Searching with PC estimates':'Searching with score estimates');
         }
       }
       if(gameOnly&&!options.pc)throw Error(gameChartCoverageError);
-      if(!options.pc)await websiteOnly();
+      const perNote=wantsReviewed&&!options.pc&&!websiteMobile&&input.objective==='score'&&options.scoringMode==='generic';
+      if(!options.pc&&!perNote)await websiteOnly();
       if(options.scoringMode==='generic'&&(options.pc||jobData!==previewData)&&referenceRangeCharts(jobData,options).length===0)
         throw Error('Verified Mobile scoring is unavailable for this chart range with the selected setup.');
-      lastPreview={data:jobData,payload,input,previewData};
-      const responses=await solveShards(payload,selection,progress,ports);
-      const result=mergeReferenceResults(responses,options);
-      let rows;
-      if(gpuSearch){
-        const candidates=await gpuSearch.rankResults(payload,responses[0]?.results??[]);
-        rows=candidates.slice(0,payload.boardOpt&&options.goal!=='next'?Math.max(8,options.topN):options.topN);
-        if(payload.boardOpt&&options.goal!=='next'){
-          const plans=await planReferenceRows(payload,rows,selection,progress,ports,Math.min(6,rows.length));
-          rows=rows.map((row,index)=>plans[index]?{...row,...plans[index].after,plan:plans[index]}:row)
-            .sort((a,b)=>b.value-a.value);
-        }
-        compute={backend:'gpu',...gpuSearch.metrics()};
-      }else rows=payload.limits.jointBoards?await runBoard(responses,payload):result.results;
+      lastPreview={data:jobData,payload,input:{...input,preferWebsiteMobile:true,mobileChartRange:false},previewData};
+      async function referenceFinalists(request){
+        const query=options.pc?request:{...request,options:{...request.options,topN:Math.max(6,request.options.topN)}};
+        const responses=await solveShards(query,selection,progress,ports);
+        const merged=mergeReferenceResults(responses,query.options);
+        let seeds;
+        if(gpuSearch){
+          seeds=await gpuSearch.rankResults(query,responses[0]?.results??[]);
+          if(query.boardOpt&&query.options.goal!=='next'){
+            seeds=seeds.slice(0,Math.max(8,query.options.topN));
+            const plans=await planReferenceRows(query,seeds,selection,progress,ports,Math.min(6,seeds.length));
+            seeds=seeds.map((row,index)=>plans[index]?{...row,...plans[index].after,plan:plans[index]}:row);
+          }
+        }else if(query.limits.jointBoards)seeds=await runBoard(responses,query);
+        else seeds=responses.flatMap(response=>response.results??[]);
+        const rows=options.pc?mergeReferenceResults([{results:seeds}],request.options).results:
+          await finalizeReferenceOrders(jobData,request,seeds,progress,ports,selection,perNote);
+        return {rows,baseline:merged.baseline,evaluated:responses.length};
+      }
+      let {rows,baseline,evaluated}=await referenceFinalists(payload);
+      if(!options.pc&&options.goal==='next'&&input.objective==='score'&&baseline>0){
+        const focusCardIds=payload.extras.nextDeck??[];
+        const current=await referenceFinalists({...payload,limits:{...payload.limits,jointBoards:!!payload.boardOpt},
+          options:{...options,cardPool:'owned',goal:focusCardIds.length?'holomem':'best',focusCardIds,topN:1}});
+        baseline=current.rows[0]?.[options.sortBy==='max'?'maxScore':'score']??null;
+      }
+      if(gpuSearch)compute={backend:'gpu',...gpuSearch.metrics()};
       if(options.eventPoints){
         const seconds=await eventSongSeconds(data,options);
         const cards=new Map(data.cards.map(card=>[card.id,card]));
@@ -1605,10 +1891,11 @@ self.addEventListener('message',async({data:message,ports})=>{
         });
       }
       const results=withDisplayUnitScores(jobData,payload,teamsForUi(data,rows.slice(0,options.topN),payload));
-      notify('result',{results,baseline:result.baseline,reviewedCount:0,scoringModel:pcGameEstimate?'game-pc-estimate':wantsReviewed?'website':undefined,
-        evaluated:responses.length,unresolved,excluded,notes,boardWarnings,compute});
+      notify('result',{results,baseline,reviewedCount:0,scoringModel:results[0]?.rangeCoverage?.perNote?'mobile-per-note-estimate':
+        pcGameEstimate?'game-pc-estimate':'website',
+        evaluated,unresolved,excluded,notes,notices,boardWarnings,compute});
     }
-  }catch(error){notify('error',{message:error instanceof Error?error.message:String(error),
+  }catch(error){notify('error',{message:error instanceof Error?error.message:String(error),activationComparison:error?.activationComparison,
     ...(error?.name==='OptimizerGpuError'?{code:'gpu'}:{})});}
   finally{
     gpuSearch?.close();

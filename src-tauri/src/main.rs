@@ -13,7 +13,8 @@ mod media_packs;
 use serde::Serialize;
 use std::{
     collections::BTreeMap,
-    path::PathBuf,
+    io::Read,
+    path::{Path, PathBuf},
     sync::{
         atomic::{AtomicBool, AtomicU64, Ordering},
         Mutex,
@@ -204,6 +205,68 @@ async fn desktop_export(app: tauri::AppHandle) -> Result<bool> {
     .map_err(|e| e.to_string())?
 }
 #[tauri::command]
+async fn desktop_pick_account_snapshot(app: tauri::AppHandle) -> Result<Option<AccountSnapshotFile>> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let Some(path) = file_dialog(&app, "Import account data")
+            .add_filter("Account data", &["json"])
+            .pick_file()
+        else {
+            return Ok(None);
+        };
+        let file_name = path.file_name().ok_or("The selected file has no name.")?
+            .to_string_lossy().into_owned();
+        let text = String::from_utf8(read_import_file(&path)?)
+            .map_err(|_| "Choose a UTF-8 JSON file.".to_string())?;
+        Ok(Some(AccountSnapshotFile { file_name, text }))
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AccountSnapshotFile {
+    file_name: String,
+    text: String,
+}
+
+fn read_import_file(path: &Path) -> Result<Vec<u8>> {
+    let file = std::fs::File::open(path).map_err(|e| e.to_string())?;
+    let size = file.metadata().map_err(|e| e.to_string())?.len();
+    read_limited_import(file, size, store::MAX_RESTORE_BYTES)
+}
+
+fn read_limited_import(reader: impl Read, size: u64, limit: usize) -> Result<Vec<u8>> {
+    const TOO_LARGE: &str = "The selected file exceeds the supported size.";
+    if size > limit as u64 {
+        return Err(TOO_LARGE.into());
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    reader.take(limit as u64 + 1).read_to_end(&mut bytes).map_err(|e| e.to_string())?;
+    if bytes.len() > limit {
+        return Err(TOO_LARGE.into());
+    }
+    Ok(bytes)
+}
+
+#[cfg(test)]
+mod import_file_tests {
+    use super::read_limited_import;
+    use std::io::Cursor;
+
+    #[test]
+    fn accepts_exact_limit_and_rejects_growth_while_reading() {
+        assert_eq!(read_limited_import(&b"{}"[..], 2, 2).unwrap(), b"{}");
+        let mut growing = Cursor::new(b"12345");
+        assert!(read_limited_import(&mut growing, 1, 2).is_err());
+        assert_eq!(growing.position(), 3);
+        growing.set_position(0);
+        assert!(read_limited_import(&mut growing, 5, 2).is_err());
+        assert_eq!(growing.position(), 0);
+    }
+}
+
+#[tauri::command]
 async fn desktop_import(app: tauri::AppHandle) -> Result<Option<RestorePreview>> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<Native>();
@@ -214,13 +277,7 @@ async fn desktop_import(app: tauri::AppHandle) -> Result<Option<RestorePreview>>
         else {
             return Ok(None);
         };
-        if std::fs::metadata(&path).map_err(|e| e.to_string())?.len() > 256_000_000 {
-            return Err("Backup exceeds the supported size.".into());
-        }
-        let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
-        if bytes.len() > 256_000_000 {
-            return Err("Backup exceeds the supported size.".into());
-        }
+        let bytes = read_import_file(&path)?;
         let backup: Backup = serde_json::from_slice(&bytes).map_err(|e| {
             format!("Invalid desktop backup: {e}. Choose a backup exported by Hololive Dreams Planner.")
         })?;
@@ -537,6 +594,7 @@ fn main() {
             desktop_save,
             desktop_backup,
             desktop_export,
+            desktop_pick_account_snapshot,
             desktop_import,
             desktop_restore,
             desktop_cancel_restore,

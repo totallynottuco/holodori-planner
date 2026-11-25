@@ -1,1 +1,3 @@
 Hololive Dreams Planner is an app for planning progress in the mobile game Hololive Dreams. Track your inventory, plan new card acquisition, plan account upgrades, track achievements, and optimize your team to find your best overall team, the best team you can plan, or building around future upgrades. Optimize for score, Unit Score, Holomem Rating, Event Song Score, Event Points, or for specific charts.
+
+Challenge Live ranks each stage’s songs and difficulties using your roster, Boards and stage member bonuses. Select a song in the results to compare teams or preview the lineup behind its score.

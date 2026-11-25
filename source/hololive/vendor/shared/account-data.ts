@@ -46,6 +46,7 @@ export interface PlayerLevelProgression {
 export interface BoardNodeEffect {
   type: string
   value: number
+  miniGameTypes?: string[]
   target: {
     kind: 'all' | 'self' | 'character' | 'group' | 'attribute' | 'unknown'
     characterId: string | null
@@ -150,6 +151,7 @@ export interface AccountManifestShape {
   }>
   cardLevelBases: Record<string, Array<{ level: number; parameterBaseValue: number }>>
   cardPotentialParameterBonuses: Record<string, Array<{ bloomStage: number; permil: number }>>
+  connectLevel2BloomByGroup?: Record<string, number | null>
   cardConnectEffectIds: Record<string, string>
   connectEffects: Record<string, {
     id: string
@@ -554,7 +556,10 @@ export function resolveBoardConnectEffect(cardId: string, bloomStage: number): R
   if (!effectId) return null
   const effect = accountManifest.connectEffects[effectId]
   if (!effect) throw new Error(`Missing Connect effect ${effectId} for ${cardId}`)
-  const level = bloomStage >= 5 ? 2 : 1
+  const group = accountManifest.cardParameterProfiles[cardId]?.potentialGroupId
+  const thresholds = accountManifest.connectLevel2BloomByGroup
+  const upgradeAt = thresholds && Object.hasOwn(thresholds, group) ? thresholds[group] : 5
+  const level = upgradeAt != null && bloomStage >= upgradeAt ? 2 : 1
   const values = effect.levels.find((entry) => entry.level === level)
   const offsets = accountManifest.connectExtents[effect.extentGroupId]
   if (!values || !offsets) throw new Error(`Incomplete Connect effect ${effectId}`)

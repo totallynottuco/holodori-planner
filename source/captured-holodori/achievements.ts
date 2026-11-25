@@ -154,8 +154,8 @@ export function buildAchievementRewardCatalog(categories: AchievementCategory[])
       const families: string[] = [];
       let label = reward.label;
       if (kind === 'item') {
-        const material = reward.id.match(/^item-skill_tree_.+-([12])$/);
-        if (material) families.push(material[1] === '1' ? 'any-cube' : 'any-hexa');
+        const material = reward.id.match(/^item-skill_tree_.+-([123])$/);
+        if (material) families.push(material[1] === '2' ? 'any-hexa' : 'any-cube');
       } else {
         families.push('cosmetics',kind === 'emblem' ? 'emblems' : 'park-outfits');
         const objective = (mission.unstartedTitle || mission.title || mission.description)

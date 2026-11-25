@@ -54,12 +54,15 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
       planConnectChoices:Function,planConnectProtected:Function,planConnectCards:Object},
     emits:['plan-change','plan-connect'],
     data(){return {linkId:'holo-board-path-mark-'+(++nextBoardId),memberId:null,nodeId:home,dialog:null,search:'',
-      connectSlot:null,connectOptions:[],previewId:null,showPath:false,
+      connectSlot:null,connectOptions:[],previewId:null,showPath:false,presetNumber:null,
       leftPurchase:true,rightReset:true,boardError:''};},
     created(){
       this.camera={zoom:1,x:0,y:0,frame:0,input:[]};
     },
     computed:{
+      presets(){return this.profile?.gameProgress?.boardPresets?.filter(row=>row.characterId===this.member?.id)??[];},
+      selectedPreset(){return this.presets.find(row=>row.number===this.presetNumber)??null;},
+      editableSave(){return this.selectedPreset?null:this.saveBoard;},
       memberBranches(){
         const ids=new Set(this.snapshot?.tables.boards?.map(row=>row.characterId));
         return accountRosterBranches.map(branch=>({
@@ -73,14 +76,15 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
       currentLayouts(){return this.profile?currentBoards(this.profile):optimizerBoards(this.snapshot?.tables.boards);},
       cards(){return this.profile?currentOwnedCards(this.profile,this.goals):this.snapshot?.tables.cards??[];},
       visualPlan(){return this.plan??(this.profile?currentView:null);},
-      currentLayout(){return this.currentLayouts[this.member?.id]??emptyLayout;},
+      currentLayout(){const p=this.selectedPreset;return p?{nodes:p.releasedSkillTreeNodeGroupIds,cards:Object.fromEntries(p.connectedSkillTreeNodeGroupIds.map((id,i)=>[id,p.connectedSkillTreeNodeCardIds[i]]))}:this.currentLayouts[this.member?.id]??emptyLayout;},
       board(){
         if(!this.member)return null;
         const id=this.member.id;
         if(this.profile){
           const points=currentBoardPoints(this.profile,id,this.currentLayout);
-          return projectHolomemBoard(this.snapshot,id,{layout:this.currentLayout,rank:points.rank,cards:this.cards,
+          const projected=projectHolomemBoard(this.snapshot,id,{layout:this.currentLayout,rank:points.rank,cards:this.cards,
             dreamRank:currentDreamRank(this.profile),available:points.available});
+          return this.selectedPreset?{...projected,available:null,reconciled:false}:projected;
         }
         const board=projectHolomemBoard(this.snapshot,id);
         return board&&this.plan ? {...board,available:this.plan.available} : board;
@@ -134,7 +138,7 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
           const {showActiveArt,preview,shownCard,inRange,layers}=mapNodeArt.get(id);
           const colors=palettes[cell.type]??palettes.support;
           const classes='holo-board-node'+(cell.type==='connect'?' is-connect':'')+(shownCard?.thumbnail?' has-connect-card':'')+
-            (cell.grade>=2?' grade-two':'')+(!showActiveArt?' is-locked':'')+(inRange?' is-in-range':'')+(pathIds.has(id)?' is-on-path':'');
+            (cell.grade>=3?' grade-three':cell.grade===2?' grade-two':'')+(!showActiveArt?' is-locked':'')+(inRange?' is-in-range':'')+(pathIds.has(id)?' is-on-path':'');
           const key=this.planChangeKey(id),selectable=planSelection&&key,checked=selectable&&planSelection.has(key);
           const inspected=id===selected.groupId;
           return h('button',{key:id,type:'button','data-board-node':id,'data-plan-change':
@@ -436,8 +440,9 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
           mask('ui_999_base_r96_9s.webp','node-base'),mask('ui_999_base_r96_9s.webp','node-tint'),
           texture('ui_999_inwht_b35_a35_9s.webp','node-inset'),
           showActiveArt ? mask('ui_999_base_r80_9s.webp','node-fill') : null,
-          !showActiveArt ? mask('ui_999_outline_w6_r80_9s.webp','node-ring') : null,
-          mask('ui_999_outline_w6_r104_9s.webp','node-outline'),
+          !showActiveArt&&cell.grade<3 ? mask('ui_999_outline_w6_r80_9s.webp','node-ring') : null,
+          cell.grade>=3?texture('ui_710_ico_grade_3_base_outline.webp','node-grade-three-base'):null,
+          cell.grade>=3?mask('ui_710_ico_grade_3_main_outline.webp','node-grade-three-main'):mask('ui_999_outline_w6_r104_9s.webp','node-outline'),
           shadow&&!shadow.includes('livedeckleaderactiveskilladdition') ? texture('effects/'+shadow,'node-symbol node-symbol-shadow') : null,
           glyph ? texture('effects/'+glyph,'node-symbol') : null,
           h('span',{class:'holo-board-grade','aria-hidden':'true'},Array.from({length:cell.grade},(_,i)=>h('img',{key:i,src:assets+'ui_710_img_star.webp',alt:''}))),
@@ -466,9 +471,9 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
       },
       canContextNode(cell){
         const id=cell.groupId;
-        if(cell.type==='connect')return this.saveBoard?this.board.assignments.has(id):!!this.planConnectChoices&&
+        if(cell.type==='connect')return this.editableSave?this.board.assignments.has(id):!!this.planConnectChoices&&
           !this.planConnectProtected?.(id)&&!this.isRankLocked(cell);
-        return !!this.saveBoard&&this.rightReset&&this.board.purchased.has(id)&&this.board.knownTopology;
+        return !!this.editableSave&&this.rightReset&&this.board.purchased.has(id)&&this.board.knownTopology;
       },
       clickMap(event){
         if(event.detail&&performance.now()<this.suppressBoardClickUntil)return;
@@ -477,7 +482,7 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
       },
       contextMap(event){
         const id=event.target.closest('[data-board-node]')?.dataset.boardNode;
-        if(!id||!this.saveBoard&&!this.canContextNode(this.board.byId.get(id)))return;
+        if(!id||!this.editableSave&&!this.canContextNode(this.board.byId.get(id)))return;
         event.preventDefault();
         this.contextNode(id);
       },
@@ -487,7 +492,7 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
       },
       activateNode(id){
         this.selectNode(id);
-        if(this.saveBoard){
+        if(this.editableSave){
           const node=this.board.byId.get(id);
           if(this.board.active.has(id)){
             if(node.type==='connect')this.openPlanConnect(id);
@@ -498,7 +503,7 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
         if(this.planSelection&&key)this.$emit('plan-change',key);
       },
       contextNode(id){
-        if(!this.saveBoard){this.openPlanConnect(id);return;}
+        if(!this.editableSave){this.openPlanConnect(id);return;}
         this.selectNode(id);
         const node=this.board.byId.get(id);
         if(node.type==='connect'){
@@ -529,10 +534,11 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
           this.openPlanConnect(node.groupId);
       },
       async recordBoard(before,layout){
+        if(!this.editableSave)return false;
         const owner=this.member.id;
         this.boardError='';this.previewId=null;this.showPath=false;
         try{
-          await this.saveBoard(owner,layout,before);
+          await this.editableSave(owner,layout,before);
           return true;
         }catch(error){
           if(this.member.id===owner)this.boardError=error.message;
@@ -548,21 +554,22 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
       },
       openDialog(kind){this.search='';this.dialog=kind;},
       openPlanConnect(id){
-        if(this.saveBoard?!this.board.active.has(id):!this.planConnectChoices||this.planConnectProtected?.(id))return;
+        if(this.editableSave?!this.board.active.has(id):!this.planConnectChoices||this.planConnectProtected?.(id))return;
         this.selectNode(id);
         this.previewId=null;
         this.connectSlot=id;
-        this.connectOptions=this.saveBoard?this.candidates:this.planConnectChoices();
+        this.connectOptions=this.editableSave?this.candidates:this.planConnectChoices();
         this.openDialog('plan-connect');
       },
       setPlanConnect(cardId){
         const slot=this.connectSlot;
         this.dialog=null;
-        if(this.saveBoard)this.recordConnect(slot,cardId);
+        if(this.editableSave)this.recordConnect(slot,cardId);
         else this.$emit('plan-connect',slot,cardId);
         this.$nextTick(()=>this.$refs.world?.querySelector('[data-board-node="'+slot+'"]')?.focus({preventScroll:true}));
       },
       selectMember(id){
+        this.presetNumber=null;
         this.memberId=id;
         this.nodeId=home;
         this.showPath=false;
@@ -626,7 +633,7 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
         this.nodeStatus(node)+(actualCard?.bloom!=null?' · Bloom '+actualCard.bloom:'');
       const dialogTitle=this.dialog==='connect'?'Preview Connect card':'Select Holomem';
       const editingConnect=this.dialog==='plan-connect';
-      const currentPlanCard=(this.saveBoard?this.currentLayout.cards:this.planConnectCards)?.[this.connectSlot];
+      const currentPlanCard=(this.editableSave?this.currentLayout.cards:this.planConnectCards)?.[this.connectSlot];
       const visibleConnectCards=editingConnect?this.connectOptions.filter(card=>
         (card.name+' '+card.member).toLocaleLowerCase().includes(this.search.trim().toLocaleLowerCase())):[];
       const hasCosts=cost.boardPointCost>0||cost.costs.length>0;
@@ -642,13 +649,18 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
             button([h('img',{src:portrait(this.member),class:'holo-board-portrait',alt:''}),
               this.member.name,art('ui_999_ico_sync.webp','holo-board-switch')],()=>this.openDialog('member'),
               {class:action+' holo-board-member','aria-label':'Select Holomem, '+this.member.name,'aria-haspopup':'dialog'}),
+            this.presets.length?h('div',{class:'flex flex-wrap gap-1',role:'group','aria-label':'Board presets'},[
+              button('Equipped',()=>{this.presetNumber=null;this.previewId=null;this.showPath=false;},{'aria-pressed':!this.selectedPreset}),
+              ...this.presets.map(p=>button(p.name||'Preset '+p.number,()=>{this.presetNumber=p.number;this.previewId=null;this.showPath=false;},{key:p.number,'aria-pressed':p.number===this.presetNumber,title:p.userMemo||'Saved Board preview'})),
+            ]):null,
+            this.selectedPreset?h('span',{class:'text-xs text-gray-400'},'Preset preview · '+(this.selectedPreset.userMemo||'Read only')):null,
             board.rank===null?null:h('span',{class:'holo-board-summary text-gray-300'},'Rank '+board.rank),
             h('span',{class:'holo-board-summary holo-board-points',
               title:board.reconciled?format(board.earned)+' earned · '+format(board.spent)+' spent':undefined,
             },[art('img_resource_thumb_skilltreepoint-cmn.webp',''),board.available===null?'Board Pt unavailable':
               this.profile?format(board.spent)+' / '+format(board.earned)+' used · '+format(board.available)+' Board Pt left':format(board.available)+' Board Pt']),
             h('span',{class:'holo-board-summary text-gray-300'},board.purchased.size+' / '+board.nodes.length+' unlocked'),
-            this.saveBoard?h('div',{class:'holo-board-click-controls',role:'group','aria-label':'Board click actions'},[
+            this.editableSave?h('div',{class:'holo-board-click-controls',role:'group','aria-label':'Board click actions'},[
               vnode(Toggle,{label:'Left click to purchase node',small:true,modelValue:this.leftPurchase,
                 'onUpdate:modelValue':value=>{this.leftPurchase=value;this.boardError='';}}),
               vnode(Toggle,{label:'Right click to reset node',small:true,modelValue:this.rightReset,
@@ -717,7 +729,7 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
           vnode('div',{class:'holo-board-card-grid'},visibleConnectCards.map(card=>button([
             cardArt(card.art,'holo-board-picker-art','lazy'),vnode('span',{class:'holo-board-picker-name'},card.name),
             vnode('span',{class:'holo-board-picker-meta text-gray-400'},card.member+' · Bloom '+format(card.bloom)+
-              (this.saveBoard&&card.placement&&currentPlanCard!==card.id?' · Move from '+card.placement.member:'')),
+              (this.editableSave&&card.placement&&currentPlanCard!==card.id?' · Move from '+card.placement.member:'')),
           ],()=>this.setPlanConnect(card.id),{key:card.id,class:action+' holo-board-card-option',
             'aria-pressed':currentPlanCard===card.id,'aria-label':card.name}))),
           visibleConnectCards.length?null:vnode('p',{class:'text-sm text-gray-400'},'No matching Connect cards.'),

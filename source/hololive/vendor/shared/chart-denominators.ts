@@ -9,6 +9,7 @@ const count = z.number().int().nonnegative().max(2_147_483_647)
 export const chartDenominatorSchema = z.object({
   officialChartHash: z.string().regex(/^[a-f0-9]{32}$/), rawSourceSha256: sha256,
   difficultyLevel: z.number().int().min(1).max(30), scoringEvents: count,
+  chartScoreCoefficientPermyriad: count.optional(),
   scoringEventPerfectSumPermil: count, inactiveHoldRelayCount: count,
   inactiveHoldRelayWeightPermil: z.literal(100), mergedControlMarkerCount: count,
   completePerfectSumPermil: count.positive()

@@ -6,6 +6,7 @@ import {simple,ancestor} from 'acorn-walk';
 import {build} from 'esbuild';
 import {buildOptimizerWorkspace} from '../source/captured-holodori/optimizer-workspace-data.js';
 import {normalizeOptimizerEvents} from '../source/captured-holodori/optimizer-events.js';
+import {projectChallengeStages} from './mobile-scoring/project-challenge-stages.mjs';
 import {capturedPlannerPatches} from './captured-planner-patches.mjs';
 import {adaptCapturedData,adaptCapturedLazyAssets,stripGameHistoryCss} from './captured-data-boundaries.mjs';
 import {capturedCharacterPatches} from './captured-character-patches.mjs';
@@ -404,7 +405,7 @@ simple(functions.get('pC').body,{
         patch(props.start+1,props.start+1,'gameItem:r.gameItems[j],"data-inventory-item":j,onQuantityFocus:r.focusQuantityItem,onQuantityBlur:r.blurQuantityItem,','Pass imported quantities and track focus in the original tile');
         const release=prop(props,'release').value;
         patch(release.start,release.end,'e.items[j]?.release','Imported tiles have no planner release restriction');
-        for(const [name,value]of [['type','r.gameItems[j]?j:e.getType(j)'],['buttons','r.buttons&&!(r.gameItems[j]?.quantity>Number.MAX_SAFE_INTEGER)'],['options','r.gameItems[j]?r.regularGridOptions:a.options'],['craft-button','!r.gameItems[j]&&r.craftButton']]){
+        for(const [name,value]of [['type','r.gameItems[j]?j:e.getType(j)'],['buttons','r.buttons&&!r.gameItems[j]?.unlimited&&!(r.gameItems[j]?.quantity>Number.MAX_SAFE_INTEGER)'],['options','r.gameItems[j]?r.regularGridOptions:a.options'],['craft-button','!r.gameItems[j]&&r.craftButton']]){
           const target=prop(props,name).value;
           if(text(target)!==value)patch(target.start,target.end,value,'Use the original inventory controls for game quantities');
         }
@@ -544,7 +545,7 @@ await fs.writeFile(path.join(stage,'assets/index-f19fde22.js'),adapted);
 // dictionaries stay in the actual original locale format and loading workflow.
 const gameBundle=await build({entryPoints:[path.join(root,'source/captured-holodori/game.ts')],bundle:true,format:'esm',platform:'node',write:false});
 const dataModule=await import('data:text/javascript;base64,'+Buffer.from(gameBundle.outputFiles[0].contents).toString('base64'));
-const labels={...dataModule.game.translations,title:'Hololive Dreams Planner',characters:'Characters',character:'Card',inventory:'Inventory',settings:'Settings',path:'Stat',paths:'Stats',type:'Type',types:'Types',tier:'Rarity',traces:'SP Training',trace:'SP Training',cone:'Bloom',cones:'Bloom',relics:'Artwork',eidolons:'Bloom',current_sp:'Current SP',goal_sp:'Goal SP',owned:'Owned',unowned:'Unowned',ownership_unavailable:'Import account data to filter by ownership.',hide_maxed_cards:'Hide maxed cards',current_bloom:'Current Bloom',training:'SP Training',bloom:'Bloom',other:'Other',materials:'materials',planner_category_ready:'No missing materials in this category.',planner_materials_ready:'All planned materials are ready.',planner_no_requirements:'Add card goals or extra materials to build your plan.',none_required:'None required',share_goal_traces:'SP Training',share_format_landscape:'Landscape',share_made_with:'Made with',share_art_local:'Your image is saved in this profile on this computer.',crafted_explanation:'Convert surplus Beads needed to cover planned Crystal shortages. Each exchange uses 30 matching Beads and 200 Mega Sphere Coins for 10 Crystals.',clean_confirmation:'Clear the recorded inventory quantities for this profile? Goals and other profile data are kept.',only_obtainable:'Materials required for the selected goals. No farming estimates are assumed.'};
+const labels={...dataModule.game.translations,title:'Hololive Dreams Planner',characters:'Characters',character:'Card',inventory:'Inventory',settings:'Settings',path:'Stat',paths:'Stats',type:'Type',types:'Types',tier:'Rarity',traces:'SP Training',trace:'SP Training',cone:'Bloom',cones:'Bloom',relics:'Artwork',eidolons:'Bloom',current_sp:'Current SP',goal_sp:'Goal SP',owned:'Owned',unowned:'Unowned',ownership_unavailable:'Import account data to filter by ownership.',hide_maxed_cards:'Hide maxed cards',current_bloom:'Current Bloom',training:'SP Training',bloom:'Bloom',other:'Other',materials:'materials',planner_category_ready:'No missing materials in this category.',planner_materials_ready:'All planned materials are ready.',planner_no_requirements:'Add card goals or extra materials to build your plan.',none_required:'None required',share_goal_traces:'SP Training',share_format_landscape:'Landscape',share_made_with:'Made with',share_art_local:'Your image is saved in this profile on this computer.',crafted_explanation:'Record the exchanges planned for this material. Matching Beads upgrade to Crystals with Mega Sphere Coins. The VIP Lounge exchanges both other attributes for Beads or Crystals with Soda Pop Coins.',clean_confirmation:'Clear the recorded inventory quantities for this profile? Goals and other profile data are kept.',only_obtainable:'Materials required for the selected goals. No farming estimates are assumed.'};
 Object.assign(labels,{goal_bloom:'Goal Bloom',resin_full:'Full',account:'Profile',more_than_one_account:'Keep separate card progress and inventories in each profile.',export_account:'Export profile',import_account:'Import profile',delete_profile_confirmation:'Delete this profile? A recovery backup will be created first.',hide_artifacts_expanded_goals:'Hide Artwork from expanded cards',hide_weapons_expanded_goals:'Hide Bloom from expanded cards',hour_format:'Time format',sidebar_density:'Sidebar density',sidebar_divider_style:'Sidebar divider'});
 Object.assign(labels,{inventory_training:'Training',inventory_construction:'Construction',inventory_other:'Others',inventory_hide_zero:'Hide zero quantities'});
 labels.show_added_cards='Show added cards';
@@ -569,11 +570,13 @@ const result=await build({entryPoints:{main:path.join(stage,'entry.js'),'team-op
         if(identity[field]===card[field])delete card[field];
       }
     }
+    const labels=Object.fromEntries(['attribute','stat'].map(key=>[key,[...new Set(data.cards.map(card=>card[key]))]]));
     const animations=[];
     data.cards=data.cards.map(card=>{
       const row=columns.map(key=>card[key]);
       if(columns.some(key=>!Object.hasOwn(card,key))||!card.id.startsWith('card-'))return card;
       row[0]=card.id.slice(5);
+      for(const key of Object.keys(labels))row[columns.indexOf(key)]=labels[key].indexOf(card[key]);
       const animation=JSON.stringify(card.animation);
       if(!animations.includes(animation))animations.push(animation);
       row[columns.indexOf('animation')]=animations.indexOf(animation);
@@ -583,17 +586,30 @@ const result=await build({entryPoints:{main:path.join(stage,'entry.js'),'team-op
     });
     return {loader:'js',contents:`const data=${JSON.stringify(data)},members=${JSON.stringify(members)};
       const columns=${JSON.stringify(columns)};
+      const labels=${JSON.stringify(labels)};
       const animations=${JSON.stringify(animations)};
       data.cards=data.cards.map(row=>{
         const card=Array.isArray(row)?{...row[columns.length],...Object.fromEntries(columns.map((key,index)=>[key,row[index]]))}:row;
         if(Array.isArray(row)){
           card.id='card-'+card.id;
+          for(const key of Object.keys(labels))card[key]=labels[key][card[key]];
           card.animation=JSON.parse(animations[card.animation]);
         }
         card.assetId??=card.id.slice(5);
         for(const field of ${JSON.stringify(fields)})card[field]??=members[card.id.slice(5,10)][field];
         return card;
       });
+      export default data;`};
+  });
+  build.onLoad({filter:/vendor[/\\]data[/\\]account\.json$/},async({path:filename})=>{
+    const data=JSON.parse(await fs.readFile(filename,'utf8'));
+    const ids=[...new Set(Object.values(data.cardConnectEffectIds))];
+    const index=new Map(ids.map((id,i)=>[id,i]));
+    for(const card of Object.keys(data.cardConnectEffectIds))
+      data.cardConnectEffectIds[card]=index.get(data.cardConnectEffectIds[card]);
+    return {loader:'js',contents:`const data=${JSON.stringify(data)}, ids=${JSON.stringify(ids)};
+      const effects=data.cardConnectEffectIds;
+      for(const card of Object.keys(effects))effects[card]=ids[effects[card]];
       export default data;`};
   });
   build.onLoad({filter:/card-catalog-order\.json$/},async({path:filename})=>{
@@ -664,9 +680,11 @@ await fs.cp(path.join(root,'source/hololive/scoring-reviewed/preview-hit-sounds'
   path.join(optimizerAssets,'hit-sounds'),{recursive:true});
 await fs.mkdir(path.join(optimizerAssets,'hit-sound-updates'),{recursive:true});
 await fs.writeFile(path.join(optimizerAssets,'hit-sound-updates/index.json'),'{}');
-for(const file of ['hdsolver.js','hdsolver.wasm','solver-data.json','optimizer-events.json','event-titles.json','song-lengths.json','song-unlocks.json'])
+for(const file of ['hdsolver.js','hdsolver.wasm','event-titles.json'])
   await fs.copyFile(path.join(root,'evidence/team-optimizer/reference',file),path.join(optimizerAssets,file));
-for (const file of ['optimizer-charts.json', 'optimizer-chart-events-v3.bin',
+for(const file of ['solver-data.json','optimizer-events.json','song-lengths.json','song-unlocks.json'])
+  await fs.copyFile(path.join(root,'source/hololive/scoring-reviewed/compact',file),path.join(optimizerAssets,file));
+for (const file of ['game-scoring-release.json','optimizer-charts.json', 'optimizer-chart-events-v3.bin',
   'optimizer-preview-lanes.json','optimizer-preview-lanes.bin','optimizer-preview-hits.json','optimizer-preview-geometry.json']) {
   await fs.copyFile(path.join(root, 'source/hololive/scoring-reviewed', file), path.join(optimizerAssets, file));
 }
@@ -675,6 +693,8 @@ for (const file of ['scoring.json', 'chart-denominators.json']) {
 }
 for(const dir of ['jackets','portraits','event-banners'])
   await fs.cp(path.join(root,'evidence/team-optimizer/reference/ui-assets',dir),path.join(optimizerAssets,dir),{recursive:true});
+for(const dir of ['jackets','portraits'])
+  await fs.cp(path.join(root,'source/hololive/scoring-reviewed/compact',dir),path.join(optimizerAssets,dir),{recursive:true});
 const eventBanners=await fs.readdir(path.join(optimizerAssets,'event-banners'));
 const eventArt=Object.fromEntries(eventBanners
   .filter(file=>/^marathon_event-(?:normal|relay)-\d+\.webp$/.test(file))
@@ -690,6 +710,11 @@ await fs.writeFile(path.join(optimizerAssets,'workspace.json'),JSON.stringify(bu
 const achievementBundle=await build({entryPoints:[path.join(root,'source/captured-holodori/achievements.ts')],bundle:true,format:'esm',platform:'node',write:false});
 const {buildAchievementCatalog,buildAchievementRewardCatalog}=await import('data:text/javascript;base64,'+Buffer.from(achievementBundle.outputFiles[0].contents).toString('base64'));
 const achievementMaster=JSON.parse(await fs.readFile(path.join(root,'source/hololive/vendor/data/game-reference.json'),'utf8'));
+const {LiveTower,LiveTowerStage}=achievementMaster.tables;
+await fs.writeFile(path.join(optimizerAssets,'challenge-stages.json'),JSON.stringify({
+  sourceCommit:achievementMaster.sourceCommit,
+  stages:projectChallengeStages(LiveTower.map(row=>row.data),LiveTowerStage.map(row=>row.data)),
+}));
 const achievementAssets=path.join(out,'assets/achievements');
 const rewardImages=Object.fromEntries((await fs.readdir(path.join(achievementAssets,'rewards')))
   .filter(file=>file.endsWith('.webp')).map(file=>[path.basename(file,'.webp'),'/assets/achievements/rewards/'+file]));
@@ -709,6 +734,13 @@ const inventoryItems=Object.fromEntries(achievementMaster.tables.Item.map(({data
   if(!image)throw Error('Missing inventory item artwork: '+data.id);
   return [data.id,{name:itemNames.get(data.nameLangId),image,category:data.inventoryItemCategoryType?.split('_TYPE_').at(-1),type:data.type?.split('_TYPE_').at(-1),order:data.order}];
 }));
+const baitNames=new Map(achievementMaster.tables.LangParkFishingBait_Eng.map(({data})=>[data.id,data.text]));
+const inventoryIconFiles=new Set(await fs.readdir(path.join(gameInventoryAssets,'icons')));
+for(const {data} of achievementMaster.tables.ParkFishingBait){
+  const asset=data.knownIconAssetId??data.assetId;
+  const image=inventoryIconFiles.has(asset+'.webp')?'/assets/game-inventory/icons/'+asset+'.webp':undefined;
+  inventoryItems[data.id]={name:baitNames.get(data.nameLangId),image,category:'OTHER',type:'FISHING_BAIT',order:data.order,unlimited:data.isUnlimited};
+}
 await fs.writeFile(path.join(gameInventoryAssets,'catalog.json'),JSON.stringify({items:inventoryItems,images:itemImages}));
 await fs.cp(path.join(root,'source/hololive/branding'),path.join(out,'branding'),{recursive:true});
 await fs.mkdir(path.join(out,'captured'),{recursive:true});

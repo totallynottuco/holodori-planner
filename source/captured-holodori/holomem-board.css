@@ -1,5 +1,6 @@
 .holo-progress-tabs {
   display: flex;
+  flex-wrap: wrap;
   gap: .25rem;
   margin: .75rem 0;
 }
@@ -93,6 +94,9 @@
   --stars: 8%;
 }
 .holo-board-node.grade-two { --shell: 92%; --inner: 79%; --glyph: 60%; --stars: 0%; }
+.holo-board-node.grade-three { --shell: 92%; --inner: 79%; --glyph: 60%; --stars: 0%; }
+.holo-board-layer.node-grade-three-base { width: 95.5%; height: 95.5%; opacity: .65; }
+.holo-board-layer.node-grade-three-main { width: 91.5%; height: 91.5%; background: linear-gradient(135deg,var(--node-from),var(--node-to)); }
 [data-plan-change="add"] { --plan-change: #86efac; }
 [data-plan-change="reset"] { --plan-change: #ff8298; }
 [data-plan-change="connect"] { --plan-change: #c4b5fd; }

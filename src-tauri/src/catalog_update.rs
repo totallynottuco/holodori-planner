@@ -523,16 +523,18 @@ pub fn bootstrap(root: &Path) -> Result<Bootstrap> {
     })
 }
 pub fn check(root: &Path) -> Result<Candidate> {
-    let commit: Value = serde_json::from_slice(&fetch(
+    // Large master-data updates can have a very large commit diff. The branch
+    // reference identifies the same immutable tables without fetching a patch.
+    let reference: Value = serde_json::from_slice(&fetch(
         "api.github.com",
-        "/repos/HolodoriDB/holodori-db-eng-diff/commits/main",
-        2_000_000,
+        "/repos/HolodoriDB/holodori-db-eng-diff/git/ref/heads/main",
+        16_384,
     )?)
     .map_err(err)?;
-    let id = commit
-        .get("sha")
+    let id = reference
+        .pointer("/object/sha")
         .and_then(Value::as_str)
-        .filter(|id| valid_id(id))
+        .filter(|id| reference["ref"] == "refs/heads/main" && reference["object"]["type"] == "commit" && valid_id(id))
         .ok_or("Invalid public catalog commit.")?
         .to_owned();
     if load(root, &id).is_ok() {
@@ -674,7 +676,10 @@ pub fn commit(root: &Path, id: &str, normalized_asset_ids: Vec<String>) -> Resul
     }
     let needed = ids.difference(&baseline_ids()).cloned().collect();
     verify_assets(root, &candidate, &needed)?;
-    write_json(&cache(root).join("last-good.json"), &id)?;
+    let pointer = cache(root).join("last-good.json");
+    if read_json::<String>(&pointer, 256).ok().as_deref() != Some(id) {
+        write_json(&pointer, &id)?;
+    }
     drop(_guard);
     bootstrap(root)
 }

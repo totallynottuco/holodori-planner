@@ -1,11 +1,11 @@
 import {referencePowerUpBonus} from './reference-rating-math.js';
 import {pinsBoardConnects,retainedConnectorPaths} from './board-protection.js';
-import {isTeamCardEligible,teamRarityFilter} from './team-card-pool';
+import {isTeamCardEligible,teamRarityFilter} from './team-card-pool.js';
 
 const endpoint = '/assets/team-optimizer/';
 const expected = {
   'hdsolver.wasm':'f7e2ab93c3a155bdd0cbdd5623fb7ca887b26f62f8894599bd805af7320665d3',
-  'solver-data.json':'70a394fb276e7276380210a04f35cce1a4f2d5b0a654b4ef1e9c5514aac0e48e',
+  'solver-data.json':'2a0894e2b577720c9beb0e0d1b2ce76762262bca194598793561ce0865ce9876',
 };
 
 let dataRequest, moduleRequest;
@@ -235,7 +235,7 @@ export function prepareReferenceSearch(data,input) {
     boardOpt={...boardOpt,connectorPaths:retainedConnectorPaths(boards,owner=>data.boards[owner],rank)};
   }
   if(input.useBoards!==false&&input.plannedCards){
-    const entries=Object.fromEntries(input.cards.filter(card=>data.connects[card.cardId]&&!owned[card.cardId])
+    const entries=Object.fromEntries(input.cards.filter(card=>data.connects?.[card.cardId]&&!owned[card.cardId])
       .map(card=>[card.cardId,{owned:true,level:card.level,bloom:card.potentialUpgradeCount,sp:card.levelLimitBreakCount}]));
     if(Object.keys(entries).length)options.boardConnectEntries=entries;
   }

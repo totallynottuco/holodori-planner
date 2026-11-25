@@ -107,6 +107,25 @@ fn update_cache(app: &tauri::AppHandle) -> Result<PathBuf> {
     Ok(app.path().app_cache_dir().map_err(|e| e.to_string())?.join("app-updates"))
 }
 
+// Setup can still be exiting when it reopens the planner. Windows releases the
+// executable on exit, so a later launch can retry any file that is still in use.
+fn clean_used_installers(cache: &Path, installed: &str) {
+    let Some(current) = version_parts(installed) else { return };
+    let Ok(entries) = fs::read_dir(cache) else { return };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(stem) = name.to_str().and_then(|name| name.strip_suffix(".exe")) else { continue };
+        let mut parts = stem.split('-');
+        let Some(version) = parts.next().and_then(version_parts) else { continue };
+        let numeric = |part: Option<&str>| part.is_some_and(|v| !v.is_empty() && v.bytes().all(|c| c.is_ascii_digit()));
+        if version <= current && numeric(parts.next()) && numeric(parts.next()) && parts.next().is_none()
+            && entry.file_type().is_ok_and(|kind| kind.is_file())
+        {
+            let _ = fs::remove_file(entry.path());
+        }
+    }
+}
+
 fn pending_notes(path: &Path, installed_version: &str) -> Option<ReleaseNotes> {
     let bytes = fs::read(path).ok()?;
     let notes: ReleaseNotes = serde_json::from_slice(&bytes).ok()?;
@@ -181,7 +200,9 @@ pub(crate) async fn desktop_app_update_check(app: tauri::AppHandle) -> Result<Op
 pub(crate) async fn desktop_app_update_notes(app: tauri::AppHandle) -> Result<Option<ReleaseNotes>> {
     if !supported() || app.state::<Native>().smoke.is_some() {return Ok(None);}
     tauri::async_runtime::spawn_blocking(move || {
-        Ok(pending_notes(&update_cache(&app)?.join("whats-new.json"), env!("CARGO_PKG_VERSION")))
+        let cache = update_cache(&app)?;
+        clean_used_installers(&cache, env!("CARGO_PKG_VERSION"));
+        Ok(pending_notes(&cache.join("whats-new.json"), env!("CARGO_PKG_VERSION")))
     }).await.map_err(|e| e.to_string())?
 }
 
@@ -317,6 +338,22 @@ mod tests {
         for address in ["http://github.com/file", "https://example.org/file", "https://user@github.com/file"] {
             assert!(download_target(&tauri::Url::parse(address).unwrap()).is_err(), "{address}");
         }
+    }
+
+    #[test]
+    fn removes_only_completed_setup_downloads() {
+        let dir = std::env::temp_dir().join(format!("planner-setup-{}-{}", std::process::id(), crate::store::now()));
+        fs::create_dir(&dir).unwrap();
+        let completed = ["1.2.9-12-34.exe", "1.3.1-56-78.exe"];
+        let retained = ["1.10.0-12-34.exe", "1.3.1-user-copy.exe", "whats-new.json"];
+        for name in completed.iter().chain(&retained) { fs::write(dir.join(name), []).unwrap(); }
+        clean_used_installers(&dir, "1.3.1");
+        for name in completed { assert!(!dir.join(name).exists()); }
+        for name in retained {
+            assert!(dir.join(name).is_file());
+            fs::remove_file(dir.join(name)).unwrap();
+        }
+        fs::remove_dir(dir).unwrap();
     }
 
     #[test]

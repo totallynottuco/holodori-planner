@@ -9,9 +9,11 @@ The Windows build uses Node.js, Rust, the Windows SDK and Microsoft C++ Build To
 ```powershell
 npm ci
 npm run desktop:build -- --no-bundle
-powershell -File scripts/build-windows-setup.ps1 -Compiler <ISCC.exe> -WebView2Installer <WebView2RuntimeInstallerX64.exe> -PayloadUrl https://github.com/totallynottuco/hololive-dreams-planner-media/releases/download/packs
+pwsh -File scripts/build-windows-setup.ps1 -Compiler <ISCC.exe> -WebView2Installer <WebView2RuntimeInstallerX64.exe> -PayloadUrl https://github.com/totallynottuco/hololive-dreams-planner-media/releases/download/packs
+powershell -File scripts/package-holodori.ps1
+powershell -File scripts/verify-holodori-package.ps1 -PackageOnly
 ```
 
-Packaging requires Inno Setup 6.5 or newer and a Microsoft-signed x64 WebView2 offline installer. Upload the verified `hosted-core` parts to the media feed and put the single Setup executable from `release/local-setup/download` on the app release. `release/local-setup` also contains an offline installer and its adjacent payload folder.
+Packaging requires Inno Setup 6.5 or newer and a Microsoft-signed x64 WebView2 offline installer. Use PowerShell 7 for hosted builds so unchanged media archives retain the same bytes and hashes as the published packs. Upload the verified `hosted-core` parts to the media feed and put the single Setup executable from `release/local-setup/download` on the app release. `release/local-setup` also contains an offline installer and its adjacent payload folder.
 
 See [THIRD_PARTY.md](THIRD_PARTY.md) and the [license notices](licenses) for attribution and license terms.

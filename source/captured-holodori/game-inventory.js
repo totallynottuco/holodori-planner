@@ -1,8 +1,9 @@
+import {sodaPopCoin} from './conversions';
 import {formatNumber,formatDateTime} from './regional-formats.js';
 import {ACCOUNT_RESOURCE_ITEM_IDS} from './account-import';
 import {diamondInventoryIds,isGameInventoryId} from '../hololive/vendor/shared/types';
 
-const plannerItems = new Set(Object.values(ACCOUNT_RESOURCE_ITEM_IDS));
+const plannerItems = new Set([...Object.values(ACCOUNT_RESOURCE_ITEM_IDS),sodaPopCoin]);
 const iconRoot = '/assets/game-inventory/icons/';
 const fallbackImage = '/assets/achievements/groups/img_achieve_icon_gift.webp';
 const escapeTooltip = name => name.replace(/[&<>]/g, character => ({'&':'&amp;','<':'&lt;','>':'&gt;'}[character]));
@@ -32,6 +33,7 @@ export function inventoryPlacement(id,category,type) {
   if(type==='MARATHON_EVENT_BADGE'||id.startsWith('item-event_badge-'))section='events';
   else if(type==='CHARACTER_COIN')section='membership';
   else if(type==='EXCHANGE')section='exchange';
+  else if(type==='FISHING_BAIT'||/^park_fishing_bait-/.test(id))section='park';
   else if(parkTypes.has(type)||/^item-mini[-_]game/.test(id)&&id.endsWith('coin'))section='park';
   else if(consumableTypes.has(type))section='consumables';
   return {category:'other',section};
@@ -56,7 +58,7 @@ export function projectGameInventory(snapshot,catalog,compactQuantity,quantities
   const stock = new Map();
   const observed = new Map();
   const expiries = new Map();
-  const validItem=id=>isGameInventoryId(id)&&id.startsWith('item-')&&!plannerItems.has(id);
+  const validItem=id=>isGameInventoryId(id)&&!Object.values(diamondInventoryIds).includes(id)&&!plannerItems.has(id);
   for (const {itemId} of snapshot?.tables.ownedItems??[]) {
     if (validItem(itemId)) stock.set(itemId,null);
   }
@@ -71,6 +73,7 @@ export function projectGameInventory(snapshot,catalog,compactQuantity,quantities
       expiries.set(itemId,dates);
     }
   }
+  for(const row of snapshot?.tables.fishingBaits??[])if(validItem(row.parkFishingBaitId))observed.set(row.parkFishingBaitId,BigInt(row.quantity));
   if(quantities===undefined)for(const [id,value] of observed)stock.set(id,value);
   else for(const [id,value] of Object.entries(quantities))if(validItem(id))stock.set(id,BigInt(value));
   const tile = (name,image,quantity,dates) => ({
@@ -86,11 +89,13 @@ export function projectGameInventory(snapshot,catalog,compactQuantity,quantities
     const category=masterCategory(item?.inventoryItemCategoryType)??local?.category;
     const type=typeof item?.type==='string'?item.type.split('_TYPE_').at(-1):local?.type;
     return [id,{
-      ...tile(typeof label === 'string' && label ? label : local?.name || id,image,stock.has(id)?stock.get(id):0n,
+      ...tile(typeof label === 'string' && label ? label : local?.name || id,image,local?.unlimited?null:stock.has(id)?stock.get(id):0n,
         stock.get(id)===observed.get(id)?expiries.get(id):undefined),
       ...inventoryPlacement(id,category,type),
       order:Number.isFinite(item?.order)?item.order:local?.order,
       hidden:category==='HIDDEN'&&!stock.has(id),
+      unlimited:local?.unlimited??false,
+      ...(local?.unlimited?{exact:'Unlimited',value:'∞',quantityTooltip:'Unlimited'}:{}),
     }];
   });
   return Object.fromEntries([
@@ -106,6 +111,7 @@ export function applyGameInventoryEdits(base,inventory,compactQuantity) {
   for(const {item,type,tier,value} of inventory){
     if(!isGameInventoryId(item)||plannerItems.has(item)||type!==item||tier!==0)continue;
     const tile=tiles[item]??{name:item,tooltip:escapeTooltip(item),...inventoryPlacement(item),image:fallbackImage};
+    if(tile.unlimited)continue;
     if(tile.quantity!=null&&Number(tile.quantity)===value)continue;
     tiles[item]={...tile,...quantityDetails(value,compactQuantity),hidden:false};
   }
@@ -115,10 +121,11 @@ export function applyGameInventoryEdits(base,inventory,compactQuantity) {
 export function clearGameInventory(inventory,snapshot) {
   const ids=new Set(inventory.map(row=>row.item));
   if(snapshot){
+    for(const row of snapshot.tables.fishingBaits??[])ids.add(row.parkFishingBaitId);
     for(const {itemId} of snapshot.tables.items)ids.add(itemId);
     for(const {itemId} of snapshot.tables.ownedItems)ids.add(itemId);
     for(const id of Object.values(diamondInventoryIds))ids.add(id);
   }
-  return [...ids].filter(id=>isGameInventoryId(id)&&!plannerItems.has(id))
+  return [...ids].filter(id=>isGameInventoryId(id)&&(!plannerItems.has(id)||id===sodaPopCoin))
     .map(item=>({item,type:item,tier:0,value:0}));
 }

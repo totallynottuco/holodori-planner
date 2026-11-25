@@ -8,18 +8,8 @@ window.addEventListener('holodori-optimizer-catalog-updated',()=>{
 
 export const optimizerWorkspaceCatalog=()=>current?.catalog.nextSongRelease<=Date.now()?undefined:current;
 
-let bundledRequest;
-function bundledWorkspace(){
-  bundledRequest??=fetch('/assets/team-optimizer/workspace.json').then(response=>{
-    if(!response.ok)throw Error('The bundled optimizer workspace could not open.');
-    return response.json();
-  }).catch(error=>{bundledRequest=undefined;throw error;});
-  return bundledRequest;
-}
-
 async function readCatalog(){
   const source=await window.__holodoriDesktop.optimizerWorkspaceSource();
-  if(!source)return {catalog:await bundledWorkspace(),source:null};
   const worker=new Worker('/app/team-optimizer-worker.js',{type:'module'});
   try{
     return await new Promise((resolve,reject)=>{

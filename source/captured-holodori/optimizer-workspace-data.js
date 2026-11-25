@@ -63,6 +63,6 @@ export function buildOptimizerWorkspace({data,events,unlocks,bundledCardIds,bund
       chapters:(event.epBonus?.chapters??[]).map(row=>({number:row.number,endTime:row.endTime,characterId:row.characterId}))})),
     boardItems:Object.entries(data.boardItems).map(([id,item])=>({id,...item})),
     boardKeepTargets:boardKeepTargets(data),
-    objectives:['score','event','eventPoints','holomemLb','unitScore'],
+    objectives:['score','event','eventPoints','holomemLb','unitScore','challengeLive'],
   };
 }

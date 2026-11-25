@@ -1,4 +1,5 @@
 import { z } from 'zod'
+import {gameProgressKeys,gameProgressSchema,gameProgressStateSchema} from './game-progress'
 import {
   resourceKeys,
   isGameInventoryId,
@@ -240,7 +241,9 @@ export const gameAccountSnapshotSchema = z.object({
     serverTimeMs:accountInt64Schema,observedAt:z.iso.datetime(),
   }).optional(),
   process:z.object({pid:safeInteger.min(1).max(2147483647),steamAppId:z.literal('4282500'),steamBuildId:z.string().regex(/^\d{1,20}$/),executablePath:z.string().min(1).max(4096),executableSha256:z.string().regex(/^[a-fA-F0-9]{64}$/),gameAssemblySha256:z.string().regex(/^[a-fA-F0-9]{64}$/)}).passthrough(),
+  collectionCoverage:z.record(sourceId,z.literal('complete')).optional(),
   tables:z.object({
+    ...gameProgressSchema.shape,
     cards:z.array(sourceCard).min(1,'The game account has not finished loading its cards').max(5000),
     members:z.array(z.object({characterId:sourceId,exp:accountInt64Schema,level:safeInteger.min(1).max(2147483647)}).passthrough()).min(1,'The game account has not finished loading its Holomem').max(2000),
     items:z.array(z.object({itemId:sourceId,expiredTime:accountInt64Schema,quantity:accountInt64Schema}).passthrough()).max(50000),
@@ -260,6 +263,8 @@ export const gameAccountSnapshotSchema = z.object({
 }).passthrough().superRefine((value,context)=>{
   if (!boundedAccountJson(value)) context.addIssue({code:'custom',message:'Account capture exceeds the supported JSON limits'})
   if (value.pid!==value.process.pid) context.addIssue({code:'custom',message:'Account capture process identity is inconsistent'})
+  for(const key of gameProgressKeys)if(value.tables[key]!==undefined&&!safeInteger.max(2147483647).safeParse(value.versions[key]).success)context.addIssue({code:'custom',message:`Account ${key} collection version is missing or invalid`})
+  for(const key of Object.keys(value.collectionCoverage??{}))if(value.tables[key]===undefined)context.addIssue({code:'custom',message:`Account ${key} coverage has no collection`})
   for (const key of ['boards','boardPoints','missions','counts','songs','costumes'] as const) if(value.tables[key]!==undefined&&value.versions[key]===undefined)context.addIssue({code:'custom',message:`Account ${key} collection version is missing`})
   for (const board of value.tables.boards||[]) if(board.connectedSkillTreeNodeGroupIds.length!==board.connectedSkillTreeNodeCardIds.length)context.addIssue({code:'custom',message:'Account board connection arrays are inconsistent'})
   for (const [rows,key] of [[value.tables.cards,'cardId'],[value.tables.members,'characterId'],[value.tables.ownedItems,'itemId']] as const) {
@@ -309,6 +314,8 @@ const boardLayoutsSchema=z.record(z.string().regex(/^chr-\d+$/),z.object({
     cards:z.record(z.string().min(1).max(100),z.string().regex(/^card-[a-z\d-]+$/)),
 }));
 export const appProfileSchema = z.object({
+  gameProgress:gameProgressStateSchema.optional(),
+  pendingCatalogCards:z.array(sourceCard.pick({cardId:true,rarity:true,level:true,maxLevel:true,exp:true,levelLimitBreakCount:true,potentialUpgradeCount:true,potentialUpgradePointQuantity:true}).strip()).max(5000).optional(),
   currentDataVersion:z.literal(1).optional(),
   gachaPoints:z.record(z.string().regex(/^gacha_point-[a-z0-9_-]{1,100}$/),z.union([safeInteger,accountInt64Schema])).optional(),
   achievementProgress:z.record(sourceId,z.object({progress:accountInt64Schema,rewardReceivedThresholds:z.array(accountInt64Schema).max(1000)})).optional(),
@@ -545,7 +552,7 @@ function validateParsedProfileForManifest(
       if (!connectIds.has(nodeId)) throw new Error(`Board connection ${nodeId} is not a Connect node`)
       if (!connectedIds.has(nodeId)) throw new Error(`Board connection ${nodeId} is not connected to the Board origin`)
       if (cardId === null) continue
-      if (!catalog.has(cardId)) throw new Error(`Board connection references an unknown card: ${cardId}`)
+      if (!accountManifest.cardParameterProfiles[cardId]) throw new Error(`Board connection references an unknown card: ${cardId}`)
       if (!resolveBoardConnectEffect(cardId, profile.cards[cardId]?.bloomStage ?? 0)) throw new Error(`Card ${cardId} has no Connect effect`)
       if (connectedCards.has(cardId)) throw new Error(`Card ${cardId} is assigned to more than one Connect node`)
       connectedCards.add(cardId)
@@ -793,8 +800,16 @@ function migrateProfileShape(input: unknown, manifest: ProgressionManifest): App
 export function prepareProfile(input: unknown, manifest: ProgressionManifest): { profile: AppProfileV2; boardRepairs: BoardRepairSummary[] } {
   const current = input && typeof input === 'object' && 'schemaVersion' in input && input.schemaVersion === 12
   const profile = current ? appProfileSchema.parse(input) : appProfileSchema.parse(migrateProfileShape(input, manifest))
+  // Before Red Star Cube became a planner resource it lived in generic stock.
+  // Migrate only a missing dedicated value; retain an explicit local zero.
+  const original = input as Partial<AppProfileV2> | null
+  const starId = 'item-skill_tree_leader-3'
+  if (original && !Object.hasOwn(original.inventory ?? {}, 'redStarCube')) {
+    const observed = profile.gameInventory?.[starId]
+    if (observed !== undefined) profile.inventory.redStarCube = observed
+  }
+  if (profile.gameInventory && Object.hasOwn(profile.gameInventory, starId)) delete profile.gameInventory[starId]
   const boardRepairs: BoardRepairSummary[] = []
-  const catalogIds = new Set(manifest.cards.map((card) => card.id))
   const assignedCards = new Set<string>()
   for (const [characterId, board] of Object.entries(profile.account.boards)) {
     if(board.layoutKnown===false){
@@ -812,7 +827,7 @@ export function prepareProfile(input: unknown, manifest: ProgressionManifest): {
     for (const id of Object.keys(board.connectAssignments)) if (byId.get(id)?.type !== 'connect') throw new Error(`Board connection ${id} is not a Connect node`)
     for (const cardId of Object.values(board.connectAssignments)) {
       if (cardId === null) continue
-      if (!catalogIds.has(cardId)) throw new Error(`Board connection references an unknown card: ${cardId}`)
+      if (!accountManifest.cardParameterProfiles[cardId]) throw new Error(`Board connection references an unknown card: ${cardId}`)
       if (!resolveBoardConnectEffect(cardId, profile.cards[cardId]?.bloomStage ?? 0)) throw new Error(`Card ${cardId} has no Connect effect`)
       if (assignedCards.has(cardId)) throw new Error(`Card ${cardId} is assigned to more than one Connect node`)
       assignedCards.add(cardId)

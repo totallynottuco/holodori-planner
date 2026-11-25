@@ -44,15 +44,12 @@ export function materialPlan(context: MaterialPlanContext) {
   );
   // Fees are shared requirements. Attach the real recipients to the existing
   // coin row without allocating (or double-charging) one fee per portrait.
-  const fee = costs.megaSphereCoin;
-  if (fee) {
-    const characters = new Set(fee.characters);
-    for (const conversion of supply.conversions) {
-      const recipient = costs[conversion.to];
-      for (const id of recipient?.characters || []) characters.add(id);
-      if (recipient?.custom) fee.custom = true;
-    }
-    fee.characters = [...characters];
+  for (const conversion of supply.conversions) {
+    const fee = costs[conversion.feeKey];
+    if (!fee) continue;
+    const recipient = costs[conversion.to];
+    fee.characters = [...new Set([...(fee.characters ?? []), ...(recipient?.characters ?? [])])];
+    if (recipient?.custom) fee.custom = true;
   }
   const activities: MaterialActivities = {
     level: { "": {} },
@@ -67,7 +64,7 @@ export function materialPlan(context: MaterialPlanContext) {
     const missing = context.getMissing
       ? context.getMissing.call(context, cost.type, cost.item, 0)
       : game.getMissing.call(context,cost.type,cost.item,0);
-    const jarPlanned=!!(supply.jars[cost.item]||supply.exchanges.some(exchange=>exchange.to===cost.item&&exchange.fromBundles));
+    const jarPlanned=!!((cost.item in supply.jars)||supply.exchanges.some(exchange=>exchange.to===cost.item&&exchange.fromBundles));
     if (missing <= 0&&!jarPlanned) continue;
     const group = resourceGroups[cost.item];
     activities[group][""][cost.item] = {

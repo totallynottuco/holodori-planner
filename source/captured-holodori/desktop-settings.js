@@ -184,12 +184,13 @@ export function createDesktopSettings({h,reactive,vnode,resolve,Dialog,Switch,st
       saveState(status){if(status==='error')openProblems(this);},
     },
     mounted(){openProblems(this);},
-    beforeUnmount(){media.cancelRemoval();if(state.deleteStage)deleteData.cancel();if(state.restore)restore.cancel();if(state.profileImport)profiles.cancel();if(state.gameImport||state.busy==='game-read')gameAccount.cancel();},render(){
+    beforeUnmount(){media.cancelRemoval();if(state.deleteStage)deleteData.cancel();if(state.restore)restore.cancel();if(state.profileImport)profiles.cancel();if(state.gameImport||state.busy==='game-read'||state.busy==='game-file')gameAccount.cancel();},render(){
     // Reading the root account and local revision keeps captured Vue controls
     // reactive while the native boundary retains its synchronous storage API.
     const account=window.__seelieApp?.account,revision=state.profileRevision;
     const profile=options.getProfileSummary(),importedAt=profile.lastImportedAt;
-    const preview=state.gameImport;
+    const selection=state.gameImport?.choices?state.gameImport:null;
+    const preview=selection?null:state.gameImport;
     const accountStatus=preview?.accountStatus;
     const app=window.__seelieApp;
     const formatPicker=(label,key,choices,example)=>h('label',{class:'desktop-format-row'},[
@@ -211,6 +212,9 @@ export function createDesktopSettings({h,reactive,vnode,resolve,Dialog,Switch,st
         h('li',{},'Review the preview, then confirm the import.'),
       ]),control(state.busy==='game-read'?'Reading account…':'Import from game',gameAccount.read,
         {className:primary,disabled:blocked(),busy:state.busy==='game-read'})),
+      row(description('Saved account data','Preview a saved account snapshot or the game data captured in a planner backup.'),
+        control(state.busy==='game-file'?'Opening…':'Import from file',gameAccount.readFile,
+          {disabled:blocked(),busy:state.busy==='game-file'})),
       profile.accountIdentity||importedAt?h('div',{class:'desktop-settings-meta'},[
         profile.accountIdentity?note(identity(profile.accountIdentity),{'data-linked-account':''}):null,
         importedAt?note('Last imported '+formatDateTime(importedAt)):null,
@@ -324,13 +328,22 @@ export function createDesktopSettings({h,reactive,vnode,resolve,Dialog,Switch,st
         control('Cancel',profiles.cancel,{disabled:!!state.busy}),
         control(state.busy==='profile-import'?'Importing…':'Import',profiles.confirm,{disabled:!!state.busy,className:primary}),
       ],state.profileImportError),
-      dialog('desktop-game-import-title','Import account data?',!!preview,gameAccount.cancel,!!state.busy||state.gameImportPendingSave,'650px',preview?[
+      dialog('desktop-game-source-title','Choose a saved account',!!selection,gameAccount.cancel,!!state.busy,'550px',selection?[
+        note(selection.fileName,{class:'text-sm text-gray-300 break-words'}),
+        ...selection.choices.map((source,index)=>row(description(source.profileName,
+          [identity(source.identity),formatDateTime(source.capturedAt),'Steam build '+source.build].filter(Boolean).join(' · ')),
+          control('Preview',()=>gameAccount.chooseSource(index),{disabled:!!state.busy}))),
+      ]:[],[control('Cancel',gameAccount.cancel,{disabled:!!state.busy})],state.gameImportError),
+      dialog('desktop-game-import-title',preview?.fileName?'Import saved account data?':'Import account data?',!!preview,gameAccount.cancel,!!state.busy||state.gameImportPendingSave,'650px',preview?[
         h('div',{class:'desktop-settings-notes'},[
           h('p',{class:'font-semibold break-words'},'Planner profile · '+preview.profileName),
+          preview.fileName?note(['Saved snapshot',preview.fileName,preview.sourceProfileName].filter(Boolean).join(' · '),{class:'text-sm text-gray-300 break-words'}):null,
           accountStatus?note(accountStatus.identity?'Game account · '+identity(accountStatus.identity):'Game account unavailable',
             {'data-source-account':'',class:'text-sm text-gray-300 break-words'}):null,
           accountStatus?.identityStatus==='new'?note('This account will be linked to the selected profile.'):null,
-          note('Read '+formatDateTime(preview.capturedAt)+' · A recovery backup will be created before importing.'),
+          note('Captured '+formatDateTime(preview.capturedAt)+' · Steam build '+preview.steamBuildId),
+          note('A recovery backup will be created before importing.'),
+          preview.newerCaptureAt?note('This profile already has a capture from '+formatDateTime(preview.newerCaptureAt)+'. Importing this older snapshot can replace newer progress.',{class:'text-sm text-orange-400'}):null,
           note([formatNumber(preview.counts.sourceCards)+' owned cards',formatNumber(preview.counts.newCards)+' new',
             formatNumber(preview.counts.updatedCards)+' updated',formatNumber(preview.counts.unchangedCards)+' unchanged'].join(' · ')),
         ]),
@@ -365,7 +378,7 @@ export function createDesktopSettings({h,reactive,vnode,resolve,Dialog,Switch,st
             [h('dt',{},row.label),h('dd',{},formatNumber(row.count))])))):null,
       ]:[],[
         control('Cancel',gameAccount.cancel,{disabled:!!state.busy||state.gameImportPendingSave}),
-        control(state.busy==='game-import'?'Importing…':state.gameImportPendingSave?'Retry save':'Import',gameAccount.confirm,
+        control(state.busy==='game-import'?'Importing…':state.gameImportPendingSave?'Retry save':preview?.newerCaptureAt?'Import older progress':'Import',()=>gameAccount.confirm(!!preview?.newerCaptureAt),
           {className:primary,disabled:!!state.busy||!!preview?.boardReview?.error||
             !!preview?.boardReview?.conflicts.some(({owner})=>!preview.boardReview.choices[owner])}),
       ],state.gameImportError),

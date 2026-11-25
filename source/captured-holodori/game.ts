@@ -5,26 +5,26 @@
  * Holodori manifest; the captured components remain the UI implementation.
  */
 import { progressionManifest as manifest } from "../hololive/vendor/shared/manifest";
-import { resourceKeys } from "../hololive/vendor/shared/types";
+import { resourceKeys as storedResourceKeys } from "../hololive/vendor/shared/types";
 import { accountManifest, refreshAccountCatalogIndexes } from "../hololive/vendor/shared/account-data";
 import type { CatalogOverlay } from "./catalog-update";
 import {materialJarStock,planBundleExchanges,planCrystalSupply,planMaterialJars,remainingBeadBundles,type MaterialJarPlan} from "./material-jars";
 import {
-  conversionRecipes,
-  conversionForTarget,
-  maxManualBatches,
+  upgradeRecipes, loungeRecipes, sodaPopCoin, batchAmounts, conversionRecipe,
+  type PlannerResource,
   applyManualConversion,
-  planConversion,
 } from "./conversions";
 import type {
   CardCatalogEntry,
   AppProfileV2,
   GameAccountSnapshot,
-  ResourceKey,
+  ResourceKey as MaterialKey,
   Rarity,
 } from "../hololive/vendor/shared/types";
 
-export { manifest, resourceKeys };
+type ResourceKey = PlannerResource;
+export const resourceKeys = [...storedResourceKeys, sodaPopCoin] as const;
+export { manifest };
 export type LevelState = {
   level: number;
   asc: number;
@@ -65,6 +65,7 @@ export type Cost = {
   characters?: string[];
   cones?: never[];
   custom?: boolean;
+  exchangeFee?: number;
 };
 export type Costs = Partial<Record<ResourceKey, Cost>>;
 export type GameContext = {
@@ -105,6 +106,7 @@ export const resourceGroups: Record<
   hololium: "training",
   redCube: "other",
   redHexa: "other",
+  redStarCube: "other",
   blueCube: "other",
   blueHexa: "other",
   yellowCube: "other",
@@ -114,6 +116,7 @@ export const resourceGroups: Record<
   hologold: "other",
   harmonyGardenCoin: "other",
   megaSphereCoin: "other",
+  [sodaPopCoin]: "other",
   bloomStones: "bloom",
 };
 export const resourceLabels: Record<ResourceKey, string> = {
@@ -127,6 +130,7 @@ export const resourceLabels: Record<ResourceKey, string> = {
   hololium: "Hololium",
   redCube: "Red Cube",
   redHexa: "Red Hexa",
+  redStarCube: "Red Star Cube",
   blueCube: "Blue Cube",
   blueHexa: "Blue Hexa",
   yellowCube: "Yellow Cube",
@@ -136,6 +140,7 @@ export const resourceLabels: Record<ResourceKey, string> = {
   hologold: "Hologold",
   harmonyGardenCoin: "Harmony Garden Coin",
   megaSphereCoin: "Mega Sphere Coin",
+  [sodaPopCoin]: "Soda Pop Coin",
   bloomStones: "Bloom Stones",
 };
 export function getCard(id: string): CardCatalogEntry | undefined {
@@ -282,6 +287,8 @@ export function data() {
   };
 }
 
+const bundledAccount = { ...accountManifest };
+
 /** Install only normalized, fully cached data before the captured app hydrates.
  * Existing objects retain their identities for the captured renderer contracts. */
 export function installCatalogData(overlay: CatalogOverlay, images: Record<string, CardImages>) {
@@ -297,16 +304,21 @@ export function installCatalogData(overlay: CatalogOverlay, images: Record<strin
   manifest.metadata.catalogVersion = overlay.catalogVersion;
   manifest.metadata.sourceCommit = overlay.sourceCommit;
   accountManifest.metadata.sourceCommit = overlay.sourceCommit;
-  // Older local catalog caches predate the verified Splash Ball node.
-  const bundledPositions = new Map(accountManifest.templates.map(template => [
-    template.id, template.nodes.find(node => node.nodeGroupId === "G-025"),
-  ]));
-  accountManifest.templates = overlay.templates.map(template => {
-    const position = bundledPositions.get(template.id);
-    return !position || template.nodes.some(node => node.nodeGroupId === position.nodeGroupId ||
-      (node.x === position.x && node.y === position.y)) ? template : { ...template, nodes: [...template.nodes, position] };
-  });
-  for (const key of ["characters", "productions", "groups", "memberLevelGroups", "cardParameterProfiles", "cardLevelBases", "cardPotentialParameterBonuses", "cardConnectEffectIds", "connectEffects", "connectExtents", "costumes"] as const)
+  // Catalog overlays carry collection artwork. Board definitions are reviewed independently.
+  // Keep positions that an older collection cache predates unless a newer position occupies that cell.
+  const templates = new Map(bundledAccount.templates.map(template => [template.id, template]));
+  for (const template of overlay.templates) {
+    const missing = (templates.get(template.id)?.nodes ?? []).filter(node => !template.nodes.some(row =>
+      row.nodeGroupId === node.nodeGroupId || (row.x === node.x && row.y === node.y)));
+    templates.set(template.id, { ...template, nodes: [...template.nodes, ...missing] });
+  }
+  accountManifest.templates = [...templates.values()];
+  const connectIds = { ...bundledAccount.cardConnectEffectIds };
+  for (const id of Object.keys(overlay.cardParameterProfiles)) delete connectIds[id];
+  accountManifest.cardConnectEffectIds = { ...connectIds, ...overlay.cardConnectEffectIds };
+  for (const key of ["cardParameterProfiles", "cardLevelBases", "cardPotentialParameterBonuses", "connectEffects", "connectExtents"] as const)
+    Object.assign(accountManifest, { [key]: { ...bundledAccount[key], ...overlay[key] } });
+  for (const key of ["characters", "productions", "groups", "memberLevelGroups", "costumes"] as const)
     Object.assign(accountManifest, { [key]: overlay[key] });
   refreshAccountCatalogIndexes();
   catalog.clear();
@@ -405,54 +417,23 @@ function held(context: GameContext, key: ResourceKey) {
     )?.value || 0
   );
 }
-export type Conversion = {
-  from: ResourceKey;
-  to: ResourceKey;
-  batches: number;
-  input: number;
-  output: number;
-  fee: number;
-};
-export function projectedConversions(
-  context: GameContext,
-  costs: Costs,
-  jars: MaterialJarPlan = {},
-): Conversion[] {
-  const result: Conversion[] = [];
-  for (const recipe of conversionRecipes) {
-    // Aggregate requirements can exceed one recordable inventory balance.
-    // Keep their real display totals, but bound the strict batch calculation
-    // and its hypothetical transaction to supported inventory/fee quantities.
-    const requiredBeads = inventoryQuantity(costs[recipe.from]?.need || 0);
-    const requiredCrystals = inventoryQuantity((costs[recipe.to]?.need || 0)-(jars[recipe.to]?.covered??0));
-    const beadJar = jars[recipe.from];
-    const availableBeads = inventoryQuantity(held(context, recipe.from)+(beadJar?.covered??0)+(beadJar?.extra??0));
-    const availableCrystals = held(context, recipe.to);
-    const maxBatches = maxManualBatches({
-      [recipe.from]: Math.max(0, availableBeads - requiredBeads),
-      [recipe.to]: availableCrystals,
-      megaSphereCoin: Number.MAX_SAFE_INTEGER,
-    }, recipe.id);
-    const conversion = planConversion(
-      recipe.id,
-      Math.min(availableBeads, requiredBeads + maxBatches * recipe.input),
-      availableCrystals,
-      requiredBeads,
-      requiredCrystals,
-    );
-    if (conversion) {
-      const { recipeId: _recipeId, ...amounts } = conversion;
-      result.push(amounts);
-    }
-  }
-  return result;
+export type Conversion = ReturnType<typeof batchAmounts>;
+export function projectedConversions(context: GameContext, costs: Costs): Conversion[] {
+  const supply = allocateMaterialSupply(costs, key => held(context, key), new Map(), true);
+  const counts = new Map<string,number>();
+  for (const exchange of supply.conversions)
+    counts.set(exchange.recipeId, (counts.get(exchange.recipeId) ?? 0) + exchange.batches);
+  return Array.from(counts, ([id, batches]) => batchAmounts(conversionRecipe(id), batches));
 }
 function withConversionFees(context: GameContext, costs: Costs, conversions=projectedConversions(context,costs)) {
   const next: Costs = Object.fromEntries(
     Object.entries(costs).map(([key, cost]) => [key, { ...cost }]),
   );
-  for (const conversion of conversions)
-    add(next, "megaSphereCoin", conversion.fee);
+  for (const conversion of conversions) {
+    add(next, conversion.feeKey, conversion.fee);
+    const cost = next[conversion.feeKey]!;
+    cost.exchangeFee = (cost.exchangeFee ?? 0) + conversion.fee;
+  }
   return ordered(next);
 }
 
@@ -583,10 +564,10 @@ export function totalCosts(this: GameContext): Cost[] {
     }));
 }
 
-type PlannedExchange=Conversion&{fromBundles:number};
-type PendingExchange=Conversion&{covered:number;bundles:NonNullable<MaterialJarPlan[ResourceKey]>['uses']};
+type PlannedExchange=Conversion&{fromBundles:number; looseBatches:number};
+type PendingExchange=Conversion&{covered:number;bundles:NonNullable<MaterialJarPlan[MaterialKey]>['uses']};
 type MaterialSupply={costs:Costs;jars:MaterialJarPlan;conversions:Conversion[];exchanges:PlannedExchange[];
-  pendingExchanges:PendingExchange[];exchangeCoinShortfall:number;
+  pendingExchanges:PendingExchange[];exchangeCoinShortfall:number;sodaCoinShortfall:number;
   craftable:Partial<Record<ResourceKey,number>>;exchangeOutput:Partial<Record<ResourceKey,number>>};
 export function materialSupply(this:GameContext):MaterialSupply {
   const profile=this.$root?.data?.[`${this.account??'main'}-holodori`] as AppProfileV2|undefined;
@@ -599,20 +580,21 @@ function allocateMaterialSupply(costs:Costs,amount:(key:ResourceKey)=>number,sto
     key,inventoryQuantity((costs[key]?.need??0)-amount(key)),
   ]));
   const coinBudget=Math.max(0,amount('megaSphereCoin')-(costs.megaSphereCoin?.need??0));
-  const available=Math.floor(coinBudget/conversionRecipes[0].fee);
-  const directBeads=planMaterialJars(Object.fromEntries(conversionRecipes.map(({from})=>[from,shortages[from]])),stock);
+  const available=Math.floor(coinBudget/upgradeRecipes[0].fee);
+  const directBeads=planMaterialJars(Object.fromEntries(upgradeRecipes.map(({from})=>[from,shortages[from]])),stock);
   const unusedBundles=remainingBeadBundles(stock,directBeads);
-  const surplusBeads=conversionRecipes.map(({from})=>inventoryQuantity(
+  const surplusBeads=upgradeRecipes.map(({from})=>inventoryQuantity(
     amount(from)+(directBeads[from]?.covered??0)+(directBeads[from]?.extra??0)-(costs[from]?.need??0)));
-  const outputLimits=conversionRecipes.map(({to,output})=>Math.floor((Number.MAX_SAFE_INTEGER-amount(to))/output));
-  const looseLimits=conversionRecipes.map(({from,input},index)=>Math.min(outputLimits[index],
+  const outputLimits=upgradeRecipes.map(({to,output})=>Math.floor((Number.MAX_SAFE_INTEGER-amount(to))/output));
+  const looseLimits=upgradeRecipes.map(({from,input},index)=>Math.min(outputLimits[index],
     Math.floor(Math.max(0,amount(from)-(costs[from]?.need??0))/input)));
-  const selected=planCrystalSupply(conversionRecipes.map(({to})=>shortages[to]),surplusBeads,stock,unusedBundles,available,outputLimits);
+  const selected=planCrystalSupply(upgradeRecipes.map(({to})=>shortages[to]),surplusBeads,stock,unusedBundles,available,outputLimits);
   const jars={...directBeads,...selected.crystals};
   const exchanges:PlannedExchange[]=[];
   const craftable:MaterialSupply['craftable']={};
   const exchangeOutput:MaterialSupply['exchangeOutput']={};
-  for(const [index,{from,to,input,output,fee}] of conversionRecipes.entries()){
+  for(const [index,recipe] of upgradeRecipes.entries()){
+    const {from,to,input,output}=recipe;
     const batches=selected.funded[index];
     if(!batches)continue;
     const addition=selected.additions[from];
@@ -624,32 +606,85 @@ function allocateMaterialSupply(costs:Costs,amount:(key:ResourceKey)=>number,sto
     }
     const fromBundles=Math.max(0,batches*input-Math.max(0,amount(from)-(costs[from]?.need??0)));
     if(jars[from])jars[from]={...jars[from]!,forExchange:fromBundles};
-    exchanges.push({from,to,batches,input:batches*input,output:batches*output,fee:batches*fee,fromBundles});
+    exchanges.push({...batchAmounts(recipe,batches),fromBundles,looseBatches:Math.min(batches,looseLimits[index])});
     exchangeOutput[to]=batches*output;
     craftable[to]=Math.min(batches,looseLimits[index])*output;
   }
-  const remainingCrystals=conversionRecipes.map(({to})=>Math.max(0,
-    shortages[to]-(jars[to]?.covered??0)-(exchangeOutput[to]??0)));
+  // Each donor has a single budget across both shops. Reserve direct goals and
+  // previously allocated batches before offering its loose stock or jar surplus.
+  const loose: Partial<Record<MaterialKey,number>> = {};
+  const surplus: Partial<Record<MaterialKey,number>> = {};
+  for (const [i, {from,to,input}] of upgradeRecipes.entries()) {
+    loose[from] = Math.max(0,amount(from) - (costs[from]?.need ?? 0) - selected.funded[i]*input);
+    loose[to] = Math.max(0,amount(to) - (costs[to]?.need ?? 0));
+    surplus[from] = loose[from] + (jars[from]?.extra ?? 0) - (jars[from]?.forExchange ?? 0);
+    surplus[to] = loose[to] + (jars[to]?.extra ?? 0);
+  }
+  const sodaBudget = Math.max(0,amount(sodaPopCoin) - (costs[sodaPopCoin]?.need ?? 0));
+  let sodaSpent = 0;
+  const pendingExchanges:PendingExchange[]=[];
   const fundedFees=exchanges.reduce((total,exchange)=>total+exchange.fee,0);
-  let pendingExchanges:PendingExchange[]=[];
+  const outstanding = (key:MaterialKey) => Math.max(0, shortages[key] - (jars[key]?.covered ?? 0) - (exchangeOutput[key] ?? 0));
+  function planLounge(pending:boolean) {
+    // Prefer the larger remaining shortage within each material family. Keeping
+    // exchange outputs out of the donor pool prevents circular recommendations.
+    const pendingOutput = new Map(pendingExchanges.map(e=>[e.to,e.output]));
+    const need = (to:MaterialKey) => Math.max(0,outstanding(to) - (pendingOutput.get(to) ?? 0));
+    for (const recipe of [...loungeRecipes].sort((a,b)=>a.fee-b.fee || need(b.to)-need(a.to))) {
+      const batches = Math.min(
+        Math.ceil(need(recipe.to)/recipe.output),
+        Math.floor((Number.MAX_SAFE_INTEGER - amount(recipe.to) - (exchangeOutput[recipe.to] ?? 0) - (pendingOutput.get(recipe.to) ?? 0))/recipe.output),
+        Math.floor(((pending ? Number.MAX_SAFE_INTEGER : sodaBudget) - sodaSpent)/recipe.fee),
+        ...recipe.inputs.map(({key,quantity})=>Math.floor((surplus[key] ?? 0)/quantity))
+      );
+      if (batches < 1) continue;
+      const exchange = batchAmounts(recipe,batches);
+      const looseBatches = Math.min(batches,...recipe.inputs.map(({key,quantity})=>Math.floor((loose[key] ?? 0)/quantity)));
+      let fromBundles = 0;
+      for (const {key,quantity} of exchange.inputs) {
+        const fromJar = Math.max(0,quantity - (loose[key] ?? 0));
+        fromBundles += fromJar;
+        loose[key] = Math.max(0,(loose[key] ?? 0)-quantity);
+        surplus[key] = (surplus[key] ?? 0)-quantity;
+        if (!pending && fromJar && jars[key]) jars[key]!.forExchange = (jars[key]!.forExchange ?? 0)+fromJar;
+      }
+      sodaSpent += exchange.fee;
+      if (pending) {
+        pendingExchanges.push({...exchange,covered:Math.min(need(recipe.to),exchange.output),bundles:[]});
+      } else {
+        exchanges.push({...exchange,looseBatches,fromBundles});
+        craftable[recipe.to] = (craftable[recipe.to] ?? 0) + looseBatches*recipe.output;
+        exchangeOutput[recipe.to] = (exchangeOutput[recipe.to] ?? 0) + exchange.output;
+      }
+    }
+  }
+  planLounge(false);
+  const remainingCrystals=upgradeRecipes.map(({to})=>Math.max(0,
+    shortages[to]-(jars[to]?.covered??0)-(exchangeOutput[to]??0)));
   let exchangeCoinShortfall=0;
   if(includePending&&remainingCrystals.some(Boolean)){
     // Quote the next exchanges using only stock left after the current plan.
-    const remainingBeads=conversionRecipes.map(({from,input},index)=>
-      surplusBeads[index]+(selected.additions[from]?.extra??0)-selected.funded[index]*input);
-    const remainingLimits=outputLimits.map((limit,index)=>limit-selected.funded[index]);
+    const remainingBeads=upgradeRecipes.map(({from})=>surplus[from] ?? 0);
+    const remainingLimits=upgradeRecipes.map(({to,output})=>Math.floor((Number.MAX_SAFE_INTEGER-amount(to)-(exchangeOutput[to]??0))/output));
     const {funded:pending,additions}=planBundleExchanges(remainingCrystals,remainingBeads,remainingBeadBundles(stock,jars),
-      Math.floor((Number.MAX_SAFE_INTEGER-fundedFees)/conversionRecipes[0].fee),remainingLimits);
-    const quote=conversionRecipes.flatMap(({from,to,input,output,fee},index)=>{
+      Math.floor((Number.MAX_SAFE_INTEGER-fundedFees)/upgradeRecipes[0].fee),remainingLimits);
+    const quote=upgradeRecipes.flatMap((recipe,index)=>{
+      const {from,output}=recipe;
       const batches=pending[index];
-      return batches?[{from,to,batches,input:batches*input,output:batches*output,fee:batches*fee,
+      return batches?[{...batchAmounts(recipe,batches),
         covered:Math.min(remainingCrystals[index],batches*output),bundles:additions[from]?.uses??[]}]:[];
     });
     exchangeCoinShortfall=Math.max(0,quote.reduce((total,exchange)=>total+exchange.fee,0)-(coinBudget-fundedFees));
-    if(exchangeCoinShortfall)pendingExchanges=quote;
+    if(exchangeCoinShortfall) {
+      pendingExchanges.push(...quote);
+      for(const e of quote) for(const {key,quantity} of e.inputs)
+        surplus[key]=Math.max(0,(surplus[key] ?? 0)-quantity);
+    }
   }
+  if(includePending) planLounge(true);
+  const sodaCoinShortfall = Math.max(0,sodaSpent-sodaBudget);
   const conversions=[...exchanges,...pendingExchanges];
-  return {costs,jars,conversions,exchanges,pendingExchanges,exchangeCoinShortfall,craftable,exchangeOutput};
+  return {costs,jars,conversions,exchanges,pendingExchanges,exchangeCoinShortfall,sodaCoinShortfall,craftable,exchangeOutput};
 }
 
 export function materialSupplyFor(context:GameContext):MaterialSupply {
@@ -726,13 +761,18 @@ export function consumeCosts(this: GameContext, costs: Costs | Cost[]) {
     inventory = Object.fromEntries(
       resourceKeys.map((key) => [key, held(this, key)]),
     ) as Record<ResourceKey, number>;
-  for (const conversion of projectedConversions(this, byKey)) {
-    inventory[conversion.from] -= conversion.input;
-    inventory[conversion.to] += conversion.output;
+  const direct: Costs = {};
+  for (const cost of Object.values(byKey))
+    add(direct, cost.item, cost.need - (cost.exchangeFee ?? 0));
+  const funded = allocateMaterialSupply(direct, key => inventory[key], new Map(), false).exchanges;
+  for (const exchange of funded) {
+    for (const {key,quantity} of exchange.inputs) inventory[key] -= quantity;
+    inventory[exchange.feeKey] -= exchange.fee;
+    inventory[exchange.to] += exchange.output;
   }
   for (const key of resourceKeys) {
-    inventory[key] = Math.max(0, inventory[key] - (byKey[key]?.need || 0));
-    this.setInventory(key, key, 0, inventory[key]);
+    const next = Math.max(0, inventory[key] - (direct[key]?.need ?? 0));
+    if (next !== held(this,key)) this.setInventory(key, key, 0, next);
   }
 }
 /** Preserve the captured Inventory craft control, replace only its game formula. */
@@ -742,7 +782,7 @@ export function getCraft(
   item: string,
   _tier = 0,
 ) {
-  return conversionForTarget(item)?materialSupplyFor(this).craftable[item as ResourceKey]??0:0;
+  return materialSupplyFor(this).craftable[item as ResourceKey] ?? 0;
 }
 export function getTotal(
   this: GameContext,
@@ -758,7 +798,7 @@ export function getTotal(
 export function getMissing(this:GameContext,type:string,item:string,tier=0) {
   const need=this.getNeed?this.getNeed(type,item,tier):totalCosts.call(this).find(cost=>cost.item===item)?.need??0;
   const supply=materialSupplyFor(this);
-  const jars=tier===0?supply.jars[item as ResourceKey]?.covered??0:0;
+  const jars=tier===0?supply.jars[item as MaterialKey]?.covered??0:0;
   const exchange=tier===0?supply.exchangeOutput[item as ResourceKey]??0:0;
   return Math.ceil(Math.max(0,need-getInventory.call(this,type,item,tier)-jars-exchange));
 }
@@ -766,16 +806,15 @@ export function getReplace() {
   return 0;
 }
 export function craft(this: GameContext, item: string) {
-  const amount = getCraft.call(this, item, item, 0);
-  if (!amount || !this.setInventory) return false;
-  const recipe = conversionForTarget(item);
-  if (!recipe) return false;
-  const inventory = Object.fromEntries(
-    resourceKeys.map((key) => [key, held(this, key)]),
-  );
-  const next = applyManualConversion(inventory, recipe.id, amount / recipe.output);
-  for (const key of [recipe.from, recipe.to, "megaSphereCoin"] as const)
-    this.setInventory(key, key, 0, next[key]!);
+  if (!this.setInventory) return false;
+  const planned = materialSupplyFor(this).exchanges.filter(e => e.to === item && e.looseBatches > 0);
+  if (!planned.length) return false;
+  const before = Object.fromEntries(resourceKeys.map(key => [key, held(this,key)]));
+  let next = before;
+  for (const exchange of planned)
+    next = applyManualConversion(next,exchange.recipeId,exchange.looseBatches);
+  for (const key of resourceKeys)
+    if (before[key] !== next[key]) this.setInventory(key,key,0,next[key]!);
   return true;
 }
 
@@ -879,6 +918,7 @@ export function getInventory(
   );
 }
 export function resourceImage(key: ResourceKey | "bloomPoints") {
+  if (key === sodaPopCoin) return "/assets/game-inventory/icons/img_item_thumb_mini-game-fishing-coin.webp";
   return `/assets/materials/${manifest.resourceAssets[key].fileName}`;
 }
 export function cardImage(
@@ -964,15 +1004,11 @@ export function readinessContext<T extends GameContext>(
   // does not manufacture past fees by rounding two unrelated batch plans.
   const futureCosts = trainingCosts(id, currentSP, targetSP),
     conversions = projectedConversions(context, futureCosts),
-    futureFee = conversions.reduce(
-      (sum, conversion) => sum + conversion.fee,
-      0,
-    ),
     projectedStock = Object.fromEntries(
       resourceKeys.map((key) => [key, held(context, key)]),
     ) as Record<ResourceKey, number>;
   for (const conversion of conversions) {
-    projectedStock[conversion.from] -= conversion.input;
+    for (const {key,quantity} of conversion.inputs) projectedStock[key] -= quantity;
     projectedStock[conversion.to] += conversion.output;
   }
 
@@ -988,7 +1024,7 @@ export function readinessContext<T extends GameContext>(
         stage(goal.sp?.current),
         stage(goal.sp?.goal),
       );
-      add(costs, "megaSphereCoin", futureFee);
+      for (const exchange of conversions) add(costs, exchange.feeKey, exchange.fee);
       return ordered(costs);
     }
     return {};

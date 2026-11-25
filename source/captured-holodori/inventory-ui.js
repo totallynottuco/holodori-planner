@@ -1,6 +1,6 @@
 import {formatNumber,parseNumber} from './regional-formats.js';
 import {game} from './game';
-import {conversionRecipes,conversionRecipe,conversionFeeKey,manualQuote,maxManualBatches,applyManualConversion} from './conversions';
+import {upgradeRecipes,loungeRecipes,conversionRecipe,sodaPopCoin,manualQuote,maxManualBatches,applyManualConversion} from './conversions';
 import {applyGameInventoryEdits,inventoryPlacement,loadGameItems,projectGameInventory} from './game-inventory';
 import {ACCOUNT_RESOURCE_ITEM_IDS} from './account-import';
 import {inventoryEventCurrency,inventoryEventTime} from './inventory-events';
@@ -43,6 +43,7 @@ export function configureInventoryQuantity(original) {
   return {...original,props:{...original.props,gameItem:Object},emits:['quantity-focus','quantity-blur'],data(){return {...original.data?.call(this),quantityEditing:false,quantityDraft:null};},
     computed:{...original.computed,
       quantityText(){
+        if(this.gameItem?.unlimited)return '∞';
         const quantity=this.gameItem?this.gameItem.quantity:this.have;
         if(this.quantityEditing&&this.quantityDraft!==null)return this.quantityDraft;
         if(quantity==null)return this.quantityEditing?'':'—';
@@ -73,11 +74,12 @@ export function configureInventoryQuantity(original) {
         original.methods.keyPressed.call(this,event,stepper);
       }}:{}),
       writeQuantity(text){
+        if(this.gameItem?.unlimited)return;
         this.quantityDraft=text;
         const amount=text.trim()?parseNumber(text):0;
         if(Number.isFinite(amount))this.setInventory(this.type,this.item,this.tier,amount);
       },
-      focusQuantity(event){this.quantityDraft=null;this.quantityEditing=true;this.$emit('quantity-focus',this.item);this.$nextTick(()=>event.target.select());},
+      focusQuantity(event){if(this.gameItem?.unlimited){event.target.blur();return;}this.quantityDraft=null;this.quantityEditing=true;this.$emit('quantity-focus',this.item);this.$nextTick(()=>event.target.select());},
       blurQuantity(event){
         this.quantityEditing=false;this.quantityDraft=null;event.target.value=this.quantityText;
         this.$emit('quantity-blur',this.item);
@@ -114,8 +116,8 @@ export function configureInventory(original) {
       gameItems(){return applyGameInventoryEdits(this.gameItemBase,this.inventory,compactQuantity);},
       plannerItems(){
         return Object.fromEntries(game.resourceKeys.map((key,index)=>{
-          const id=ACCOUNT_RESOURCE_ITEM_IDS[key],item=this.gameItemCatalog?.items[id];
-          const category=item?.category??(['hologold','harmonyGardenCoin','megaSphereCoin'].includes(key)?'OTHER':'CARD_LEVELING');
+          const id=ACCOUNT_RESOURCE_ITEM_IDS[key]??key,item=this.gameItemCatalog?.items[id];
+          const category=item?.category??(['hologold','harmonyGardenCoin','megaSphereCoin',sodaPopCoin].includes(key)?'OTHER':'CARD_LEVELING');
           return [key,{...inventoryPlacement(id,category,item?.type),name:game.resourceLabels[key],order:item?.order??index}];
         }));
       },
@@ -211,7 +213,7 @@ export function createInventoryConversions({h,vnode,Dialog,Cost}) {
           this.busy=true;
           // All values are validated before any mutation. Synchronous captured
           // setters feed a single final inventory snapshot to native autosave.
-          for(const key of [quote.from,quote.to,conversionFeeKey])this.setInventory(key,key,0,next[key]);
+          for(const key of [...quote.inputs.map(input=>input.key),quote.to,quote.feeKey])this.setInventory(key,key,0,next[key]);
           applied=true;await window.__holodoriDesktop.flush();
           this.visible=false;this.$emit('converted');
           this.setToast?.(`Converted ${formatNumber(quote.output)} ${game.resourceLabels[quote.to]}.`);
@@ -229,8 +231,8 @@ export function createInventoryConversions({h,vnode,Dialog,Cost}) {
         vnode(Dialog,{visible:this.visible,'onUpdate:visible':value=>{if(!this.busy)this.visible=value;},modal:true,draggable:false,position:'top',dismissableMask:!this.busy,closeOnEscape:!this.busy,closable:!this.busy,header:'Convert materials',style:{width:'420px'}},{default:()=>[
           h('form',{onSubmit:event=>{event.preventDefault();void this.convert();}},[
             h('label',{id:'conversion-recipe-label',for:'conversion-recipe',class:'block font-semibold text-sm'},'Materials'),
-            h('select',{id:'conversion-recipe',class:'bg-gray-600 rounded mt-2 w-full',value:this.recipeId,disabled:this.busy,onChange:event=>{this.recipeId=event.target.value;this.batches=1;this.error='';}},conversionRecipes.map(item=>h('option',{value:item.id},`${game.resourceLabels[item.from]} → ${game.resourceLabels[item.to]}`))),
-            h('p',{class:'text-sm text-gray-300 mt-3'},`Each exchange uses ${recipe.input} ${game.resourceLabels[recipe.from]} and ${formatNumber(recipe.fee)} Mega Sphere Coins to make ${recipe.output} ${game.resourceLabels[recipe.to]}.`),
+            h('select',{id:'conversion-recipe',class:'bg-gray-600 rounded mt-2 w-full',value:this.recipeId,disabled:this.busy,onChange:event=>{this.recipeId=event.target.value;this.batches=1;this.error='';}},[['Beads to Crystals',upgradeRecipes],['Ichijou VIP Lounge',loungeRecipes]].map(([label,recipes])=>h('optgroup',{label},recipes.map(item=>h('option',{value:item.id},`${item.inputs.map(input=>game.resourceLabels[input.key]).join(' + ')} → ${game.resourceLabels[item.to]}`))))),
+            h('p',{class:'text-sm text-gray-300 mt-3'},`Each exchange uses ${recipe.inputs.map(({key,quantity})=>`${quantity} ${game.resourceLabels[key]}`).join(' + ')} and ${formatNumber(recipe.fee)} ${game.resourceLabels[recipe.feeKey]}s to make ${recipe.output} ${game.resourceLabels[recipe.to]}.`),
             h('label',{for:'conversion-batches',class:'block font-semibold text-sm mt-3'},'Exchanges'),
             h('div',{class:'flex items-center gap-2 mt-2'},[
               h('input',{id:'conversion-batches',type:'text',inputmode:'numeric',required:true,class:'bg-gray-700 rounded py-2 px-3 border border-gray-500 w-full',value:this.batches,disabled:this.busy,onInput:event=>{this.batches=event.target.value;this.error='';}}),
@@ -238,10 +240,10 @@ export function createInventoryConversions({h,vnode,Dialog,Cost}) {
             ]),
             h('p',{class:'text-xs text-gray-400 mt-1'},`${formatNumber(this.maximum)} exchanges available`),
             quote?h('div',{class:'flex items-start justify-between mt-4'},[
-              h('section',{},[h('p',{class:'font-semibold text-sm mb-2'},'Use'),h('div',{class:'flex gap-2'},[cost(Spend,quote.from,quote.input),cost(Spend,conversionFeeKey,quote.fee)])]),
+              h('section',{},[h('p',{class:'font-semibold text-sm mb-2'},'Use'),h('div',{class:'flex gap-2'},[...quote.inputs.map(input=>cost(Spend,input.key,input.quantity)),cost(Spend,quote.feeKey,quote.fee)])]),
               h('section',{},[h('p',{class:'font-semibold text-sm mb-2'},'Receive'),cost(Receive,quote.to,quote.output)]),
             ]):null,
-            this.error?h('p',{role:'alert',class:'text-sm text-red-400 mt-3'},this.error):!quote?h('p',{role:'status',class:'text-sm text-red-400 mt-3'},'Enter a positive whole number of exchanges.'):!quote.canApply?h('p',{role:'status',class:'text-sm text-red-400 mt-3'},'Not enough beads or Mega Sphere Coins, or the result exceeds the supported quantity.'):null,
+            this.error?h('p',{role:'alert',class:'text-sm text-red-400 mt-3'},this.error):!quote?h('p',{role:'status',class:'text-sm text-red-400 mt-3'},'Enter a positive whole number of exchanges.'):!quote.canApply?h('p',{role:'status',class:'text-sm text-red-400 mt-3'},'Not enough materials or coins, or the result exceeds the supported quantity.'):null,
             h('div',{class:'flex justify-end gap-2 mt-4'},[
               h('button',{type:'button',class:'bg-gray-700 shadow rounded-md py-2 px-3',disabled:this.busy,onClick:()=>{this.visible=false;}},'Cancel'),
               h('button',{type:'submit',class:'bg-purple-600 hover:bg-purple-500 shadow rounded-md py-2 px-3 font-semibold disabled:opacity-50 disabled:pointer-events-none',disabled:this.busy||!quote?.canApply},this.busy?'Converting…':'Convert'),
