@@ -1,5 +1,10 @@
 param([string]$InstalledDirectory = (Join-Path ([Environment]::GetFolderPath('LocalApplicationData')) 'Holodori Planner'))
 $ErrorActionPreference = 'Stop'
+# npm can pass a PowerShell 7 module path to Windows PowerShell. Load the
+# matching built-in utility module before verifying any installed files.
+if (!(Get-Command Get-FileHash -ErrorAction SilentlyContinue)) {
+    Import-Module (Join-Path $PSHOME 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1') -Force
+}
 $root = Split-Path -Parent $PSScriptRoot
 $build = Join-Path $root 'src-tauri\target\release'
 $install = (Resolve-Path -LiteralPath $InstalledDirectory).Path

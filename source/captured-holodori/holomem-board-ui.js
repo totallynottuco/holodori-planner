@@ -578,6 +578,12 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
         this.boardError='';
         this.$nextTick(this.visualPlan?this.fit:this.center);
       },
+      selectPreset(number){
+        this.presetNumber=number;
+        this.previewId=null;
+        this.showPath=false;
+        this.boardError='';
+      },
       selectNode(id){
         if(id===this.selected?.groupId)return;
         this.nodeId=id;
@@ -618,6 +624,13 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
       const visual=this.visualPlan;
       const selectedCard=this.connectCard??this.removedConnectCard(node.groupId);
       const actualCard=this.actualConnect;
+      let pointsLabel='Board Pt unavailable';
+      if(this.selectedPreset){
+        if(board.spent!==null)pointsLabel=format(board.spent)+' Board Pt used in preset';
+      }else if(board.available!==null){
+        if(!this.profile)pointsLabel=format(board.available)+' Board Pt';
+        else if(board.knownTopology)pointsLabel=format(board.spent)+' / '+format(board.earned)+' used · '+format(board.available)+' Board Pt left';
+      }
       const path=this.showPath ? this.path : null;
       const button=(label,click,props={})=>h('button',{class:action,type:'button',onClick:click,...props},label);
       const cost=path??{boardPointCost:node.boardPointCost,costs:node.costs};
@@ -650,15 +663,14 @@ export function createHolomemBoard({h,vnode,Search,Dialog,Toggle}) {
               this.member.name,art('ui_999_ico_sync.webp','holo-board-switch')],()=>this.openDialog('member'),
               {class:action+' holo-board-member','aria-label':'Select Holomem, '+this.member.name,'aria-haspopup':'dialog'}),
             this.presets.length?h('div',{class:'flex flex-wrap gap-1',role:'group','aria-label':'Board presets'},[
-              button('Equipped',()=>{this.presetNumber=null;this.previewId=null;this.showPath=false;},{'aria-pressed':!this.selectedPreset}),
-              ...this.presets.map(p=>button(p.name||'Preset '+p.number,()=>{this.presetNumber=p.number;this.previewId=null;this.showPath=false;},{key:p.number,'aria-pressed':p.number===this.presetNumber,title:p.userMemo||'Saved Board preview'})),
+              button('Equipped',()=>this.selectPreset(null),{'aria-pressed':!this.selectedPreset}),
+              ...this.presets.map(p=>button(p.name||'Preset '+p.number,()=>this.selectPreset(p.number),{key:p.number,'aria-pressed':p.number===this.presetNumber,title:p.userMemo||'Saved Board preview'})),
             ]):null,
             this.selectedPreset?h('span',{class:'text-xs text-gray-400'},'Preset preview · '+(this.selectedPreset.userMemo||'Read only')):null,
             board.rank===null?null:h('span',{class:'holo-board-summary text-gray-300'},'Rank '+board.rank),
             h('span',{class:'holo-board-summary holo-board-points',
               title:board.reconciled?format(board.earned)+' earned · '+format(board.spent)+' spent':undefined,
-            },[art('img_resource_thumb_skilltreepoint-cmn.webp',''),board.available===null?'Board Pt unavailable':
-              this.profile?format(board.spent)+' / '+format(board.earned)+' used · '+format(board.available)+' Board Pt left':format(board.available)+' Board Pt']),
+            },[art('img_resource_thumb_skilltreepoint-cmn.webp',''),pointsLabel]),
             h('span',{class:'holo-board-summary text-gray-300'},board.purchased.size+' / '+board.nodes.length+' unlocked'),
             this.editableSave?h('div',{class:'holo-board-click-controls',role:'group','aria-label':'Board click actions'},[
               vnode(Toggle,{label:'Left click to purchase node',small:true,modelValue:this.leftPurchase,

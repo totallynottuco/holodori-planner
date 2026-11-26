@@ -124,7 +124,12 @@ export function configureInventory(original) {
       searchQuery(){return searchText(this.search.trim());},
       keepEventCurrency(){return inventoryEventCurrency(this.eventWindows,inventoryEventTime(this.gameSnapshot,this.eventNow));},
       visibleItems(){
-        const materials=this.filteredItems.filter(id=>this.matchesSearch(this.plannerItems[id].name)&&this.showQuantity(id,this.getInventory(id,id,0)));
+        const materials=this.filteredItems.filter(id=>{
+          if(!this.matchesSearch(this.plannerItems[id].name)||!this.showQuantity(id,this.getInventory(id,id,0)))return false;
+          if(this.show==='needed')return this.totalCosts.some(cost=>cost.item===id&&cost.need>0);
+          if(this.show==='craftable')return this.getCraft(id,id,0)>0;
+          return true;
+        });
         const regular=this.show==='all'
           ? Object.keys(this.gameItems).filter(id=>{
             const tile=this.gameItems[id];
@@ -175,12 +180,7 @@ export function configureInventory(original) {
       const boundary=Math.min(...this.eventWindows.flatMap(event=>[event.startTime,event.endTime+1]).filter(value=>value>time));
       if(Number.isFinite(boundary))this.eventTimer=setTimeout(()=>this.refreshEventClock(),Math.min(2_147_483_647,boundary-time));
     },
-    getItems(){this.filteredItems=game.resourceKeys.filter(key=>{
-      if(this.filter!=='all'&&this.plannerItems[key].category!==this.filter)return false;
-      if(this.show==='needed')return this.totalCosts.some(cost=>cost.item===key&&cost.need>0);
-      if(this.show==='craftable')return this.getCraft(key,key,0)>0;
-      return true;
-    });}},
+    getItems(){this.filteredItems=game.resourceKeys.filter(key=>this.filter==='all'||this.plannerItems[key].category===this.filter);}},
   };
 }
 

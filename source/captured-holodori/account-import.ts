@@ -48,11 +48,16 @@ export function parseAccountSnapshot(input:unknown):GameAccountSnapshot {
   // Both Planner and Team Optimizer key equipped layouts by owner and Connect
   // assignments by slot. Check new observations before projecting either map.
   const equippedOwners = new Set<string>();
+  const equippedCards = new Set<string>();
   for (const board of snapshot.tables.boards ?? []) {
     if (equippedOwners.has(board.characterId)) throw Error('The capture contains multiple equipped Boards for one Holomem.');
     equippedOwners.add(board.characterId);
     const slots = board.connectedSkillTreeNodeGroupIds;
     if (new Set(slots).size !== slots.length) throw Error('An equipped Board contains more than one assignment for a Connect slot.');
+    for (const card of board.connectedSkillTreeNodeCardIds) {
+      if (equippedCards.has(card)) throw Error('The capture assigns the same Connect card to multiple equipped slots.');
+      equippedCards.add(card);
+    }
   }
   return snapshot;
 }

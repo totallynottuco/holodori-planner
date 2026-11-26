@@ -1,15 +1,16 @@
-# Hololive Dreams Planner 1.4.0
+## Additions and improvements
 
-## Team Optimizer
+- **Challenge Live** is now a Team Optimizer target. Pick a stage to see its clear score and bonus members, compare eligible songs and difficulties, and open the ranked teams for each chart.
+- **Mobile team searches** now try all 120 card orders for each five-card finalist on CPU and GPU. Holomem Rating also checks which difficulty scores best for each lineup.
+- **The optimizer catalog** adds Christmas Miko, Luna, Ina, and Shiori with their outfits, skills, and Connect effects, plus five songs. Team previews show each card’s Active skill chance when it can be calculated.
+- **Holomem Boards** now include the two new nodes and Red Star Cube costs. In Progress, switch between your equipped Board and a saved preset to see its total Board Point cost, nodes, and Connect cards.
+- **Steam account import** now checks compatibility with the running game after updates. In Settings, **Import from file** lets you preview and apply a previous capture from a snapshot, exported profile, or Planner backup.
+- **Ichijou VIP Lounge exchanges** are now available in Inventory and Planner. See which Bead or Crystal exchanges you can afford after counting both required material types and the Soda Pop Coin fee.
 
-- Choose **Challenge Live** and a stage to compare its eligible songs, difficulties and member bonuses. Select a song to see its ranked teams. Preview opens the exact lineup, slot order and Boards behind the selected score.
-- Mobile CPU and GPU searches check all 120 slot orders for each five-card finalist. Any Song finalists use per-note scoring on covered charts and keep the applicable singer and Board effects. Mobile Holomem Rating can choose a different difficulty for each lineup.
-- The optimizer includes the new cards, outfits, Connect effects, Board nodes and songs. Preview and saved lineups show individual Active activation rates where the formation rules are known.
-- Steam chart previews and ranked scores use the same Special slots, activation checks and per-note rounding.
+## Fixes
 
-## Inventory, Progress and import
-
-- Inventory and Planner support the Ichijou VIP Lounge exchanges for Beads and Crystals, including both input attributes and the Soda Pop Coin cost.
-- Progress now opens on Overview, alongside Holomem Board. Board preset previews show node costs and Connect assignments. Inventory and Achievements include the updated items and rewards.
-- The Steam importer checks runtime compatibility across builds. Imports refresh the fields observed in the game and retain local progress for omitted fields. Saved account snapshots can also be imported from a file.
-- Inventory combines the installed event schedule with downloaded updates so an older cache can no longer hide a current event’s currency.
+- **Score estimates** now include singer and Board bonuses when ranking Mobile Any Song finalists on supported charts. Steam rankings and previews now use the same Special skill slots, activation checks, and per-note rounding.
+- **Catalog updates** can now handle large game updates that previously caused the refresh to fail.
+- **Inventory’s Craftable filter** updates as soon as an exchange becomes affordable or you spend its materials.
+- **Account import** now identifies captures that assign one Connect card to multiple equipped slots before applying progress.
+- **Event currency** stays visible during its event even when an older schedule is cached.
